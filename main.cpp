@@ -1,0 +1,478 @@
+// main.cpp
+
+/* 
+    SPDX-License-Identifier: AGPL-3.0-or-later
+    GNU Affero General Public License v3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+    Copyright (c) 2026 Manuel FLURY
+    All rights reserved.
+    
+    This file is part of slaplog - an OpenLDAP Log Analysis Tool.
+    
+    Licensed under the GNU General Public License v3.0 (GPL-3.0-or-later).
+    See the LICENSE file distributed with this work for full license text.
+    
+    THIS SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+    IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+    FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT. IN NO EVENT SHALL
+    THE AUTHORS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN
+    AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+    CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+*/
+
+
+//
+// This file is the CLI entry point for the OpenLDAP log analysis tool (slaplog).
+// It handles argument parsing, input file collection (both flat and recursive
+// directory traversal with deduplication), and orchestrates parallel log
+// processing using a thread-per-file model. A progress bar thread provides
+// real-time feedback on stderr. After all threads complete, per-thread
+// aggregators are merged and the final report is printed in the requested
+// format (text, textcolor, html, or json).
+
+// log_parser.hpp     -- Core log parsing logic: process_file() and Aggregator struct
+#include "log_parser.hpp"
+// report.hpp         -- Report printers: print_text_report(), print_json_report(), print_html_report()
+#include "report.hpp"
+// utils.hpp          -- Shared utility functions (merge_aggregators, etc.)
+#include "utils.hpp"
+// embedded.hpp       -- Embedded LICENSE and documentation text
+#include "embedded.hpp"
+
+#include <iostream>       // std::cerr, std::cout for CLI output and progress bar
+#include <vector>         // std::vector for storing file lists and thread handles
+#include <string>         // std::string for path and argument handling
+#include <atomic>         // std::atomic for lock-free progress tracking across threads
+#include <thread>         // std::thread for parallel file processing and progress bar
+#include <filesystem>     // std::filesystem for directory iteration and file queries
+#include <chrono>         // std::chrono for timing and progress-thread sleep
+#include <mutex>          // std::mutex (included for completeness; not directly used here)
+#include <sys/stat.h>     // POSIX stat (included for potential future file checks)
+#include <iomanip>        // std::setprecision, std::fixed for progress-bar formatting
+#include <algorithm>      // std::transform for case-insensitive filename matching
+#include <set>            // std::set for deduplicating input files
+#include <fstream>        // std::ofstream for writing unknown-lines output file
+#include <memory>         // std::shared_ptr etc. (available for smart pointer usage)
+#include <ostream>        // std::ostream base class
+#include <sstream>        // std::istringstream for parsing comma-separated --section values
+#include <iostream>       // (redundant include, kept as-is)
+#include <regex>          // std::regex (included for potential regex-based filtering)
+
+#define SLAPLOG_VERSION "3.0.0"
+#ifndef BUILD_NUMBER
+#define BUILD_NUMBER 0
+#endif
+#define STRINGIFY2(x) #x
+#define STRINGIFY(x) STRINGIFY2(x)
+#define SLAPLOG_BUILD __DATE__ " " __TIME__ " build " STRINGIFY(BUILD_NUMBER)
+
+namespace fs = std::filesystem;
+
+// print_progress
+//
+// Displays a command-line progress bar on stderr using a carriage-return (\r)
+// to overwrite the current line. The bar shows:
+//   - A 50-character progress bar with = segments and a > head
+//   - Percentage complete (one decimal place)
+//   - MB processed out of total MB (total_size)
+//   - Files processed out of total files (files_done / total_files)
+//
+// Both progress and files_done are atomic because they are updated from
+// worker threads and read from the progress thread without synchronization.
+// The file sizes are read up front (before any processing), so total_size
+// may over-estimate progress for compressed or sparse logs; but on average
+// it gives a smooth visual indicator.
+void print_progress(std::atomic<size_t>& progress, size_t total_size, 
+                    std::atomic<size_t>& files_done, size_t total_files) {
+    size_t current = progress.load();
+    float percent = (total_size > 0) ? (100.0 * current / total_size) : 100.0;
+    if (percent > 100.0) percent = 100.0;
+    int bar_width = 50;
+
+    std::cerr << "\r[";
+    int pos = (int)(bar_width * percent / 100);
+    for (int i = 0; i < bar_width; ++i) {
+        if (i < pos) std::cerr << "=";
+        else if (i == pos) std::cerr << ">";
+        else std::cerr << " ";
+    }
+    std::cerr << "] " << std::fixed << std::setprecision(1) << percent << "% "
+              << (current / (1024 * 1024)) << "/" << (total_size / (1024 * 1024)) << " MB"
+              << " | Files: " << files_done.load() << "/" << total_files;
+    std::cerr.flush();
+}
+
+// wanted_log_file
+//
+// Determines whether a given file path should be included in the analysis.
+// The function applies the following inclusion criteria:
+//   1. The path must be non-empty, a regular file, and have non-zero size.
+//   2. Hidden files (starting with '.') are excluded.
+//   3. Temporary / backup / editor swap files (~, .swp, .tmp, .bak, .old,
+//      .disabled) are excluded via case-insensitive substring checks.
+//   4. Inclusion requires at least one of these substrings in the filename:
+//        - "slapd"
+//        - "ldap"
+//        - ".log"
+static bool wanted_log_file(const std::string& path) {
+    if (path.empty()) return false;
+    if (!fs::is_regular_file(path)) return false;
+    if (fs::file_size(path) == 0) return false;
+
+    std::string base = fs::path(path).filename().string();
+    std::string lower = base;
+    std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
+
+    if (!base.empty() && base[0] == '.') return false;
+    if (lower.find("~") != std::string::npos) return false;
+    if (lower.find(".swp") != std::string::npos) return false;
+    if (lower.find(".tmp") != std::string::npos) return false;
+    if (lower.find(".bak") != std::string::npos) return false;
+    if (lower.find(".old") != std::string::npos) return false;
+    if (lower.find(".disabled") != std::string::npos) return false;
+
+    if (base.find("slapd") != std::string::npos || lower.find("slapd") != std::string::npos) return true;
+    if (lower.find("ldap") != std::string::npos) return true;
+    if (lower.find(".log") != std::string::npos) return true;
+
+    return false;
+}
+
+// collect_input_files
+//
+// Converts the raw command-line arguments (which may be individual files or
+// directories) into a flat, deduplicated vector of log file paths.
+//
+// For each input path:
+//   - If it is a regular file (with non-zero size), it is added directly.
+//   - If it is a directory, the directory is scanned:
+//       * When recursive == true, fs::recursive_directory_iterator is used
+//         to walk all subdirectories.
+//       * When recursive == false, only the top-level entries are inspected.
+//       * Each entry is checked via wanted_log_file() before being added.
+//
+// Deduplication is achieved by inserting paths into a std::set first, then
+// converting the set to a vector at the end. This handles the case where
+// the same file is specified multiple times or discovered via both explicit
+// path and directory traversal.
+static std::vector<std::string> collect_input_files(const std::vector<std::string>& inputs, bool recursive) {
+    std::set<std::string> uniq;
+    for (const auto& path : inputs) {
+        if (path.empty()) continue;
+        std::error_code ec;
+        if (fs::is_regular_file(path, ec)) {
+            if (!ec && fs::file_size(path, ec) > 0) uniq.insert(path);
+            continue;
+        }
+        if (!fs::is_directory(path, ec) || ec) continue;
+        if (recursive) {
+            for (auto const& entry : fs::recursive_directory_iterator(path)) {
+                if (!entry.is_regular_file()) continue;
+                std::string full = entry.path().string();
+                if (wanted_log_file(full)) uniq.insert(full);
+            }
+        } else {
+            for (auto const& entry : fs::directory_iterator(path)) {
+                if (!entry.is_regular_file()) continue;
+                std::string full = entry.path().string();
+                if (wanted_log_file(full)) uniq.insert(full);
+            }
+        }
+    }
+    return std::vector<std::string>(uniq.begin(), uniq.end());
+}
+
+// usage
+//
+// Prints the help text describing all available CLI options:
+//
+//   -o, --output FORMAT        Select output format: text, textcolor, html, or json.
+//   -c, --compact              Limit lists to top 5 instead of the default top 20.
+//   -r, --recursive            Recurse into subdirectories when scanning directories.
+//   -s, --section LIST         Comma-separated list of report sections to include.
+//   --unknown-lines FILE       Write unparseable log lines to a file, then generate report.
+//   --unknown-lines-only FILE  Same as above but skip the final report (extraction mode).
+//   --debug                    Enable verbose diagnostic output to stderr.
+//   -d, --documentation        Print the documentation to stdout and exit.
+//   -l, --licence              Print the license to stdout and exit.
+//   -h, --help                 Display this help message and exit.
+//   -V, --version              Display version information and exit.
+static void usage(const char* prog) {
+    std::cerr << prog << " - an OpenLDAP Log Analyzer v" << SLAPLOG_VERSION << "\n";
+    std::cerr << "Copyright (c) 2026 Manuel FLURY\n";
+    std::cerr << "License: GNU Affero General Public License v3.0 or later (https://www.gnu.org/licenses/agpl-3.0.html)\n";
+    std::cerr << "Usage: " << prog << " [options] <logfile|directory> [file|dir ...]\n";
+    std::cerr << "Options:\n";
+    std::cerr << "  -o, --output FORMAT        Output format: text | textcolor | html | json\n";
+    std::cerr << "  -c, --compact              Compact output (top 5 instead of top 20)\n";
+    std::cerr << "  -r, --recursive            Recurse into directories\n";
+    std::cerr << "  -s, --section LIST         Sections to show (comma-sep): all,\n";
+    std::cerr << "                             stats,ops,errors,errors_per_app,\n";
+    std::cerr << "                             bases,filters,wildcards,\n";
+    std::cerr << "                             filters_per_app,attrs,apps,extops,\n";
+    std::cerr << "                             qmark,csn,server,index,sessions,\n";
+    std::cerr << "                             topops,topconns\n";
+    std::cerr << "  --unknown-lines FILE       Write unknown lines to FILE\n";
+    std::cerr << "  --unknown-lines-only FILE  Like --unknown-lines, no final report\n";
+    std::cerr << "  -d, --documentation        Print documentation to stdout\n";
+    std::cerr << "  -l, --licence              Print license to stdout\n";
+    std::cerr << "  --debug                    Enable debug mode\n";
+    std::cerr << "  -h, --help                 Show this help\n";
+    std::cerr << "  -V, --version              Show version\n";
+}
+
+static int print_licence() {
+    std::cout << embedded::LICENSE_TEXT;
+    return 0;
+}
+
+static int print_documentation() {
+    std::cout << embedded::DOCUMENTATION_TEXT;
+    return 0;
+}
+
+int main(int argc, char* argv[]) {
+    // ------------------------------------------------------------------
+    // If no arguments are given, show usage and exit with an error code.
+    // ------------------------------------------------------------------
+    if (argc < 2) {
+        usage(argv[0]);
+        return 1;
+    }
+
+    // ------------------------------------------------------------------
+    // Declare option variables with their defaults.
+    //
+    // inputs              -- positional arguments (files / directories)
+    // recursive           -- whether to traverse directories recursively
+    // output_format       -- "text", "textcolor" (default), "html", "json"
+    // compact_mode        -- if true, show top 5 instead of top 20
+    // unknown_lines_file  -- path for writing unparseable lines (empty = disabled)
+    // unknown_lines_only  -- if true, skip the final report after writing unknowns
+    // debug               -- enable extra diagnostic output on stderr
+    // color_mode          -- 0 = plain text, 2 = ANSI color (derived from output_format)
+    // enabled_sections    -- set of report sections; defaults to {"all"}
+    // ------------------------------------------------------------------
+    std::vector<std::string> inputs;
+    bool recursive = false;
+    std::string output_format = "textcolor";
+    bool compact_mode = false;
+    std::string unknown_lines_file;
+    bool unknown_lines_only = false;
+    bool show_documentation = false;
+    bool show_licence = false;
+    bool debug = false;
+    int color_mode = 2;
+    std::set<std::string> enabled_sections = {"all"};
+
+    // ------------------------------------------------------------------
+    // Argument parsing loop.
+    //
+    // Iterates over argv[1..argc-1] and dispatches each flag.  Flags with
+    // a required value (--output, --section, --unknown-lines,
+    // --unknown-lines-only) consume the next argument.  Everything that
+    // is not a recognised flag is treated as an input path.
+    // ------------------------------------------------------------------
+    for (int i = 1; i < argc; ++i) {
+        std::string arg = argv[i];
+        if ((arg == "-o" || arg == "--output") && i + 1 < argc) {
+            output_format = argv[++i];
+            if (output_format == "text") { color_mode = 0; }
+            else if (output_format == "textcolor") { color_mode = 2; }
+        } else if (arg == "-c" || arg == "--compact") {
+            compact_mode = true;
+        } else if (arg == "-r" || arg == "--recursive") {
+            recursive = true;
+        } else if ((arg == "-s" || arg == "--section") && i + 1 < argc) {
+            // When --section is used, the default "all" is removed from the
+            // set so that only the explicitly requested sections are shown.
+            enabled_sections.erase("all");
+            std::string val = argv[++i];
+            std::istringstream iss(val);
+            std::string tok;
+            while (std::getline(iss, tok, ',')) {
+                if (!tok.empty()) enabled_sections.insert(tok);
+            }
+        } else if (arg == "--unknown-lines" && i + 1 < argc) {
+            unknown_lines_file = argv[++i];
+        } else if (arg == "--unknown-lines-only" && i + 1 < argc) {
+            unknown_lines_file = argv[++i];
+            unknown_lines_only = true;
+        } else if (arg == "-d" || arg == "--documentation") {
+            show_documentation = true;
+        } else if (arg == "-l" || arg == "--licence") {
+            show_licence = true;
+        } else if (arg == "--debug") {
+            debug = true;
+        } else if (arg == "-h" || arg == "--help") {
+            usage(argv[0]);
+            return 0;
+        } else if (arg == "-V" || arg == "--version") {
+            std::cout << "slaplog v" << SLAPLOG_VERSION << " (built " << SLAPLOG_BUILD << ") - an OpenLDAP log Analyzer\n";
+            std::cout << "Copyright (c) 2026 Manuel FLURY\n";
+            std::cout << "License: GNU Affero General Public License v3.0 or later\n";
+            return 0;
+        } else {
+            inputs.push_back(arg);
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Generation-only flags: --documentation / --licence.
+    // When active, print the requested content to stdout and exit early
+    // without requiring input files or generating a report.
+    // ------------------------------------------------------------------
+    if (show_documentation) {
+        return print_documentation();
+    }
+    if (show_licence) {
+        return print_licence();
+    }
+
+    // ------------------------------------------------------------------
+    // Validate input: at least one file or directory must be provided.
+    // ------------------------------------------------------------------
+    if (inputs.empty()) {
+        std::cerr << "Error: No input files specified\n";
+        return 1;
+    }
+
+    // ------------------------------------------------------------------
+    // File collection: expand directories into individual log files.
+    // ------------------------------------------------------------------
+    auto files = collect_input_files(inputs, recursive);
+    if (files.empty()) {
+        std::cerr << "Error: No valid log files found\n";
+        return 1;
+    }
+
+    if (debug) {
+        std::cerr << "Found " << files.size() << " log files\n";
+    }
+
+    // ------------------------------------------------------------------
+    // Pre-compute total file size for progress-bar estimation.
+    // ------------------------------------------------------------------
+    size_t total_size = 0;
+    for (const auto& f : files) {
+        std::error_code ec;
+        auto size = fs::file_size(f, ec);
+        if (!ec) total_size += size;
+    }
+
+    // ------------------------------------------------------------------
+    // Set up per-thread aggregators (one per file) so that worker threads
+    // never contend on a shared mutex.  progress and files_done are
+    // atomics that the workers increment and the progress thread reads.
+    // ------------------------------------------------------------------
+    std::vector<Aggregator> thread_aggs(files.size());
+    std::atomic<size_t> progress(0);
+    std::atomic<size_t> files_done(0);
+    auto start_time = std::chrono::system_clock::now();
+
+    // ------------------------------------------------------------------
+    // Progress bar thread.
+    //
+    // Polls files_done every 100 ms and calls print_progress to update a
+    // single-line bar on stderr.  After all files are processed the final
+    // bar is printed followed by a newline so subsequent output starts on
+    // a fresh line.
+    // ------------------------------------------------------------------
+    std::thread progress_thread([&]() {
+        while (files_done.load() < files.size()) {
+            print_progress(progress, total_size, files_done, files.size());
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+        print_progress(progress, total_size, files_done, files.size());
+        std::cerr << "\n";
+    });
+
+    // ------------------------------------------------------------------
+    // Worker threads: one thread per file.
+    //
+    // Each thread captures its index by value (i) to avoid races, calls
+    // process_file() on its slice of the file list, and increments
+    // files_done when finished.  The per-thread Aggregator (thread_aggs[i])
+    // accumulates results without any locking.
+    // ------------------------------------------------------------------
+    std::vector<std::thread> workers;
+    for (size_t i = 0; i < files.size(); ++i) {
+        workers.emplace_back([&, i]() {
+            process_file(files[i], thread_aggs[i], progress);
+            files_done++;
+        });
+    }
+
+    // ------------------------------------------------------------------
+    // Wait for all worker threads to finish, then join the progress thread.
+    // ------------------------------------------------------------------
+    for (auto& t : workers) {
+        if (t.joinable()) t.join();
+    }
+
+    if (progress_thread.joinable()) progress_thread.join();
+
+    // ------------------------------------------------------------------
+    // Calculate elapsed wall-clock time for the report footer.
+    // ------------------------------------------------------------------
+    auto end_time = std::chrono::system_clock::now();
+    double duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time).count() / 1000.0;
+
+    // ------------------------------------------------------------------
+    // Merging aggregators.
+    //
+    // Combine all per-thread Aggregators into a single final_agg using
+    // merge_aggregators() (defined in utils.hpp).  This step sums up
+    // counters, concatenates histogram maps, and collects unknown lines.
+    // ------------------------------------------------------------------
+    Aggregator final_agg;
+    for (auto& ta : thread_aggs) {
+        merge_aggregators(final_agg, ta);
+    }
+
+    // ------------------------------------------------------------------
+    // Unknown lines output.
+    //
+    // If --unknown-lines or --unknown-lines-only was specified, write every
+    // unparseable line from the combined Aggregator to a text file.
+    // If --unknown-lines-only is active, the program exits early without
+    // producing a report; otherwise it continues to report generation so
+    // the unknowns file serves as supplementary data alongside the report.
+    // ------------------------------------------------------------------
+    if (!unknown_lines_file.empty()) {
+        std::ofstream ofs(unknown_lines_file);
+        if (ofs) {
+            for (const auto& line : final_agg.unknown_lines) {
+                ofs << line << "\n";
+            }
+            std::cerr << "Wrote " << final_agg.stats.unknown_lines << " unknown lines to "
+                      << unknown_lines_file << "\n";
+        } else {
+            std::cerr << "Error: cannot write " << unknown_lines_file << "\n";
+        }
+        if (unknown_lines_only) {
+            std::cerr << "Scan completed in " << duration << " s\n";
+            return 0;
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Report generation.
+    //
+    // Dispatch to the appropriate printer based on the --output format:
+    //   - textcolor  -> print_text_report()   with color_mode=2 (ANSI)
+    //   - json       -> print_json_report()
+    //   - html       -> print_html_report()
+    //   - text       -> print_text_report()   with color_mode=0 (no colour)
+    // ------------------------------------------------------------------
+    if (output_format == "textcolor") {
+        print_text_report(final_agg, duration, compact_mode, 2, enabled_sections);
+    } else if (output_format == "json") {
+        print_json_report(final_agg, duration, compact_mode);
+    } else if (output_format == "html") {
+        print_html_report(final_agg, duration, compact_mode);
+    } else {
+        print_text_report(final_agg, duration, compact_mode, color_mode, enabled_sections);
+    }
+
+    return 0;
+}
