@@ -57,7 +57,7 @@
 #include <iostream>       // (redundant include, kept as-is)
 #include <regex>          // std::regex (included for potential regex-based filtering)
 
-#define SLAPLOG_VERSION "3.0.0"
+#define SLAPLOG_VERSION "3.0.1"
 #ifndef BUILD_NUMBER
 #define BUILD_NUMBER 0
 #endif

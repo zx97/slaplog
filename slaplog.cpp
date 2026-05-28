@@ -65,7 +65,7 @@ static const std::regex &rx(const std::string &pat, std::regex::flag_type flags)
 namespace fs = std::filesystem;
 using json = nlohmann::json;
 
-static const std::string VERSION = "3.0.0";
+static const std::string VERSION = "3.0.1";
 static const std::string AUTHOR = "Manuel FLURY";
 static const std::string RELEASE_DATE = "2026/05/20";
 

@@ -40,10 +40,11 @@
 #include <sstream>
 #include <map>
 #include <set>
+#include <tuple>
 #include <nlohmann/json.hpp>
 
 #ifndef SLAPLOG_VERSION
-#define SLAPLOG_VERSION "3.0.0"
+#define SLAPLOG_VERSION "3.0.1"
 #endif
 
 using json = nlohmann::json;
@@ -646,17 +647,24 @@ void print_text_report(const Aggregator& agg, double processing_time, bool compa
     // via the LDAP session tracking control.
     if (has_section("sessions") && !agg.session_correlations.empty()) {
         print_separator("Session Tracking Correlations");
+        std::set<std::tuple<std::string,std::string,std::string,std::string,std::string>> seen;
         std::vector<std::vector<std::string>> st_rows;
         for (const auto& [key, corr] : agg.session_correlations) {
-            st_rows.push_back({
-                corr.accept_ip,
-                corr.real_ip,
-                corr.name,
-                corr.username,
-                corr.binddn
-            });
+            auto tup = std::make_tuple(corr.accept_ip, corr.real_ip, corr.name,
+                                       corr.username, corr.binddn);
+            if (seen.insert(tup).second) {
+                st_rows.push_back({
+                    corr.accept_ip,
+                    corr.real_ip,
+                    corr.name,
+                    corr.username,
+                    corr.binddn
+                });
+            }
         }
-        print_table({"ACCEPT IP", "Real IP", "Name", "Username", "BIND dn"}, st_rows);
+        if (!st_rows.empty()) {
+            print_table({"ACCEPT IP", "Real IP", "Name", "Username", "BIND dn"}, st_rows);
+        }
     }
 
     // Top operations by etime (with gradient)
@@ -1026,12 +1034,17 @@ void print_html_report(const Aggregator& agg, double duration, bool /*compact*/)
 
     // Session tracking correlations
     if (!agg.session_correlations.empty()) {
+        std::set<std::tuple<std::string,std::string,std::string,std::string,std::string>> seen;
         std::cout << "<h2>Session Tracking Correlations</h2>\n";
         std::cout << "<table>\n<tr><th>ACCEPT IP</th><th>Real IP</th><th>Name</th><th>Username</th><th>BIND dn</th></tr>\n";
         for (const auto& [key, corr] : agg.session_correlations) {
-            std::cout << "<tr><td>" << corr.accept_ip << "</td><td>" << corr.real_ip
-                      << "</td><td>" << corr.name << "</td><td>" << corr.username
-                      << "</td><td>" << corr.binddn << "</td></tr>\n";
+            auto tup = std::make_tuple(corr.accept_ip, corr.real_ip, corr.name,
+                                       corr.username, corr.binddn);
+            if (seen.insert(tup).second) {
+                std::cout << "<tr><td>" << corr.accept_ip << "</td><td>" << corr.real_ip
+                          << "</td><td>" << corr.name << "</td><td>" << corr.username
+                          << "</td><td>" << corr.binddn << "</td></tr>\n";
+            }
         }
         std::cout << "</table>\n";
     }
@@ -1203,18 +1216,27 @@ void print_json_report(const Aggregator& agg, double duration, bool /*compact*/)
 
     // Session correlations
     // Array of objects mapping client IPs through session tracking.
+    // Duplicate entries (same accept_ip/real_ip/name/username/binddn)
+    // are suppressed to keep the list concise.
     json session_corrs = json::array();
-    for (const auto& [key, corr] : agg.session_correlations) {
-        json entry;
-        entry["restart"] = corr.restart;
-        entry["conn"] = corr.conn;
-        entry["timestamp"] = corr.ts;
-        entry["accept_ip"] = corr.accept_ip;
-        entry["real_ip"] = corr.real_ip;
-        entry["name"] = corr.name;
-        entry["username"] = corr.username;
-        entry["binddn"] = corr.binddn;
-        session_corrs.push_back(entry);
+    {
+        std::set<std::tuple<std::string,std::string,std::string,std::string,std::string>> seen;
+        for (const auto& [key, corr] : agg.session_correlations) {
+            auto tup = std::make_tuple(corr.accept_ip, corr.real_ip, corr.name,
+                                       corr.username, corr.binddn);
+            if (seen.insert(tup).second) {
+                json entry;
+                entry["restart"] = corr.restart;
+                entry["conn"] = corr.conn;
+                entry["timestamp"] = corr.ts;
+                entry["accept_ip"] = corr.accept_ip;
+                entry["real_ip"] = corr.real_ip;
+                entry["name"] = corr.name;
+                entry["username"] = corr.username;
+                entry["binddn"] = corr.binddn;
+                session_corrs.push_back(entry);
+            }
+        }
     }
     report["session_correlations"] = session_corrs;
 
