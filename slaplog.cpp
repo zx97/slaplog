@@ -8,7 +8,7 @@
     
     This file is part of slaplog - an OpenLDAP Log Analysis Tool.
     
-    Licensed under the GNU General Public License v3.0 (GPL-3.0-or-later).
+    Licensed under the GNU Affero General Public License v3.0 (AGPL-3.0-or-later).
     See the LICENSE file distributed with this work for full license text.
     
     THIS SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
