@@ -56,7 +56,7 @@
 #include <sstream>        // std::istringstream for parsing comma-separated --section values
 #include <regex>          // std::regex (included for potential regex-based filtering)
 
-#define SLAPLOG_VERSION "3.0.2"
+#define SLAPLOG_VERSION "3.1.0"
 #ifndef BUILD_NUMBER
 #define BUILD_NUMBER 0
 #endif
