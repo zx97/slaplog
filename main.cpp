@@ -268,9 +268,8 @@ static std::vector<std::string> collect_input_files(const std::vector<std::strin
 //   -s, --section LIST         Comma-separated list of report sections to include.
 //   --unknown-lines FILE       Write unparseable log lines to a file, then generate report.
 //   --unknown-lines-only FILE  Same as above but skip the final report (extraction mode).
-//   --debug                    Enable verbose diagnostic output to stderr.
-//   -d, --documentation        Print the documentation to stdout and exit.
-//   -l, --licence              Print the license to stdout and exit.
+//   -d, --debug                Enable verbose diagnostic output.
+//   -D, --documentation        Print the documentation to stdout and exit.
 //   -h, --help                 Display this help message and exit.
 //   -V, --version              Display version information and exit.
 static void usage(const char* prog) {
@@ -294,9 +293,9 @@ static void usage(const char* prog) {
     std::cerr << "                             topops,topconns\n";
     std::cerr << "  --unknown-lines FILE       Write unknown lines to FILE\n";
     std::cerr << "  --unknown-lines-only FILE  Like --unknown-lines, no final report\n";
-    std::cerr << "  -d, --documentation        Print documentation to stdout\n";
+    std::cerr << "  -D, --documentation        Print documentation to stdout\n";
     std::cerr << "  -l, --licence              Print license to stdout\n";
-    std::cerr << "  --debug                    Enable debug mode\n";
+    std::cerr << "  -d, --debug                Enable debug mode with verbose traces\n";
     std::cerr << "  -h, --help                 Show this help\n";
     std::cerr << "  -V, --version              Show version\n";
 }
@@ -409,11 +408,11 @@ int main(int argc, char* argv[]) {
         } else if (arg == "--unknown-lines-only" && i + 1 < argc) {
             unknown_lines_file = argv[++i];
             unknown_lines_only = true;
-        } else if (arg == "-d" || arg == "--documentation") {
+        } else if (arg == "-D" || arg == "--documentation") {
             show_documentation = true;
         } else if (arg == "-l" || arg == "--licence") {
             show_licence = true;
-        } else if (arg == "--debug") {
+        } else if (arg == "-d" || arg == "--debug") {
             debug = true;
         } else if (arg == "-h" || arg == "--help") {
             usage(argv[0]);
@@ -567,10 +566,9 @@ int main(int argc, char* argv[]) {
     // Memory-adaptive throttling:
     // Before picking up a new file, each worker checks the system's
     // available memory (via /proc/meminfo).  If it drops below a
-    // safety threshold (1 GB) the worker waits a few seconds before
-    // proceeding.  This gives active workers time to finish and free
-    // their per-file Aggregator, preventing OOM crashes without
-    // requiring the user to tune -j manually.
+    // threshold (12.5% of total RAM) the worker waits a few seconds
+    // before proceeding.  This gives active workers time to finish
+    // and free their per-file Aggregator, preventing OOM crashes.
     // ------------------------------------------------------------------
 
     // Returns available memory in megabytes by parsing /proc/meminfo.
@@ -615,6 +613,20 @@ int main(int argc, char* argv[]) {
     }
     if (num_workers > files.size()) num_workers = files.size();
 
+    if (debug) {
+        std::cerr << "Total size: " << (total_size / (1024*1024)) << " MB\n";
+        if (mtime_days > 0) std::cerr << "Mtime filter: last " << mtime_days << " days\n";
+        if (max_files > 0) std::cerr << "Max files: " << max_files << "\n";
+        std::cerr << "Workers: " << num_workers << " (hw_concurrency="
+                  << std::thread::hardware_concurrency() << ")\n";
+        std::cerr << "Memory threshold: " << mem_threshold_mb << " MB ("
+                  << (mem_threshold_mb * 100 / (mem_threshold_mb * 8)) << "% of total)\n";
+        if (unknown_out)
+            std::cerr << "Unknown lines: streaming to " << unknown_lines_file << "\n";
+        else
+            std::cerr << "Unknown lines: in-memory (capped at " << MAX_STORED_UNKNOWN_LINES << ")\n";
+    }
+
     std::vector<std::thread> workers(num_workers);
     std::atomic<size_t> next_file(0);
 
@@ -626,11 +638,21 @@ int main(int argc, char* argv[]) {
                 // wait if the system is running low on available memory.
                 for (int tries = 0; tries < 10; ++tries) {
                     if (available_memory_mb() >= mem_threshold_mb) break;
+                    if (debug && tries == 0) {
+                        std::lock_guard<std::mutex> lock(merge_mtx);
+                        std::cerr << "[debug] Memory low (" << available_memory_mb()
+                                  << " MB < " << mem_threshold_mb << " MB), throttling\n";
+                    }
                     std::this_thread::sleep_for(std::chrono::milliseconds(500));
                 }
                 try {
                     i = next_file.fetch_add(1, std::memory_order_relaxed);
                     if (i >= files.size()) break;
+                    if (debug) {
+                        std::lock_guard<std::mutex> lock(merge_mtx);
+                        std::cerr << "[debug] Processing " << files[i] << " ("
+                                  << (i + 1) << "/" << files.size() << ")\n";
+                    }
                     Aggregator local_agg;
                     process_file(files[i], local_agg, progress,
                                  unknown_out, unknown_mtx_ptr);
@@ -643,6 +665,13 @@ int main(int argc, char* argv[]) {
                               << e.what()
                               << "\nTry -m DAYS or -n FILES to limit scope, "
                                  "or use --unknown-lines-only.\n";
+                    if (debug) {
+                        long long mem = available_memory_mb();
+                        std::lock_guard<std::mutex> lock(merge_mtx);
+                        std::cerr << "[debug] Memory: " << mem << " MB free (threshold: "
+                                  << mem_threshold_mb << " MB), workers: "
+                                  << num_workers << "\n";
+                    }
                     // Mark this file as done so the progress bar advances
                     // even on failure, then continue to the next file.
                     files_done++;
