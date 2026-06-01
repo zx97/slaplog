@@ -1898,13 +1898,24 @@ void merge_aggregators(Aggregator& dest, const Aggregator& src) {
 // Inspects the file extension to choose an appropriate decompression
 // handler.  Supports .gz (gzip), .bz2 (bzip2), .xz (lzma), and plain
 // text (no compression).
+//
+// The extension check also accepts date-suffixed names like
+// ".bz2_2026-03-01" which occur when rotated logs have a date
+// appended after the compression extension.
+
+static bool has_compression_ext(const std::string& filename, const std::string& ext) {
+    auto pos = filename.rfind(ext);
+    if (pos == std::string::npos) return false;
+    size_t after = pos + ext.size();
+    return after == filename.size() || filename[after] == '_';
+}
 
 void process_file(const std::string& filename, Aggregator& agg,
                   std::atomic<size_t>& progress,
                   std::ostream* unknown_out, std::mutex* unknown_mtx) {
-    if (utils::ends_with(filename, ".gz")) process_gzip_file(filename, agg, progress, unknown_out, unknown_mtx);
-    else if (utils::ends_with(filename, ".bz2")) process_bzip2_file(filename, agg, progress, unknown_out, unknown_mtx);
-    else if (utils::ends_with(filename, ".xz")) process_xz_file(filename, agg, progress, unknown_out, unknown_mtx);
+    if (has_compression_ext(filename, ".gz")) process_gzip_file(filename, agg, progress, unknown_out, unknown_mtx);
+    else if (has_compression_ext(filename, ".bz2")) process_bzip2_file(filename, agg, progress, unknown_out, unknown_mtx);
+    else if (has_compression_ext(filename, ".xz")) process_xz_file(filename, agg, progress, unknown_out, unknown_mtx);
     else process_plain_file(filename, agg, progress, unknown_out, unknown_mtx);
 }
 
