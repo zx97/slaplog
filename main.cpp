@@ -482,6 +482,12 @@ int main(int argc, char* argv[]) {
 
     // ------------------------------------------------------------------
     // Pre-compute total file size for progress-bar estimation.
+    //
+    // The file sizes are read up-front (before any processing), so
+    // total_size reflects the on-disk (compressed) size.  The progress
+    // counter tracks decompressed bytes, which can be 5-10× larger for
+    // gzip / bzip2 / xz files, causing the bar to reach 100 % early.
+    // This is cosmetic only — the report is unaffected.
     // ------------------------------------------------------------------
     size_t total_size = 0;
     for (const auto& f : files) {
