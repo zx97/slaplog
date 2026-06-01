@@ -70,16 +70,22 @@ Options:
 
 ## Build requirements
 
-- C++17 compiler (GCC 8+; GCC 11+ recommended)
-- POSIX threads
-- `zlib`, `bzip2`, `lzma` development libraries
-- `nlohmann/json` (e.g. `json-devel` on Fedora/EPEL)
+- **C++17 compiler** — GCC 8+ (GCC 11+ recommended). Code compiled on
+  GCC 8 needs the runtime from GCC 9+ (`GLIBCXX_3.4.26`; RHEL 8.5 ships it).
+- **POSIX threads**
+- **zlib, bzip2, lzma** development libraries
+- **nlohmann/json** header (not bundled — install via your package manager)
 
-On a minimal RHEL/Rocky/Alma 9 host:
+Install the dependencies for your distro:
 
-```bash
-sudo dnf install gcc-c++ zlib-devel bzip2-devel xz-devel json-devel
-```
+| Distro | Command |
+|--------|---------|
+| Fedora / RHEL 9+ | `sudo dnf install gcc-c++ zlib-devel bzip2-devel xz-devel json-devel` |
+| RHEL 8 (EPEL) | `sudo dnf install gcc-toolset-12-gcc-c++ zlib-devel bzip2-devel xz-devel json-devel` |
+| Debian / Ubuntu | `sudo apt install g++ zlib1g-dev libbz2-dev liblzma-dev nlohmann-json3-dev` |
+| Arch Linux | `sudo pacman -S gcc zlib bzip2 xz nlohmann-json` |
+
+Then build:
 
 ```bash
 make clean && make

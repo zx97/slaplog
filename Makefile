@@ -3,11 +3,24 @@ CXX := g++
 # Directory containing this Makefile — resolves correctly even under
 # "make -C /path" or "make -f /path/to/Makefile".
 ROOT_DIR := $(dir $(realpath $(firstword $(MAKEFILE_LIST))))
-# -I$(ROOT_DIR) makes the include path independent of the working directory;
-# this is harmless when no local copy of nlohmann/json exists and helpful
-# when a user keeps one at the project root (see README).
+# Compiler flags
 CXXFLAGS := -std=c++17 -O3 -Wall -Wextra -pedantic -pthread -MMD -MP -I$(ROOT_DIR)
-LDFLAGS := -lz -lbz2 -llzma -lstdc++fs
+
+# -------------------------------------------------------------------
+# std::filesystem linkage
+# -------------------------------------------------------------------
+# GCC < 9 ships <filesystem> in a separate static archive (-lstdc++fs)
+# while GCC >= 9 provides it directly in libstdc++.so.  On very new
+# toolchains (e.g. GCC 14+ / Arch / Fedora 42+) the separate archive
+# may not exist at all, so linking it unconditionally fails.
+#
+# We check the GCC major version to decide.
+# -------------------------------------------------------------------
+GCC_MAJOR := $(shell $(CXX) -dumpversion | cut -d. -f1)
+LDFLAGS := -lz -lbz2 -llzma
+ifneq ($(shell [ "$(GCC_MAJOR)" -lt 9 ] && echo old),)
+  LDFLAGS += -lstdc++fs
+endif
 
 # Source files
 SRCS := main.cpp log_parser.cpp report.cpp
