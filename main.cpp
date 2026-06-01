@@ -595,8 +595,12 @@ int main(int argc, char* argv[]) {
             for (const auto& line : final_agg.unknown_lines) {
                 ofs << line << "\n";
             }
-            std::cerr << "Wrote " << final_agg.stats.unknown_lines << " unknown lines to "
-                      << unknown_lines_file << "\n";
+            std::cerr << "Wrote " << final_agg.unknown_lines.size() << " unknown lines to "
+                      << unknown_lines_file;
+            if (final_agg.unknown_lines.size() < static_cast<size_t>(final_agg.stats.unknown_lines))
+                std::cerr << " (" << (final_agg.stats.unknown_lines - final_agg.unknown_lines.size())
+                          << " omitted, see --help about unknown-lines memory limit)";
+            std::cerr << "\n";
             // Free the raw text now — it is not needed for the report.
             final_agg.unknown_lines.clear();
             final_agg.unknown_lines.shrink_to_fit();
