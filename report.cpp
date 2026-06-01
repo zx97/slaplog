@@ -44,7 +44,7 @@
 #include <nlohmann/json.hpp>
 
 #ifndef SLAPLOG_VERSION
-#define SLAPLOG_VERSION "3.0.1"
+#define SLAPLOG_VERSION "3.0.2"
 #endif
 
 using json = nlohmann::json;

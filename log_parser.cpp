@@ -54,6 +54,7 @@
 #include <bzlib.h>
 #include <lzma.h>
 #include <cctype>
+#include <cstdlib>     // std::strtod (portable float parsing; from_chars<double> needs GCC 11+)
 #include <algorithm>
 #include <set>
 #include <sstream>
@@ -93,19 +94,34 @@
  */
     int to_int(const std::ssub_match& m) {
         int v = 0;
-        if (m.matched) std::from_chars(&*m.first, &*m.second, v);
+        if (m.matched) {
+            auto r = std::from_chars(&*m.first, &*m.second, v);
+            if (r.ec != std::errc()) v = 0;
+        }
         return v;
     }
 
 /**
  * to_double: Convert a std::ssub_match (regex capture group) to a double.
  *
- * Same approach as to_int but for floating-point values (qtime, etime).
- * Returns 0.0 when the sub-match is empty or on conversion failure.
+ * Used for floating-point values (qtime, etime).  Returns 0.0 when the
+ * sub-match is empty or on conversion failure.
+ *
+ * NOTE: We intentionally do NOT use std::from_chars here.  The
+ * floating-point overload of std::from_chars was only implemented in
+ * libstdc++ starting with GCC 11; GCC 8 (RHEL 8 default toolchain) ships
+ * only the integer overloads, so calling it on a double fails to compile.
+ * std::strtod is portable across all supported compilers.  The sub-match
+ * range is copied into a std::string to guarantee NUL termination, since
+ * the underlying log line is not terminated at m.second.
  */
     double to_double(const std::ssub_match& m) {
-        double v = 0.0;
-        if (m.matched) std::from_chars(&*m.first, &*m.second, v);
+        if (!m.matched) return 0.0;
+        std::string s(m.first, m.second);
+        const char* begin = s.c_str();
+        char* end = nullptr;
+        double v = std::strtod(begin, &end);
+        if (end == begin) return 0.0;  // no conversion performed
         return v;
     }
 

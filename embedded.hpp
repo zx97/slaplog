@@ -790,7 +790,7 @@ collected for diagnostic output.
 - C++17 compiler (tested with GCC)
 - POSIX threads (`-pthread`)
 - Development libraries: `zlib`, `bzip2`, `lzma` (for compressed log files)
-- `nlohmann/json` header (bundled or via system package)
+- `nlohmann/json` header (e.g. `json-devel` on Fedora/EPEL)
 
 ### Build
 
@@ -839,6 +839,21 @@ Show only the statistics and session tracking sections:
 slaplog -s stats,sessions /var/log/slapd/access.log
 ```
 
+Analyze only recent logs without a progress bar (batch / cron friendly):
+
+```bash
+# Only files modified in the last 7 days, no progress bar
+slaplog -q -m 7 -r /var/log/slapd/
+
+# Only the 5 most recently modified files
+slaplog -q -n 5 -r /var/log/slapd/
+```
+
+The `-n/--max-files` and `-m/--mtime` filters apply to files discovered when
+scanning directories; they are based on each file's last-modification time.
+When both are combined, the `--mtime` window is applied first, then the
+`--max-files` limit keeps the newest survivors.
+
 Write unknown lines to a file (and still produce the report):
 
 ```bash
@@ -852,6 +867,9 @@ slaplog --unknown-lines unknown.txt /var/log/slapd/access.log
 | `-o, --output FORMAT` | Output format: `text` (plain), `textcolor` (ANSI, default), `html`, `json` |
 | `-c, --compact` | Show top 5 instead of top 20 for ranked sections |
 | `-r, --recursive` | Recurse into directories when collecting log files |
+| `-q, --quiet` | Suppress the progress bar on stderr (useful for batch / cron runs) |
+| `-n, --max-files N` | Analyze only the `N` most recently modified files in a directory scan |
+| `-m, --mtime DAYS` | Analyze only files modified within the last `DAYS` days (like `find -mtime`) |
 | `-s, --section LIST` | Comma-separated list of sections to display (see below) |
 | `--unknown-lines FILE` | Write unrecognised lines to FILE, then generate the full report |
 | `--unknown-lines-only FILE` | Like `--unknown-lines` but skip the report |

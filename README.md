@@ -3,7 +3,7 @@
 
 **SPDX-License-Identifier:** AGPL-3.0-or-later  
 **License:** GNU Affero General Public License v3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)  
-**Version:** 3.0.1  
+**Version:** 3.0.2  
 **Author:** Manuel FLURY  
 **Copyright:** © 2026 Manuel FLURY. All rights reserved.  
   
@@ -29,6 +29,8 @@ make
 ./slaplog /var/log/slapd/access.log
 ./slaplog -o html -r /var/log/slapd/ > report.html
 ./slaplog -s stats,sessions -c /var/log/slapd/access.log
+./slaplog -q -m 7 -r /var/log/slapd/          # last 7 days, no progress bar
+./slaplog -q -n 5 -r /var/log/slapd/          # 5 most recent files
 ```
 
 ## Features
@@ -51,6 +53,9 @@ Options:
   -o, --output FORMAT        text | textcolor | html | json
   -c, --compact              Top 5 instead of top 20
   -r, --recursive            Recurse into directories
+  -q, --quiet                Suppress the progress bar (batch mode)
+  -n, --max-files N          Analyze only the N most recently modified files
+  -m, --mtime DAYS           Analyze only files modified in the last DAYS days
   -s, --section LIST         Comma-sep section list: all,stats,ops,errors,
                              bases,filters,attrs,apps,extops,csn,server,
                              index,sessions,topops,topconns,...
@@ -65,10 +70,16 @@ Options:
 
 ## Build requirements
 
-- C++17 compiler (GCC)
+- C++17 compiler (GCC 8+; GCC 11+ recommended)
 - POSIX threads
 - `zlib`, `bzip2`, `lzma` development libraries
-- `nlohmann/json` (bundled or system)
+- `nlohmann/json` (e.g. `json-devel` on Fedora/EPEL)
+
+On a minimal RHEL/Rocky/Alma 9 host:
+
+```bash
+sudo dnf install gcc-c++ zlib-devel bzip2-devel xz-devel json-devel
+```
 
 ```bash
 make clean && make
