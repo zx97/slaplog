@@ -578,18 +578,33 @@ int main(int argc, char* argv[]) {
     // be read, so throttling is simply not applied.
     static auto available_memory_mb = []() -> long long {
         std::ifstream meminfo("/proc/meminfo");
-        if (!meminfo) return 32768;  // assume plenty
+        if (!meminfo) return 32768;
         std::string line;
         while (std::getline(meminfo, line)) {
             if (line.compare(0, 12, "MemAvailable:") == 0) {
                 long long val = 0;
                 std::sscanf(line.c_str() + 12, "%lld", &val);
-                return val / 1024;  // kB → MB
+                return val / 1024;
             }
         }
         return 32768;
     };
-    constexpr long long MEM_THRESHOLD_MB = 1024;  // 1 GB — start throttling
+    // Threshold: throttle when available memory drops below 12.5% of total
+    // (read from /proc/meminfo MemTotal).  This scales with the machine:
+    // ~1 GB on 8 GB host, ~8 GB on 64 GB host, etc.
+    static auto mem_threshold_mb = []() -> long long {
+        std::ifstream meminfo("/proc/meminfo");
+        if (!meminfo) return 1024;
+        std::string line;
+        while (std::getline(meminfo, line)) {
+            if (line.compare(0, 8, "MemTotal:") == 0) {
+                long long val = 0;
+                std::sscanf(line.c_str() + 8, "%lld", &val);
+                return val / 1024 / 8;  // 12.5 % of total, in MB
+            }
+        }
+        return 1024;
+    }();
     size_t num_workers;
     if (jobs > 0) {
         num_workers = static_cast<size_t>(jobs);
@@ -610,7 +625,7 @@ int main(int argc, char* argv[]) {
                 // Memory-adaptive throttling: before picking up more work,
                 // wait if the system is running low on available memory.
                 for (int tries = 0; tries < 10; ++tries) {
-                    if (available_memory_mb() >= MEM_THRESHOLD_MB) break;
+                    if (available_memory_mb() >= mem_threshold_mb) break;
                     std::this_thread::sleep_for(std::chrono::milliseconds(500));
                 }
                 try {
