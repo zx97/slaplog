@@ -571,6 +571,14 @@ int main(int argc, char* argv[]) {
         // Now that we've copied all data into final_agg, free the
         // entire thread_aggs vector so the OS can reclaim the pages.
         std::vector<Aggregator>().swap(thread_aggs);
+
+        // Discard per-connection working maps — they are only used during
+        // parsing (update_aggregator) and are NOT referenced by any report
+        // printer.  Merging 878 files' worth of these into final_agg can
+        // consume gigabytes for no benefit.
+        final_agg.conn_state.clear();
+        final_agg.binddn_by_conn.clear();
+        final_agg.src_by_conn.clear();
     } catch (const std::exception& e) {
         std::cerr << "\nFatal error during merge: " << e.what()
                   << "\nThis likely means the aggregated data (unknown "
