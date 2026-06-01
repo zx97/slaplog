@@ -54,10 +54,9 @@
 #include <memory>         // std::shared_ptr etc. (available for smart pointer usage)
 #include <ostream>        // std::ostream base class
 #include <sstream>        // std::istringstream for parsing comma-separated --section values
-#include <iostream>       // (redundant include, kept as-is)
 #include <regex>          // std::regex (included for potential regex-based filtering)
 
-#define SLAPLOG_VERSION "3.0.1"
+#define SLAPLOG_VERSION "3.0.2"
 #ifndef BUILD_NUMBER
 #define BUILD_NUMBER 0
 #endif
@@ -137,6 +136,24 @@ static bool wanted_log_file(const std::string& path) {
     return false;
 }
 
+// file_mtime_seconds
+//
+// Returns the last-modification time of a file expressed as seconds since the
+// system_clock epoch.  std::filesystem::last_write_time returns a
+// file_clock time_point whose epoch is unspecified, so it is converted to
+// system_clock via the portable duration-based approach.  On any error the
+// function returns 0 (epoch), which sorts the file as "oldest".
+static long long file_mtime_seconds(const std::string& path) {
+    std::error_code ec;
+    auto ftime = fs::last_write_time(path, ec);
+    if (ec) return 0;
+    // Convert file_time_type to system_clock::time_point in a portable way.
+    auto sctp = std::chrono::time_point_cast<std::chrono::system_clock::duration>(
+        ftime - fs::file_time_type::clock::now() + std::chrono::system_clock::now());
+    return std::chrono::duration_cast<std::chrono::seconds>(
+        sctp.time_since_epoch()).count();
+}
+
 // collect_input_files
 //
 // Converts the raw command-line arguments (which may be individual files or
@@ -154,7 +171,19 @@ static bool wanted_log_file(const std::string& path) {
 // converting the set to a vector at the end. This handles the case where
 // the same file is specified multiple times or discovered via both explicit
 // path and directory traversal.
-static std::vector<std::string> collect_input_files(const std::vector<std::string>& inputs, bool recursive) {
+//
+// Time-based filtering and limiting:
+//   - mtime_days > 0    : keep only files modified within the last
+//                         mtime_days * 24h (mirrors find(1) -mtime semantics
+//                         in spirit: "modified in the last N days").
+//   - max_files > 0     : after sorting by modification time (newest first),
+//                         keep only the max_files most recent files.
+// When neither limit is active the result preserves the deduplicated,
+// lexicographically-sorted order from the std::set.
+static std::vector<std::string> collect_input_files(const std::vector<std::string>& inputs,
+                                                    bool recursive,
+                                                    int max_files,
+                                                    int mtime_days) {
     std::set<std::string> uniq;
     for (const auto& path : inputs) {
         if (path.empty()) continue;
@@ -178,7 +207,51 @@ static std::vector<std::string> collect_input_files(const std::vector<std::strin
             }
         }
     }
-    return std::vector<std::string>(uniq.begin(), uniq.end());
+
+    std::vector<std::string> result(uniq.begin(), uniq.end());
+
+    // If no time-based filtering or limiting is requested, return early to
+    // preserve the existing (lexicographically-sorted) behaviour.
+    if (max_files <= 0 && mtime_days <= 0) {
+        return result;
+    }
+
+    // Pair each file with its modification time so we can filter / sort.
+    std::vector<std::pair<std::string, long long>> with_mtime;
+    with_mtime.reserve(result.size());
+    for (const auto& f : result) {
+        with_mtime.emplace_back(f, file_mtime_seconds(f));
+    }
+
+    // mtime filtering: drop files older than the cutoff (now - mtime_days).
+    if (mtime_days > 0) {
+        long long now = std::chrono::duration_cast<std::chrono::seconds>(
+            std::chrono::system_clock::now().time_since_epoch()).count();
+        long long cutoff = now - static_cast<long long>(mtime_days) * 24 * 60 * 60;
+        std::vector<std::pair<std::string, long long>> filtered;
+        for (const auto& p : with_mtime) {
+            if (p.second >= cutoff) filtered.push_back(p);
+        }
+        with_mtime.swap(filtered);
+    }
+
+    // max_files limiting: sort newest-first and keep the top N.
+    if (max_files > 0 && static_cast<int>(with_mtime.size()) > max_files) {
+        std::sort(with_mtime.begin(), with_mtime.end(),
+                  [](const std::pair<std::string, long long>& a,
+                     const std::pair<std::string, long long>& b) {
+                      return a.second > b.second;  // newest first
+                  });
+        with_mtime.resize(max_files);
+    }
+
+    // Re-sort the surviving files lexicographically for stable, predictable
+    // processing order (matches the non-filtered code path).
+    std::vector<std::string> out;
+    out.reserve(with_mtime.size());
+    for (const auto& p : with_mtime) out.push_back(p.first);
+    std::sort(out.begin(), out.end());
+    return out;
 }
 
 // usage
@@ -188,6 +261,9 @@ static std::vector<std::string> collect_input_files(const std::vector<std::strin
 //   -o, --output FORMAT        Select output format: text, textcolor, html, or json.
 //   -c, --compact              Limit lists to top 5 instead of the default top 20.
 //   -r, --recursive            Recurse into subdirectories when scanning directories.
+//   -q, --quiet                Suppress the progress bar (batch / non-interactive use).
+//   -n, --max-files N          Analyze only the N most recently modified files.
+//   -m, --mtime DAYS           Analyze only files modified within the last DAYS days.
 //   -s, --section LIST         Comma-separated list of report sections to include.
 //   --unknown-lines FILE       Write unparseable log lines to a file, then generate report.
 //   --unknown-lines-only FILE  Same as above but skip the final report (extraction mode).
@@ -205,6 +281,9 @@ static void usage(const char* prog) {
     std::cerr << "  -o, --output FORMAT        Output format: text | textcolor | html | json\n";
     std::cerr << "  -c, --compact              Compact output (top 5 instead of top 20)\n";
     std::cerr << "  -r, --recursive            Recurse into directories\n";
+    std::cerr << "  -q, --quiet                Suppress the progress bar (batch mode)\n";
+    std::cerr << "  -n, --max-files N          Analyze only the N most recently modified files\n";
+    std::cerr << "  -m, --mtime DAYS           Analyze only files modified in the last DAYS days\n";
     std::cerr << "  -s, --section LIST         Sections to show (comma-sep): all,\n";
     std::cerr << "                             stats,ops,errors,errors_per_app,\n";
     std::cerr << "                             bases,filters,wildcards,\n";
@@ -261,6 +340,9 @@ int main(int argc, char* argv[]) {
     bool show_documentation = false;
     bool show_licence = false;
     bool debug = false;
+    bool quiet = false;        // -q/--quiet: suppress the progress bar
+    int max_files = 0;         // --max-files N: keep N most recent files (0 = unlimited)
+    int mtime_days = 0;        // --mtime DAYS: keep files from last DAYS days (0 = no limit)
     int color_mode = 2;
     std::set<std::string> enabled_sections = {"all"};
 
@@ -282,6 +364,26 @@ int main(int argc, char* argv[]) {
             compact_mode = true;
         } else if (arg == "-r" || arg == "--recursive") {
             recursive = true;
+        } else if (arg == "-q" || arg == "--quiet") {
+            quiet = true;
+        } else if ((arg == "-n" || arg == "--max-files") && i + 1 < argc) {
+            // Keep only the N most recently modified files in a directory scan.
+            try {
+                max_files = std::stoi(argv[++i]);
+            } catch (const std::exception&) {
+                std::cerr << "Error: invalid value for " << arg << " (expected integer)\n";
+                return 1;
+            }
+            if (max_files < 0) max_files = 0;
+        } else if ((arg == "-m" || arg == "--mtime") && i + 1 < argc) {
+            // Keep only files modified within the last N days (like find -mtime).
+            try {
+                mtime_days = std::stoi(argv[++i]);
+            } catch (const std::exception&) {
+                std::cerr << "Error: invalid value for " << arg << " (expected integer)\n";
+                return 1;
+            }
+            if (mtime_days < 0) mtime_days = 0;
         } else if ((arg == "-s" || arg == "--section") && i + 1 < argc) {
             // When --section is used, the default "all" is removed from the
             // set so that only the explicitly requested sections are shown.
@@ -339,7 +441,7 @@ int main(int argc, char* argv[]) {
     // ------------------------------------------------------------------
     // File collection: expand directories into individual log files.
     // ------------------------------------------------------------------
-    auto files = collect_input_files(inputs, recursive);
+    auto files = collect_input_files(inputs, recursive, max_files, mtime_days);
     if (files.empty()) {
         std::cerr << "Error: No valid log files found\n";
         return 1;
@@ -377,14 +479,19 @@ int main(int argc, char* argv[]) {
     // bar is printed followed by a newline so subsequent output starts on
     // a fresh line.
     // ------------------------------------------------------------------
-    std::thread progress_thread([&]() {
-        while (files_done.load() < files.size()) {
+    // When --quiet is active the progress thread is not started at all, so the
+    // bar never appears on stderr (useful for batch/cron runs and log capture).
+    std::thread progress_thread;
+    if (!quiet) {
+        progress_thread = std::thread([&]() {
+            while (files_done.load() < files.size()) {
+                print_progress(progress, total_size, files_done, files.size());
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            }
             print_progress(progress, total_size, files_done, files.size());
-            std::this_thread::sleep_for(std::chrono::milliseconds(100));
-        }
-        print_progress(progress, total_size, files_done, files.size());
-        std::cerr << "\n";
-    });
+            std::cerr << "\n";
+        });
+    }
 
     // ------------------------------------------------------------------
     // Worker threads: one thread per file.

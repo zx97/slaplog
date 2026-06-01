@@ -1,6 +1,12 @@
 # Makefile
 CXX := g++
-CXXFLAGS := -std=c++17 -O3 -Wall -Wextra -pedantic -pthread -MMD -MP
+# Directory containing this Makefile — resolves correctly even under
+# "make -C /path" or "make -f /path/to/Makefile".
+ROOT_DIR := $(dir $(realpath $(firstword $(MAKEFILE_LIST))))
+# -I$(ROOT_DIR) makes the include path independent of the working directory;
+# this is harmless when no local copy of nlohmann/json exists and helpful
+# when a user keeps one at the project root (see README).
+CXXFLAGS := -std=c++17 -O3 -Wall -Wextra -pedantic -pthread -MMD -MP -I$(ROOT_DIR)
 LDFLAGS := -lz -lbz2 -llzma -lstdc++fs
 
 # Source files
