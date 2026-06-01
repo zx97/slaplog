@@ -554,10 +554,30 @@ int main(int argc, char* argv[]) {
     // Combine all per-thread Aggregators into a single final_agg using
     // merge_aggregators() (defined in utils.hpp).  This step sums up
     // counters, concatenates histogram maps, and collects unknown lines.
+    //
+    // To keep memory usage bounded we clear each source Aggregator
+    // immediately after merging — otherwise all 878 per-file Aggregators
+    // (each holding maps, strings, and unknown-lines vectors) stay live
+    // until the end of main(), doubling or tripling peak usage.
     // ------------------------------------------------------------------
     Aggregator final_agg;
-    for (auto& ta : thread_aggs) {
-        merge_aggregators(final_agg, ta);
+    try {
+        for (auto& ta : thread_aggs) {
+            merge_aggregators(final_agg, ta);
+            // Release the source Aggregator's memory now rather than
+            // carrying it until the vector goes out of scope.
+            ta = {};
+        }
+        // Now that we've copied all data into final_agg, free the
+        // entire thread_aggs vector so the OS can reclaim the pages.
+        std::vector<Aggregator>().swap(thread_aggs);
+    } catch (const std::exception& e) {
+        std::cerr << "\nFatal error during merge: " << e.what()
+                  << "\nThis likely means the aggregated data (unknown "
+                     "lines, histograms) exceeds available memory.\n"
+                  << "Try --unknown-lines-only to write unknowns to a file, "
+                     "or use -q -m / -n to limit the number of files.\n";
+        return 1;
     }
 
     // ------------------------------------------------------------------
@@ -577,6 +597,9 @@ int main(int argc, char* argv[]) {
             }
             std::cerr << "Wrote " << final_agg.stats.unknown_lines << " unknown lines to "
                       << unknown_lines_file << "\n";
+            // Free the raw text now — it is not needed for the report.
+            final_agg.unknown_lines.clear();
+            final_agg.unknown_lines.shrink_to_fit();
         } else {
             std::cerr << "Error: cannot write " << unknown_lines_file << "\n";
         }
@@ -595,14 +618,21 @@ int main(int argc, char* argv[]) {
     //   - html       -> print_html_report()
     //   - text       -> print_text_report()   with color_mode=0 (no colour)
     // ------------------------------------------------------------------
-    if (output_format == "textcolor") {
-        print_text_report(final_agg, duration, compact_mode, 2, enabled_sections);
-    } else if (output_format == "json") {
-        print_json_report(final_agg, duration, compact_mode);
-    } else if (output_format == "html") {
-        print_html_report(final_agg, duration, compact_mode);
-    } else {
-        print_text_report(final_agg, duration, compact_mode, color_mode, enabled_sections);
+    try {
+        if (output_format == "textcolor") {
+            print_text_report(final_agg, duration, compact_mode, 2, enabled_sections);
+        } else if (output_format == "json") {
+            print_json_report(final_agg, duration, compact_mode);
+        } else if (output_format == "html") {
+            print_html_report(final_agg, duration, compact_mode);
+        } else {
+            print_text_report(final_agg, duration, compact_mode, color_mode, enabled_sections);
+        }
+    } catch (const std::exception& e) {
+        std::cerr << "\nFatal error during report generation: " << e.what()
+                  << "\nThe data was too large to format in the requested "
+                     "output mode.\n";
+        return 1;
     }
 
     return 0;
