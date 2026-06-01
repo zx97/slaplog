@@ -587,9 +587,20 @@ int main(int argc, char* argv[]) {
                 }
                 // Merge this file's results into final_agg under a lock,
                 // then the local Aggregator is destroyed (scope exit).
-                {
+                try {
                     std::lock_guard<std::mutex> lock(merge_mtx);
                     merge_aggregators(final_agg, local_agg);
+                } catch (const std::exception& e) {
+                    std::cerr << "\nFatal error merging " << files[i] << ": "
+                              << e.what()
+                              << "\nThe aggregated data (filter strings, "
+                                 "sessions, histograms) exceeds available memory.\n"
+                              << "Try -m DAYS or -n FILES to limit the scope, "
+                                 "or use --unknown-lines-only to spill unknowns "
+                                 "to disk.\n";
+                    // final_agg is too large to continue — signal abort.
+                    next_file.store(files.size()); // stop the work loop
+                    break;
                 }
                 files_done++;
             }
