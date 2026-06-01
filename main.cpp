@@ -573,34 +573,30 @@ int main(int argc, char* argv[]) {
     for (auto& t : workers) {
         t = std::thread([&]() {
             for (;;) {
-                size_t i = next_file.fetch_add(1, std::memory_order_relaxed);
-                if (i >= files.size()) break;
-                Aggregator local_agg;
+                size_t i;
                 try {
+                    i = next_file.fetch_add(1, std::memory_order_relaxed);
+                    if (i >= files.size()) break;
+                    Aggregator local_agg;
                     process_file(files[i], local_agg, progress,
                                  unknown_out, unknown_mtx_ptr);
+                    {
+                        std::lock_guard<std::mutex> lock(merge_mtx);
+                        merge_aggregators(final_agg, local_agg);
+                    }
                 } catch (const std::exception& e) {
                     std::cerr << "\nError processing " << files[i] << ": "
-                              << e.what() << "\n";
+                              << e.what()
+                              << "\nTry -m DAYS or -n FILES to limit scope, "
+                                 "or use --unknown-lines-only.\n";
+                    // Mark this file as done so the progress bar advances
+                    // even on failure, then continue to the next file.
+                    files_done++;
+                    continue;
                 } catch (...) {
                     std::cerr << "\nUnknown error processing " << files[i] << "\n";
-                }
-                // Merge this file's results into final_agg under a lock,
-                // then the local Aggregator is destroyed (scope exit).
-                try {
-                    std::lock_guard<std::mutex> lock(merge_mtx);
-                    merge_aggregators(final_agg, local_agg);
-                } catch (const std::exception& e) {
-                    std::cerr << "\nFatal error merging " << files[i] << ": "
-                              << e.what()
-                              << "\nThe aggregated data (filter strings, "
-                                 "sessions, histograms) exceeds available memory.\n"
-                              << "Try -m DAYS or -n FILES to limit the scope, "
-                                 "or use --unknown-lines-only to spill unknowns "
-                                 "to disk.\n";
-                    // final_agg is too large to continue — signal abort.
-                    next_file.store(files.size()); // stop the work loop
-                    break;
+                    files_done++;
+                    continue;
                 }
                 files_done++;
             }
@@ -613,6 +609,10 @@ int main(int argc, char* argv[]) {
     for (auto& t : workers) {
         if (t.joinable()) t.join();
     }
+
+    // Ensure the progress thread exits even if some workers aborted
+    // before reaching files_done == files.size().
+    files_done.store(files.size());
 
     if (progress_thread.joinable()) progress_thread.join();
 
