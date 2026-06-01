@@ -483,11 +483,19 @@ int main(int argc, char* argv[]) {
     std::mutex* unknown_mtx_ptr = unknown_out ? &unknown_mtx : nullptr;
 
     // ------------------------------------------------------------------
-    // Set up per-thread aggregators (one per file) so that worker threads
-    // never contend on a shared mutex.  progress and files_done are
-    // atomics that the workers increment and the progress thread reads.
+    // Aggregator and worker orchestration.
+    //
+    // We maintain a single final_agg that accumulates results from ALL
+    // files.  Each worker thread creates a private local Aggregator for
+    // its file, processes it, then merges into final_agg under a mutex
+    // before destroying the local copy.  This keeps peak memory at
+    //   size_of(final_agg) + num_workers × size_of(one_file_agg)
+    // instead of holding N-file-sized Aggregators until a separate merge
+    // phase.  The per-connection working maps (conn_state etc.) are
+    // cleared on every merge so they only live for one file at a time.
     // ------------------------------------------------------------------
-    std::vector<Aggregator> thread_aggs(files.size());
+    Aggregator final_agg;
+    std::mutex merge_mtx;
     std::atomic<size_t> progress(0);
     std::atomic<size_t> files_done(0);
     auto start_time = std::chrono::system_clock::now();
@@ -528,6 +536,11 @@ int main(int argc, char* argv[]) {
     // try/catch so that a corrupt or unreadable file never kills the
     // entire run — the exception is caught, a diagnostic is printed,
     // and the worker proceeds to the next file.
+    //
+    // Each worker creates a fresh local Aggregator for a file, processes
+    // it, then merges the result into final_agg under a mutex and lets
+    // the local Aggregator go out of scope.  This avoids holding N
+    // per-file Aggregators alive until a separate merge phase.
     // ------------------------------------------------------------------
     size_t num_workers = std::thread::hardware_concurrency();
     if (num_workers == 0) num_workers = 1;
@@ -541,14 +554,21 @@ int main(int argc, char* argv[]) {
             for (;;) {
                 size_t i = next_file.fetch_add(1, std::memory_order_relaxed);
                 if (i >= files.size()) break;
+                Aggregator local_agg;
                 try {
-                    process_file(files[i], thread_aggs[i], progress,
+                    process_file(files[i], local_agg, progress,
                                  unknown_out, unknown_mtx_ptr);
                 } catch (const std::exception& e) {
                     std::cerr << "\nError processing " << files[i] << ": "
                               << e.what() << "\n";
                 } catch (...) {
                     std::cerr << "\nUnknown error processing " << files[i] << "\n";
+                }
+                // Merge this file's results into final_agg under a lock,
+                // then the local Aggregator is destroyed (scope exit).
+                {
+                    std::lock_guard<std::mutex> lock(merge_mtx);
+                    merge_aggregators(final_agg, local_agg);
                 }
                 files_done++;
             }
@@ -571,44 +591,16 @@ int main(int argc, char* argv[]) {
     double duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time).count() / 1000.0;
 
     // ------------------------------------------------------------------
-    // Merging aggregators.
+    // Discard per-connection working maps.
     //
-    // Combine all per-thread Aggregators into a single final_agg using
-    // merge_aggregators() (defined in utils.hpp).  This step sums up
-    // counters, concatenates histogram maps, and collects unknown lines.
-    //
-    // To keep memory usage bounded we clear each source Aggregator
-    // immediately after merging — otherwise all 878 per-file Aggregators
-    // (each holding maps, strings, and unknown-lines vectors) stay live
-    // until the end of main(), doubling or tripling peak usage.
+    // These are only used during parsing (update_aggregator) and are NOT
+    // referenced by any report printer.  They are overwritten on every
+    // merge (so they only hold data from the last file), but we clear
+    // them here for good measure before the report phase.
     // ------------------------------------------------------------------
-    Aggregator final_agg;
-    try {
-        for (auto& ta : thread_aggs) {
-            merge_aggregators(final_agg, ta);
-            // Release the source Aggregator's memory now rather than
-            // carrying it until the vector goes out of scope.
-            ta = {};
-        }
-        // Now that we've copied all data into final_agg, free the
-        // entire thread_aggs vector so the OS can reclaim the pages.
-        std::vector<Aggregator>().swap(thread_aggs);
-
-        // Discard per-connection working maps — they are only used during
-        // parsing (update_aggregator) and are NOT referenced by any report
-        // printer.  Merging 878 files' worth of these into final_agg can
-        // consume gigabytes for no benefit.
-        final_agg.conn_state.clear();
-        final_agg.binddn_by_conn.clear();
-        final_agg.src_by_conn.clear();
-    } catch (const std::exception& e) {
-        std::cerr << "\nFatal error during merge: " << e.what()
-                  << "\nThis likely means the aggregated data (unknown "
-                     "lines, histograms) exceeds available memory.\n"
-                  << "Try --unknown-lines-only to write unknowns to a file, "
-                     "or use -q -m / -n to limit the number of files.\n";
-        return 1;
-    }
+    final_agg.conn_state.clear();
+    final_agg.binddn_by_conn.clear();
+    final_agg.src_by_conn.clear();
 
     // ------------------------------------------------------------------
     // Unknown lines output.
