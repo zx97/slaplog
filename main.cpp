@@ -55,6 +55,7 @@
 #include <ostream>        // std::ostream base class
 #include <sstream>        // std::istringstream for parsing comma-separated --section values
 #include <regex>          // std::regex (included for potential regex-based filtering)
+#include <unistd.h>       // isatty() — auto-disable progress bar / colors on non-TTY
 
 #define SLAPLOG_VERSION "3.1.0"
 #ifndef BUILD_NUMBER
@@ -416,6 +417,26 @@ int main(int argc, char* argv[]) {
         } else {
             inputs.push_back(arg);
         }
+    }
+
+    // ------------------------------------------------------------------
+    // Auto-detect non-TTY output.
+    //
+    // When stderr is not a terminal (e.g. piped to a file or running in
+    // cron / systemd), suppress the progress bar automatically so that
+    // log files don't get filled with \r-based noise.
+    //
+    // When stdout is not a terminal, the default textcolor format drops
+    // ANSI colour codes so the report is readable when redirected.
+    // An explicit -o textcolor still forces colour regardless.
+    // ------------------------------------------------------------------
+    if (!isatty(STDERR_FILENO) && !quiet) {
+        // User did not explicitly pass --quiet; auto-silence the bar.
+        quiet = true;
+    }
+    if (!isatty(STDOUT_FILENO) && output_format == "textcolor") {
+        output_format = "text";
+        color_mode = 0;
     }
 
     // ------------------------------------------------------------------
