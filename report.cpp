@@ -229,24 +229,6 @@ namespace {
     }
 
     /**
-     * sort_map_by_value_desc_double – Identical to sort_map_by_value_desc
-     * but specialised for std::map<T, double>.
-     */
-    template<typename T>
-    std::vector<std::pair<T, double>> sort_map_by_value_desc_double(const std::map<T, double>& m) {
-        std::vector<std::pair<T, double>> v(m.begin(), m.end());
-        std::sort(v.begin(), v.end(), [](const auto& a, const auto& b) {
-            if (a.second != b.second) return a.second > b.second;
-            return a.first < b.first;
-        });
-        return v;
-    }
-
-    // -------------------------------------------------------------------
-    // Reusable pretty-print helpers (all output to std::cout)
-    // -------------------------------------------------------------------
-
-    /**
      * print_separator – Print a section heading underlined with '=' characters.
      *
      * Used by print_text_report to demarcate sections.
@@ -344,24 +326,6 @@ namespace {
             rows.push_back({key, fmt_int(val)});
         }
         print_table({col1, "Count"}, rows);
-    }
-
-    /**
-     * print_string_double_map – Same as print_string_count_map but for
-     * string → double maps (typically cumulative elapsed time).
-     */
-    void print_string_double_map(const std::string& title, const std::string& col1,
-                                  const std::map<std::string, double>& m, int limit = 20) {
-        if (m.empty()) return;
-        print_separator(title);
-        auto sorted = sort_map_by_value_desc_double(m);
-        std::vector<std::vector<std::string>> rows;
-        int count = 0;
-        for (const auto& [key, val] : sorted) {
-            if (count++ >= limit) break;
-            rows.push_back({key, fmt_double(val)});
-        }
-        print_table({col1, "Total etime"}, rows);
     }
 
     /**
