@@ -1895,28 +1895,37 @@ void merge_aggregators(Aggregator& dest, const Aggregator& src) {
 // ------------------------------------------------------------------
 // process_file (dispatch)
 // ------------------------------------------------------------------
-// Inspects the file extension to choose an appropriate decompression
-// handler.  Supports .gz (gzip), .bz2 (bzip2), .xz (lzma), and plain
-// text (no compression).
+// Inspects the file content to choose an appropriate decompression
+// handler.  Supports gzip (magic: \x1f\x8b), bzip2 (magic: BZh),
+// xz (magic: \xfd7zXZ\x00), and plain text (fallback).
 //
-// The extension check also accepts date-suffixed names like
-// ".bz2_2026-03-01" which occur when rotated logs have a date
-// appended after the compression extension.
-
-static bool has_compression_ext(const std::string& filename, const std::string& ext) {
-    auto pos = filename.rfind(ext);
-    if (pos == std::string::npos) return false;
-    size_t after = pos + ext.size();
-    return after == filename.size() || filename[after] == '_';
-}
+// Magic-byte detection is preferred over extension-based matching
+// because rotated logs may have date suffixes or non-standard
+// naming (e.g. slapd.log.07.bz2_2026-03-01).
+// ------------------------------------------------------------------
 
 void process_file(const std::string& filename, Aggregator& agg,
                   std::atomic<size_t>& progress,
                   std::ostream* unknown_out, std::mutex* unknown_mtx) {
-    if (has_compression_ext(filename, ".gz")) process_gzip_file(filename, agg, progress, unknown_out, unknown_mtx);
-    else if (has_compression_ext(filename, ".bz2")) process_bzip2_file(filename, agg, progress, unknown_out, unknown_mtx);
-    else if (has_compression_ext(filename, ".xz")) process_xz_file(filename, agg, progress, unknown_out, unknown_mtx);
-    else process_plain_file(filename, agg, progress, unknown_out, unknown_mtx);
+    // Peek at the file's first bytes to detect compression type.
+    unsigned char peek[8] = {};
+    std::ifstream probe(filename, std::ios::binary);
+    if (probe) {
+        probe.read(reinterpret_cast<char*>(peek), sizeof(peek));
+        probe.close();
+    }
+
+    if (peek[0] == 0x1f && peek[1] == 0x8b) {
+        process_gzip_file(filename, agg, progress, unknown_out, unknown_mtx);
+    } else if (peek[0] == 'B' && peek[1] == 'Z' && peek[2] == 'h' &&
+               peek[3] >= '1' && peek[3] <= '9') {
+        process_bzip2_file(filename, agg, progress, unknown_out, unknown_mtx);
+    } else if (peek[0] == 0xfd && peek[1] == '7' && peek[2] == 'z' &&
+               peek[3] == 'X' && peek[4] == 'Z' && peek[5] == 0x00) {
+        process_xz_file(filename, agg, progress, unknown_out, unknown_mtx);
+    } else {
+        process_plain_file(filename, agg, progress, unknown_out, unknown_mtx);
+    }
 }
 
 // ------------------------------------------------------------------
