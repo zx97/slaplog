@@ -56,6 +56,7 @@ Options:
   -q, --quiet                Suppress the progress bar (batch mode)
   -n, --max-files N          Analyze only the N most recently modified files
   -m, --mtime DAYS           Analyze only files modified in the last DAYS days
+  -j, --jobs N               Worker threads (default: CPU cores - 1)
   -s, --section LIST         Comma-sep section list: all,stats,ops,errors,
                              bases,filters,attrs,apps,extops,csn,server,
                              index,sessions,topops,topconns,...
@@ -95,4 +96,4 @@ make clean && make
 
 AGPLv3-or-later — see `LICENSE` or `./slaplog -l`.
 
-Full documentation: `./slaplog -d` or `doc/slaplog.md`.
+Full documentation: `./slaplog -D` or `doc/slaplog.md`.

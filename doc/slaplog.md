@@ -186,10 +186,12 @@ slaplog --unknown-lines unknown.txt /var/log/slapd/access.log
 | `-q, --quiet` | Suppress the progress bar on stderr (useful for batch / cron runs) |
 | `-n, --max-files N` | Analyze only the `N` most recently modified files in a directory scan |
 | `-m, --mtime DAYS` | Analyze only files modified within the last `DAYS` days (like `find -mtime`) |
+| `-j, --jobs N` | Worker thread count (default: CPU cores - 1) |
 | `-s, --section LIST` | Comma-separated list of sections to display (see below) |
 | `--unknown-lines FILE` | Write unrecognised lines to FILE, then generate the full report |
 | `--unknown-lines-only FILE` | Like `--unknown-lines` but skip the report |
-| `--debug` | Print debug information (file count, parsing details) |
+| `-d, --debug` | Print debug information (file count, parsing details, per-file traces) |
+| `-D, --documentation` | Print full documentation to stdout |
 | `-h, --help` | Show help message |
 | `-V, --version` | Show version and build info |
 
