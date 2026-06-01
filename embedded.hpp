@@ -787,10 +787,19 @@ collected for diagnostic output.
 
 ### Requirements
 
-- C++17 compiler (tested with GCC)
-- POSIX threads (`-pthread`)
+- C++17 compiler — GCC 8+ (GCC 11+ recommended)
+- POSIX threads
 - Development libraries: `zlib`, `bzip2`, `lzma` (for compressed log files)
-- `nlohmann/json` header (e.g. `json-devel` on Fedora/EPEL)
+- `nlohmann/json` header (system package — see below)
+
+Install dependencies for your distro:
+
+| Distro | Command |
+|--------|---------|
+| Fedora / RHEL 9+ | `sudo dnf install gcc-c++ zlib-devel bzip2-devel xz-devel json-devel` |
+| RHEL 8 (EPEL)    | `sudo dnf install gcc-toolset-12-gcc-c++ zlib-devel bzip2-devel xz-devel json-devel` |
+| Debian / Ubuntu  | `sudo apt install g++ zlib1g-dev libbz2-dev liblzma-dev nlohmann-json3-dev` |
+| Arch Linux       | `sudo pacman -S gcc zlib bzip2 xz nlohmann-json` |
 
 ### Build
 
