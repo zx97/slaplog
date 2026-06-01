@@ -285,6 +285,7 @@ static void usage(const char* prog) {
     std::cerr << "  -q, --quiet                Suppress the progress bar (batch mode)\n";
     std::cerr << "  -n, --max-files N          Analyze only the N most recently modified files\n";
     std::cerr << "  -m, --mtime DAYS           Analyze only files modified in the last DAYS days\n";
+    std::cerr << "  -j, --jobs N               Worker threads (default: CPU cores - 1)\n";
     std::cerr << "  -s, --section LIST         Sections to show (comma-sep): all,\n";
     std::cerr << "                             stats,ops,errors,errors_per_app,\n";
     std::cerr << "                             bases,filters,wildcards,\n";
@@ -344,6 +345,7 @@ int main(int argc, char* argv[]) {
     bool quiet = false;        // -q/--quiet: suppress the progress bar
     int max_files = 0;         // --max-files N: keep N most recent files (0 = unlimited)
     int mtime_days = 0;        // --mtime DAYS: keep files from last DAYS days (0 = no limit)
+    int jobs = 0;              // -j N: worker thread count (0 = auto: hw_concurrency - 1)
     int color_mode = 2;
     std::set<std::string> enabled_sections = {"all"};
 
@@ -377,7 +379,6 @@ int main(int argc, char* argv[]) {
             }
             if (max_files < 0) max_files = 0;
         } else if ((arg == "-m" || arg == "--mtime") && i + 1 < argc) {
-            // Keep only files modified within the last N days (like find -mtime).
             try {
                 mtime_days = std::stoi(argv[++i]);
             } catch (const std::exception&) {
@@ -385,6 +386,14 @@ int main(int argc, char* argv[]) {
                 return 1;
             }
             if (mtime_days < 0) mtime_days = 0;
+        } else if ((arg == "-j" || arg == "--jobs") && i + 1 < argc) {
+            try {
+                jobs = std::stoi(argv[++i]);
+            } catch (const std::exception&) {
+                std::cerr << "Error: invalid value for " << arg << " (expected integer)\n";
+                return 1;
+            }
+            if (jobs < 1) { std::cerr << "Error: " << arg << " must be >= 1\n"; return 1; }
         } else if ((arg == "-s" || arg == "--section") && i + 1 < argc) {
             // When --section is used, the default "all" is removed from the
             // set so that only the explicitly requested sections are shown.
@@ -551,20 +560,18 @@ int main(int argc, char* argv[]) {
     // files, however, it creates resource pressure (memory, fd limits)
     // that can lead to allocation failures and std::terminate.
     //
-    // Instead we cap the pool at a reasonable concurrency level
-    // (hardware concurrency, at least 1), and farm out files via an
-    // atomic work-stealing index.  Each worker body is wrapped in a
-    // try/catch so that a corrupt or unreadable file never kills the
-    // entire run — the exception is caught, a diagnostic is printed,
-    // and the worker proceeds to the next file.
-    //
-    // Each worker creates a fresh local Aggregator for a file, processes
-    // it, then merges the result into final_agg under a mutex and lets
-    // the local Aggregator go out of scope.  This avoids holding N
-    // per-file Aggregators alive until a separate merge phase.
+    // Instead we cap the pool at a configurable concurrency level
+    // (-j / --jobs, default hardware_concurrency - 1, at least 1),
+    // and farm out files via an atomic work-stealing index.
     // ------------------------------------------------------------------
-    size_t num_workers = std::thread::hardware_concurrency();
-    if (num_workers == 0) num_workers = 1;
+    size_t num_workers;
+    if (jobs > 0) {
+        num_workers = static_cast<size_t>(jobs);
+    } else {
+        num_workers = std::thread::hardware_concurrency();
+        if (num_workers > 1) num_workers -= 1;  // leave one core free
+        if (num_workers == 0) num_workers = 1;
+    }
     if (num_workers > files.size()) num_workers = files.size();
 
     std::vector<std::thread> workers(num_workers);
