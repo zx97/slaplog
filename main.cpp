@@ -587,21 +587,21 @@ int main(int argc, char* argv[]) {
         }
         return 32768;
     };
-    // Threshold: throttle when available memory drops below 25% of total
-    // RAM.  This gives a generous safety margin so that per-file Aggregator
-    // allocation inside the try block doesn't OOM the process.
+    // Threshold: throttle when available memory drops below 12.5% of total
+    // RAM (MemTotal / 8).  This scales with the machine: ~1 GB on 8 GB host,
+    // ~8 GB on 64 GB host, etc.
     static auto mem_threshold_mb = []() -> long long {
         std::ifstream meminfo("/proc/meminfo");
-        if (!meminfo) return 2048;
+        if (!meminfo) return 1024;
         std::string line;
         while (std::getline(meminfo, line)) {
             if (line.compare(0, 8, "MemTotal:") == 0) {
                 long long val = 0;
                 std::sscanf(line.c_str() + 8, "%lld", &val);
-                return val / 1024 / 4;  // 25 % of total, in MB
+                return val / 1024 / 8;  // 12.5 % of total, in MB
             }
         }
-        return 2048;
+        return 1024;
     }();
     size_t num_workers;
     if (jobs > 0) {
