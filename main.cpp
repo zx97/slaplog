@@ -563,7 +563,33 @@ int main(int argc, char* argv[]) {
     // Instead we cap the pool at a configurable concurrency level
     // (-j / --jobs, default hardware_concurrency - 1, at least 1),
     // and farm out files via an atomic work-stealing index.
+    //
+    // Memory-adaptive throttling:
+    // Before picking up a new file, each worker checks the system's
+    // available memory (via /proc/meminfo).  If it drops below a
+    // safety threshold (1 GB) the worker waits a few seconds before
+    // proceeding.  This gives active workers time to finish and free
+    // their per-file Aggregator, preventing OOM crashes without
+    // requiring the user to tune -j manually.
     // ------------------------------------------------------------------
+
+    // Returns available memory in megabytes by parsing /proc/meminfo.
+    // Returns a large dummy value on non-Linux or if the file cannot
+    // be read, so throttling is simply not applied.
+    static auto available_memory_mb = []() -> long long {
+        std::ifstream meminfo("/proc/meminfo");
+        if (!meminfo) return 32768;  // assume plenty
+        std::string line;
+        while (std::getline(meminfo, line)) {
+            if (line.compare(0, 12, "MemAvailable:") == 0) {
+                long long val = 0;
+                std::sscanf(line.c_str() + 12, "%lld", &val);
+                return val / 1024;  // kB → MB
+            }
+        }
+        return 32768;
+    };
+    constexpr long long MEM_THRESHOLD_MB = 1024;  // 1 GB — start throttling
     size_t num_workers;
     if (jobs > 0) {
         num_workers = static_cast<size_t>(jobs);
@@ -581,6 +607,12 @@ int main(int argc, char* argv[]) {
         t = std::thread([&]() {
             for (;;) {
                 size_t i;
+                // Memory-adaptive throttling: before picking up more work,
+                // wait if the system is running low on available memory.
+                for (int tries = 0; tries < 10; ++tries) {
+                    if (available_memory_mb() >= MEM_THRESHOLD_MB) break;
+                    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+                }
                 try {
                     i = next_file.fetch_add(1, std::memory_order_relaxed);
                     if (i >= files.size()) break;
