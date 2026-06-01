@@ -587,21 +587,21 @@ int main(int argc, char* argv[]) {
         }
         return 32768;
     };
-    // Threshold: throttle when available memory drops below 12.5% of total
-    // (read from /proc/meminfo MemTotal).  This scales with the machine:
-    // ~1 GB on 8 GB host, ~8 GB on 64 GB host, etc.
+    // Threshold: throttle when available memory drops below 25% of total
+    // RAM.  This gives a generous safety margin so that per-file Aggregator
+    // allocation inside the try block doesn't OOM the process.
     static auto mem_threshold_mb = []() -> long long {
         std::ifstream meminfo("/proc/meminfo");
-        if (!meminfo) return 1024;
+        if (!meminfo) return 2048;
         std::string line;
         while (std::getline(meminfo, line)) {
             if (line.compare(0, 8, "MemTotal:") == 0) {
                 long long val = 0;
                 std::sscanf(line.c_str() + 8, "%lld", &val);
-                return val / 1024 / 8;  // 12.5 % of total, in MB
+                return val / 1024 / 4;  // 25 % of total, in MB
             }
         }
-        return 1024;
+        return 2048;
     }();
     size_t num_workers;
     if (jobs > 0) {
@@ -632,20 +632,27 @@ int main(int argc, char* argv[]) {
 
     for (auto& t : workers) {
         t = std::thread([&]() {
+            // Top-level catch: if anything in this thread escapes our inner
+            // try blocks (extremely unlikely but possible on total OOM), we
+            // prevent std::terminate by swallowing it here.
+            try {
             for (;;) {
-                size_t i;
-                // Memory-adaptive throttling: before picking up more work,
-                // wait if the system is running low on available memory.
-                for (int tries = 0; tries < 10; ++tries) {
-                    if (available_memory_mb() >= mem_threshold_mb) break;
-                    if (debug && tries == 0) {
-                        std::lock_guard<std::mutex> lock(merge_mtx);
-                        std::cerr << "[debug] Memory low (" << available_memory_mb()
-                                  << " MB < " << mem_threshold_mb << " MB), throttling\n";
-                    }
-                    std::this_thread::sleep_for(std::chrono::milliseconds(500));
-                }
+                size_t i = files.size();
                 try {
+                    // Memory-adaptive throttling: before picking up more
+                    // work, wait if the system is running low on RAM.
+                    for (int tries = 0; tries < 10; ++tries) {
+                        if (available_memory_mb() >= mem_threshold_mb) break;
+                        if (debug && tries == 0) {
+                            std::lock_guard<std::mutex> lock(merge_mtx);
+                            std::cerr << "[debug] Memory low ("
+                                      << available_memory_mb()
+                                      << " MB < " << mem_threshold_mb
+                                      << " MB), throttling\n";
+                        }
+                        std::this_thread::sleep_for(
+                            std::chrono::milliseconds(500));
+                    }
                     i = next_file.fetch_add(1, std::memory_order_relaxed);
                     if (i >= files.size()) break;
                     if (debug) {
@@ -682,6 +689,11 @@ int main(int argc, char* argv[]) {
                     continue;
                 }
                 files_done++;
+            }
+            } catch (const std::exception& e) {
+                std::cerr << "\nFatal worker error: " << e.what() << "\n";
+            } catch (...) {
+                std::cerr << "\nFatal unknown worker error\n";
             }
         });
     }
