@@ -61,9 +61,9 @@ Options:
                              index,sessions,topops,topconns,...
   --unknown-lines FILE       Write unparseable lines to FILE
   --unknown-lines-only FILE  Like above but skip report
-  -d, --documentation        Print full documentation
+  -D, --documentation        Print full documentation
   -l, --licence              Print AGPLv3 license
-  --debug                    Verbose diagnostics
+  -d, --debug                Verbose diagnostics
   -h, --help                 Show help
   -V, --version              Show version
 ```
