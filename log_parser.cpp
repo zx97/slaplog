@@ -1000,7 +1000,8 @@ void update_aggregator(Aggregator& agg, const Event& ev) {
     if (ev.kind == "UNKNOWN_LINE" || ev.kind == "UNKNOWN_OP") {
         agg.stats.unknown_lines++;
         agg.stats.lines++;
-        agg.unknown_lines.push_back(ev.raw);
+        if (agg.unknown_lines.size() < MAX_STORED_UNKNOWN_LINES)
+            agg.unknown_lines.push_back(ev.raw);
         return;
     }
 
@@ -1184,7 +1185,8 @@ void update_aggregator(Aggregator& agg, const Event& ev) {
     if (cid < 0 || opid < 0) {
         agg.stats.unknown_lines++;
         agg.stats.lines++;
-        agg.unknown_lines.push_back(ev.raw);
+        if (agg.unknown_lines.size() < MAX_STORED_UNKNOWN_LINES)
+            agg.unknown_lines.push_back(ev.raw);
         return;
     }
 
@@ -1683,7 +1685,8 @@ void update_aggregator(Aggregator& agg, const Event& ev) {
     // it is classified as unknown, counted, and stored for inspection.
     agg.stats.unknown_lines++;
     agg.stats.lines++;
-    agg.unknown_lines.push_back(ev.raw);
+    if (agg.unknown_lines.size() < MAX_STORED_UNKNOWN_LINES)
+        agg.unknown_lines.push_back(ev.raw);
 }
 
 // =========================================================================
@@ -1857,8 +1860,14 @@ void merge_aggregators(Aggregator& dest, const Aggregator& src) {
         src.server_event_list.begin(), src.server_event_list.end());
 
     // --- Unknown lines for diagnostic review ---
-    dest.unknown_lines.insert(dest.unknown_lines.end(),
-        src.unknown_lines.begin(), src.unknown_lines.end());
+    // Cap at MAX_STORED_UNKNOWN_LINES to avoid unbounded memory growth
+    // on large archives (the statistic is always accurate).
+    if (dest.unknown_lines.size() < MAX_STORED_UNKNOWN_LINES) {
+        size_t room = MAX_STORED_UNKNOWN_LINES - dest.unknown_lines.size();
+        size_t take = std::min(src.unknown_lines.size(), room);
+        dest.unknown_lines.insert(dest.unknown_lines.end(),
+            src.unknown_lines.begin(), src.unknown_lines.begin() + take);
+    }
 }
 
 // =========================================================================

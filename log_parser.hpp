@@ -195,6 +195,14 @@ struct Stats {
 // the parser.  One Aggregator is built per input file; they can be merged
 // with merge_aggregators() so that multi-file runs produce a single set
 // of results.
+
+// Maximum number of raw unknown-line texts to keep in memory.
+// The statistic (Aggregator::stats::unknown_lines) is always accurate;
+// once this limit is reached the raw text is discarded to bound memory.
+// 100 000 lines × ~200 bytes = ~20 MB, which is a reasonable diagnostic
+// window without exhausting RAM on large archives.
+constexpr size_t MAX_STORED_UNKNOWN_LINES = 100000;
+
 struct Aggregator {
     // -- Basic counters --
     Stats stats;
