@@ -990,7 +990,8 @@ Event parse_line(const std::string& line) {
 //   6. Operation-level events update per-op state and may finalise it.
 //   7. Server events (start/stop/shutdown) are recorded last.
 
-void update_aggregator(Aggregator& agg, const Event& ev) {
+void update_aggregator(Aggregator& agg, const Event& ev,
+                       std::ostream* unknown_out, std::mutex* unknown_mtx) {
 
     // ------------------------------------------------------------------
     // Unknown Line Handling
@@ -1000,8 +1001,12 @@ void update_aggregator(Aggregator& agg, const Event& ev) {
     if (ev.kind == "UNKNOWN_LINE" || ev.kind == "UNKNOWN_OP") {
         agg.stats.unknown_lines++;
         agg.stats.lines++;
-        if (agg.unknown_lines.size() < MAX_STORED_UNKNOWN_LINES)
+        if (unknown_out) {
+            std::lock_guard<std::mutex> lock(*unknown_mtx);
+            *unknown_out << ev.raw << '\n';
+        } else if (agg.unknown_lines.size() < MAX_STORED_UNKNOWN_LINES) {
             agg.unknown_lines.push_back(ev.raw);
+        }
         return;
     }
 
@@ -1185,8 +1190,12 @@ void update_aggregator(Aggregator& agg, const Event& ev) {
     if (cid < 0 || opid < 0) {
         agg.stats.unknown_lines++;
         agg.stats.lines++;
-        if (agg.unknown_lines.size() < MAX_STORED_UNKNOWN_LINES)
+        if (unknown_out) {
+            std::lock_guard<std::mutex> lock(*unknown_mtx);
+            *unknown_out << ev.raw << '\n';
+        } else if (agg.unknown_lines.size() < MAX_STORED_UNKNOWN_LINES) {
             agg.unknown_lines.push_back(ev.raw);
+        }
         return;
     }
 
@@ -1685,8 +1694,12 @@ void update_aggregator(Aggregator& agg, const Event& ev) {
     // it is classified as unknown, counted, and stored for inspection.
     agg.stats.unknown_lines++;
     agg.stats.lines++;
-    if (agg.unknown_lines.size() < MAX_STORED_UNKNOWN_LINES)
+    if (unknown_out) {
+        std::lock_guard<std::mutex> lock(*unknown_mtx);
+        *unknown_out << ev.raw << '\n';
+    } else if (agg.unknown_lines.size() < MAX_STORED_UNKNOWN_LINES) {
         agg.unknown_lines.push_back(ev.raw);
+    }
 }
 
 // =========================================================================
@@ -1886,11 +1899,13 @@ void merge_aggregators(Aggregator& dest, const Aggregator& src) {
 // handler.  Supports .gz (gzip), .bz2 (bzip2), .xz (lzma), and plain
 // text (no compression).
 
-void process_file(const std::string& filename, Aggregator& agg, std::atomic<size_t>& progress) {
-    if (utils::ends_with(filename, ".gz")) process_gzip_file(filename, agg, progress);
-    else if (utils::ends_with(filename, ".bz2")) process_bzip2_file(filename, agg, progress);
-    else if (utils::ends_with(filename, ".xz")) process_xz_file(filename, agg, progress);
-    else process_plain_file(filename, agg, progress);
+void process_file(const std::string& filename, Aggregator& agg,
+                  std::atomic<size_t>& progress,
+                  std::ostream* unknown_out, std::mutex* unknown_mtx) {
+    if (utils::ends_with(filename, ".gz")) process_gzip_file(filename, agg, progress, unknown_out, unknown_mtx);
+    else if (utils::ends_with(filename, ".bz2")) process_bzip2_file(filename, agg, progress, unknown_out, unknown_mtx);
+    else if (utils::ends_with(filename, ".xz")) process_xz_file(filename, agg, progress, unknown_out, unknown_mtx);
+    else process_plain_file(filename, agg, progress, unknown_out, unknown_mtx);
 }
 
 // ------------------------------------------------------------------
@@ -1900,13 +1915,15 @@ void process_file(const std::string& filename, Aggregator& agg, std::atomic<size
 // the Aggregator.  Progress is tracked as the cumulative byte size
 // (line length + 1 for the newline) of processed lines.
 
-void process_plain_file(const std::string& filename, Aggregator& agg, std::atomic<size_t>& progress) {
+void process_plain_file(const std::string& filename, Aggregator& agg,
+                        std::atomic<size_t>& progress,
+                        std::ostream* unknown_out, std::mutex* unknown_mtx) {
     std::ifstream file(filename);
     if (!file) return;
     std::string line;
     while (std::getline(file, line)) {
         Event ev = parse_line(line);
-        update_aggregator(agg, ev);
+        update_aggregator(agg, ev, unknown_out, unknown_mtx);
         progress += line.size() + 1;
     }
 }
@@ -1918,7 +1935,9 @@ void process_plain_file(const std::string& filename, Aggregator& agg, std::atomi
 // semantics on top of gzip decompression.  Each line is processed
 // identically to the plain-text path.
 
-void process_gzip_file(const std::string& filename, Aggregator& agg, std::atomic<size_t>& progress) {
+void process_gzip_file(const std::string& filename, Aggregator& agg,
+                       std::atomic<size_t>& progress,
+                       std::ostream* unknown_out, std::mutex* unknown_mtx) {
     gzFile file = gzopen(filename.c_str(), "rb");
     if (!file) return;
     char buffer[65536];
@@ -1927,7 +1946,7 @@ void process_gzip_file(const std::string& filename, Aggregator& agg, std::atomic
         line = buffer;
         if (!line.empty() && line.back() == '\n') line.pop_back();
         Event ev = parse_line(line);
-        update_aggregator(agg, ev);
+        update_aggregator(agg, ev, unknown_out, unknown_mtx);
         progress += line.size() + 1;
     }
     gzclose(file);
@@ -1941,7 +1960,9 @@ void process_gzip_file(const std::string& filename, Aggregator& agg, std::atomic
 // chunks into a buffer and split on '\n' manually.  Any remaining
 // data after the final chunk is flushed as the last line.
 
-void process_bzip2_file(const std::string& filename, Aggregator& agg, std::atomic<size_t>& progress) {
+void process_bzip2_file(const std::string& filename, Aggregator& agg,
+                        std::atomic<size_t>& progress,
+                        std::ostream* unknown_out, std::mutex* unknown_mtx) {
     FILE* file = fopen(filename.c_str(), "rb");
     if (!file) return;
     int bzerror;
@@ -1957,14 +1978,14 @@ void process_bzip2_file(const std::string& filename, Aggregator& agg, std::atomi
         while ((pos = line.find('\n')) != std::string::npos) {
             std::string l = line.substr(0, pos);
             Event ev = parse_line(l);
-            update_aggregator(agg, ev);
+            update_aggregator(agg, ev, unknown_out, unknown_mtx);
             progress += l.size() + 1;
             line.erase(0, pos + 1);
         }
     }
     if (!line.empty()) {
         Event ev = parse_line(line);
-        update_aggregator(agg, ev);
+        update_aggregator(agg, ev, unknown_out, unknown_mtx);
         progress += line.size() + 1;
     }
     BZ2_bzReadClose(&bzerror, bzfile);
@@ -1980,7 +2001,9 @@ void process_bzip2_file(const std::string& filename, Aggregator& agg, std::atomi
 // '\n' from the output buffer, and any trailing data after the final
 // LZMA_STREAM_END is flushed as the last line.
 
-void process_xz_file(const std::string& filename, Aggregator& agg, std::atomic<size_t>& progress) {
+void process_xz_file(const std::string& filename, Aggregator& agg,
+                     std::atomic<size_t>& progress,
+                     std::ostream* unknown_out, std::mutex* unknown_mtx) {
     FILE* file = fopen(filename.c_str(), "rb");
     if (!file) return;
     lzma_stream strm = LZMA_STREAM_INIT;
@@ -2008,7 +2031,7 @@ void process_xz_file(const std::string& filename, Aggregator& agg, std::atomic<s
             while ((pos = line.find('\n')) != std::string::npos) {
                 std::string l = line.substr(0, pos);
                 Event ev = parse_line(l);
-                update_aggregator(agg, ev);
+                update_aggregator(agg, ev, unknown_out, unknown_mtx);
                 progress += l.size() + 1;
                 line.erase(0, pos + 1);
             }
@@ -2019,7 +2042,7 @@ void process_xz_file(const std::string& filename, Aggregator& agg, std::atomic<s
     }
     if (!line.empty()) {
         Event ev = parse_line(line);
-        update_aggregator(agg, ev);
+        update_aggregator(agg, ev, unknown_out, unknown_mtx);
         progress += line.size() + 1;
     }
     lzma_end(&strm);

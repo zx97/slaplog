@@ -36,6 +36,7 @@
 #include <chrono>
 #include <atomic>
 #include <mutex>
+#include <ostream>
 #include <optional>
 #include <set>
 #include <sstream>
@@ -339,7 +340,12 @@ Event parse_line(const std::string& line);
 
 // Incorporate the data from one parsed Event into the Aggregator,
 // updating counters, per-connection state, top-N lists, etc.
-void update_aggregator(Aggregator& agg, const Event& ev);
+// If unknown_out is non-null, unparseable lines are written directly
+// to that stream (under unknown_mtx) instead of being stored in the
+// Aggregator's unknown_lines vector.
+void update_aggregator(Aggregator& agg, const Event& ev,
+                       std::ostream* unknown_out = nullptr,
+                       std::mutex* unknown_mtx = nullptr);
 
 // Merge the contents of `src` into `dest`.  Used when combining results
 // from multiple files processed in parallel.
@@ -348,11 +354,27 @@ void merge_aggregators(Aggregator& dest, const Aggregator& src);
 // Process a single file by auto-detecting its compression type (plain,
 // gzip, bzip2, xz) and calling the appropriate handler.  Uses an atomic
 // progress counter for reporting.
-void process_file(const std::string& filename, Aggregator& agg, std::atomic<size_t>& progress);
+// unknown_out / unknown_mtx are forwarded to update_aggregator (see above).
+void process_file(const std::string& filename, Aggregator& agg,
+                  std::atomic<size_t>& progress,
+                  std::ostream* unknown_out = nullptr,
+                  std::mutex* unknown_mtx = nullptr);
 
-void process_plain_file(const std::string& filename, Aggregator& agg, std::atomic<size_t>& progress);
-void process_gzip_file(const std::string& filename, Aggregator& agg, std::atomic<size_t>& progress);
-void process_bzip2_file(const std::string& filename, Aggregator& agg, std::atomic<size_t>& progress);
-void process_xz_file(const std::string& filename, Aggregator& agg, std::atomic<size_t>& progress);
+void process_plain_file(const std::string& filename, Aggregator& agg,
+                        std::atomic<size_t>& progress,
+                        std::ostream* unknown_out = nullptr,
+                        std::mutex* unknown_mtx = nullptr);
+void process_gzip_file(const std::string& filename, Aggregator& agg,
+                       std::atomic<size_t>& progress,
+                       std::ostream* unknown_out = nullptr,
+                       std::mutex* unknown_mtx = nullptr);
+void process_bzip2_file(const std::string& filename, Aggregator& agg,
+                        std::atomic<size_t>& progress,
+                        std::ostream* unknown_out = nullptr,
+                        std::mutex* unknown_mtx = nullptr);
+void process_xz_file(const std::string& filename, Aggregator& agg,
+                     std::atomic<size_t>& progress,
+                     std::ostream* unknown_out = nullptr,
+                     std::mutex* unknown_mtx = nullptr);
 
 #endif // LOG_PARSER_HPP

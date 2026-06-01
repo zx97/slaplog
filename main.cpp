@@ -462,6 +462,27 @@ int main(int argc, char* argv[]) {
     }
 
     // ------------------------------------------------------------------
+    // Set up the unknown-lines output.
+    //
+    // When --unknown-lines (or --unknown-lines-only) is active we open the
+    // output file now and pass the stream directly to worker threads via
+    // update_aggregator().  Unparseable lines are written as they are
+    // encountered instead of being stored in the Aggregator's unknown_lines
+    // vector — this keeps memory usage bounded regardless of input size.
+    // ------------------------------------------------------------------
+    std::ofstream unknown_stream;
+    std::mutex unknown_mtx;
+    if (!unknown_lines_file.empty()) {
+        unknown_stream.open(unknown_lines_file);
+        if (!unknown_stream) {
+            std::cerr << "Error: cannot open " << unknown_lines_file << "\n";
+            return 1;
+        }
+    }
+    std::ostream* unknown_out = unknown_stream.is_open() ? &unknown_stream : nullptr;
+    std::mutex* unknown_mtx_ptr = unknown_out ? &unknown_mtx : nullptr;
+
+    // ------------------------------------------------------------------
     // Set up per-thread aggregators (one per file) so that worker threads
     // never contend on a shared mutex.  progress and files_done are
     // atomics that the workers increment and the progress thread reads.
@@ -521,7 +542,8 @@ int main(int argc, char* argv[]) {
                 size_t i = next_file.fetch_add(1, std::memory_order_relaxed);
                 if (i >= files.size()) break;
                 try {
-                    process_file(files[i], thread_aggs[i], progress);
+                    process_file(files[i], thread_aggs[i], progress,
+                                 unknown_out, unknown_mtx_ptr);
                 } catch (const std::exception& e) {
                     std::cerr << "\nError processing " << files[i] << ": "
                               << e.what() << "\n";
@@ -598,23 +620,34 @@ int main(int argc, char* argv[]) {
     // the unknowns file serves as supplementary data alongside the report.
     // ------------------------------------------------------------------
     if (!unknown_lines_file.empty()) {
-        std::ofstream ofs(unknown_lines_file);
-        if (ofs) {
-            for (const auto& line : final_agg.unknown_lines) {
-                ofs << line << "\n";
-            }
-            std::cerr << "Wrote " << final_agg.unknown_lines.size() << " unknown lines to "
-                      << unknown_lines_file;
-            if (final_agg.unknown_lines.size() < static_cast<size_t>(final_agg.stats.unknown_lines))
-                std::cerr << " (" << (final_agg.stats.unknown_lines - final_agg.unknown_lines.size())
-                          << " omitted, see --help about unknown-lines memory limit)";
-            std::cerr << "\n";
-            // Free the raw text now — it is not needed for the report.
-            final_agg.unknown_lines.clear();
-            final_agg.unknown_lines.shrink_to_fit();
+        if (unknown_out) {
+            // Direct-to-file mode: unknown lines were already written by
+            // worker threads during processing.  Close the stream and
+            // report the total count from the accurate statistic.
+            unknown_stream.close();
+            std::cerr << "Wrote " << final_agg.stats.unknown_lines << " unknown lines to "
+                      << unknown_lines_file << "\n";
         } else {
-            std::cerr << "Error: cannot write " << unknown_lines_file << "\n";
+            // In-memory mode: write the saved lines from final_agg now.
+            std::ofstream ofs(unknown_lines_file);
+            if (ofs) {
+                for (const auto& line : final_agg.unknown_lines) {
+                    ofs << line << "\n";
+                }
+                std::cerr << "Wrote " << final_agg.unknown_lines.size() << " unknown lines to "
+                          << unknown_lines_file;
+                if (final_agg.unknown_lines.size() < static_cast<size_t>(final_agg.stats.unknown_lines))
+                    std::cerr << " (" << (final_agg.stats.unknown_lines - final_agg.unknown_lines.size())
+                              << " omitted, see --help about unknown-lines memory limit)";
+                std::cerr << "\n";
+            } else {
+                std::cerr << "Error: cannot write " << unknown_lines_file << "\n";
+            }
         }
+        // Free the raw text now — not needed for the report (in-memory mode
+        // cleared above; direct mode was already empty).
+        final_agg.unknown_lines.clear();
+        final_agg.unknown_lines.shrink_to_fit();
         if (unknown_lines_only) {
             std::cerr << "Scan completed in " << duration << " s\n";
             return 0;
