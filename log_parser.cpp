@@ -1351,9 +1351,10 @@ void update_aggregator(Aggregator& agg, const Event& ev,
         op.who = who;
         op.base = ev.base.empty() ? "" : normalize_filter(ev.base);
         op.filter = ev.filter.empty() ? "" : normalize_filter(ev.filter);
-        if (!op.base.empty()) agg.base_count[op.base]++;
+        if (!op.base.empty()) agg.base_stats[op.base].count++;
+
         if (!op.filter.empty()) {
-            agg.filter_count[op.filter]++;
+            agg.filter_stats[op.filter].count++;
             if (op.filter.find('*') != std::string::npos) agg.wildcard_filter_count[op.filter]++;
             track_qmark_filter(agg, ev.filter);
         }
@@ -1427,20 +1428,20 @@ void update_aggregator(Aggregator& agg, const Event& ev,
 
         double etime = ev.etime.value_or(0.0);
 
-        if (!op.base.empty()) agg.base_etime_total[op.base] += etime;
+        if (!op.base.empty()) agg.base_stats[op.base].etime_total += etime;
 
         if (!op.filter.empty()) {
-            agg.filter_etime_total[op.filter] += etime;
+            agg.filter_stats[op.filter].etime_total += etime;
             if (op.nentries.has_value()) {
                 if (*op.nentries == 1) agg.norm_filter_n1_count[op.filter]++;
                 if (*op.nentries == 0) agg.norm_filter_n0_count[op.filter]++;
             }
-            if (!who.empty()) agg.filter_by_app[who][op.filter]++;
+            if (!who.empty()) agg.filter_by_app[{who, op.filter}]++;
         }
 
         if (!who.empty()) {
-            agg.app_count[who]++;
-            agg.app_etime_total[who] += etime;
+            agg.app_stats[who].count++;
+            agg.app_stats[who].etime_total += etime;
         }
 
         add_top_op(agg, TopOpRow{etime, cid, opid, op.type, who, op.base, op.filter, op.nentries, op.err});
@@ -1487,22 +1488,21 @@ void update_aggregator(Aggregator& agg, const Event& ev,
         double etime = ev.etime.value_or(0.0);
         bool is_search = (op.type == "SRCH");
 
-        if (is_search && !op.base.empty()) {
-            agg.base_etime_total[op.base] += etime;
-        }
+        if (is_search && !op.base.empty())
+            agg.base_stats[op.base].etime_total += etime;
 
         if (is_search && !op.filter.empty()) {
-            agg.filter_etime_total[op.filter] += etime;
+            agg.filter_stats[op.filter].etime_total += etime;
             if (op.nentries.has_value()) {
                 if (*op.nentries == 1) agg.norm_filter_n1_count[op.filter]++;
                 if (*op.nentries == 0) agg.norm_filter_n0_count[op.filter]++;
             }
-            if (!who.empty()) agg.filter_by_app[who][op.filter]++;
+            if (!who.empty()) agg.filter_by_app[{who, op.filter}]++;
         }
 
         if (!who.empty()) {
-            agg.app_count[who]++;
-            agg.app_etime_total[who] += etime;
+            agg.app_stats[who].count++;
+            agg.app_stats[who].etime_total += etime;
         }
 
         add_top_op(agg, TopOpRow{etime, cid, opid, op.type, who, op.base, op.filter, op.nentries, op.err});
@@ -1775,20 +1775,27 @@ void merge_aggregators(Aggregator& dest, const Aggregator& src) {
     dest.qtime_total += src.qtime_total;
 
     // --- Per-app, per-base, per-filter breakdowns (maps are summed) ---
-    for (const auto& [k, v] : src.app_count) dest.app_count[k] += v;
-    for (const auto& [k, v] : src.app_etime_total) dest.app_etime_total[k] += v;
-    for (const auto& [k, v] : src.base_count) dest.base_count[k] += v;
-    for (const auto& [k, v] : src.base_etime_total) dest.base_etime_total[k] += v;
-    for (const auto& [k, v] : src.filter_count) dest.filter_count[k] += v;
-    for (const auto& [k, v] : src.filter_etime_total) dest.filter_etime_total[k] += v;
+    for (const auto& [k, v] : src.app_stats) {
+        auto& d = dest.app_stats[k];
+        d.count += v.count;
+        d.etime_total += v.etime_total;
+    }
+    for (const auto& [k, v] : src.base_stats) {
+        auto& d = dest.base_stats[k];
+        d.count += v.count;
+        d.etime_total += v.etime_total;
+    }
+    for (const auto& [k, v] : src.filter_stats) {
+        auto& d = dest.filter_stats[k];
+        d.count += v.count;
+        d.etime_total += v.etime_total;
+    }
     for (const auto& [k, v] : src.norm_filter_attrs_count) dest.norm_filter_attrs_count[k] += v;
     for (const auto& [k, v] : src.norm_filter_n1_count) dest.norm_filter_n1_count[k] += v;
     for (const auto& [k, v] : src.norm_filter_n0_count) dest.norm_filter_n0_count[k] += v;
     for (const auto& [k, v] : src.wildcard_filter_count) dest.wildcard_filter_count[k] += v;
-    for (const auto& [app, filters] : src.filter_by_app) {
-        for (const auto& [filter, cnt] : filters)
-            dest.filter_by_app[app][filter] += cnt;
-    }
+    for (const auto& [kv, cnt] : src.filter_by_app)
+        dest.filter_by_app[kv] += cnt;
     for (const auto& [k, v] : src.attr_count) dest.attr_count[k] += v;
 
     // --- "?" filter (unindexed) tracking ---

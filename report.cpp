@@ -41,6 +41,7 @@
 #include <map>
 #include <set>
 #include <tuple>
+#include <type_traits>
 #include <nlohmann/json.hpp>
 
 #ifndef SLAPLOG_VERSION
@@ -362,6 +363,45 @@ namespace {
         }
         print_table({col1, "Total etime"}, rows);
     }
+
+    /**
+     * Overloads for combined AppInfo / BaseInfo / FilterInfo maps.
+     * Each entry has both .count and .etime_total, so we sort by the
+     * appropriate field and pass it to the existing formatters.
+     */
+    template<typename T>
+    void print_string_count_map(const std::string& title, const std::string& col1,
+                                const std::map<std::string, T>& m, int limit = 20) {
+        if (m.empty()) return;
+        print_separator(title);
+        std::vector<std::pair<long long, std::string>> sorted;
+        for (const auto& [k, v] : m) sorted.emplace_back(v.count, k);
+        std::sort(sorted.begin(), sorted.end(), std::greater<>());
+        std::vector<std::vector<std::string>> rows;
+        int count = 0;
+        for (const auto& [val, key] : sorted) {
+            if (count++ >= limit) break;
+            rows.push_back({key, fmt_int(val)});
+        }
+        print_table({col1, "Count"}, rows);
+    }
+
+    template<typename T>
+    void print_string_double_map(const std::string& title, const std::string& col1,
+                                 const std::map<std::string, T>& m, int limit = 20) {
+        if (m.empty()) return;
+        print_separator(title);
+        std::vector<std::pair<double, std::string>> sorted;
+        for (const auto& [k, v] : m) sorted.emplace_back(v.etime_total, k);
+        std::sort(sorted.begin(), sorted.end(), std::greater<>());
+        std::vector<std::vector<std::string>> rows;
+        int count = 0;
+        for (const auto& [val, key] : sorted) {
+            if (count++ >= limit) break;
+            rows.push_back({key, fmt_double(val)});
+        }
+        print_table({col1, "Total etime"}, rows);
+    }
 }
 
 // =======================================================================
@@ -491,16 +531,16 @@ void print_text_report(const Aggregator& agg, double processing_time, bool compa
     // Shows the most frequently searched base DNs and the ones that
     // accumulated the most total elapsed time.
     if (has_section("bases")) {
-        print_string_count_map("Top Search Bases (by count)", "Base", agg.base_count, limit);
-        print_string_double_map("Top Search Bases (by etime)", "Base", agg.base_etime_total, limit);
+        print_string_count_map("Top Search Bases (by count)", "Base", agg.base_stats, limit);
+        print_string_double_map("Top Search Bases (by etime)", "Base", agg.base_stats, limit);
     }
 
     // Top filters
     // Most-used search filters, slowest filters, and specialised views
     // for single-hit / zero-hit / wildcard queries.
     if (has_section("filters")) {
-        print_string_count_map("Top Filters (by count)", "Filter", agg.filter_count, limit);
-        print_string_double_map("Top Filters (by etime)", "Filter", agg.filter_etime_total, limit);
+        print_string_count_map("Top Filters (by count)", "Filter", agg.filter_stats, limit);
+        print_string_double_map("Top Filters (by etime)", "Filter", agg.filter_stats, limit);
         print_string_count_map("Top Filters (nentries=1)", "Filter", agg.norm_filter_n1_count, limit);
         print_string_count_map("Top Filters (nentries=0)", "Filter", agg.norm_filter_n0_count, limit);
         print_string_count_map("Top Wildcard Filters", "Wildcard Filter", agg.wildcard_filter_count, limit);
@@ -515,50 +555,71 @@ void print_text_report(const Aggregator& agg, double processing_time, bool compa
     //   > 30 %        → yellow
     //   else          → green
     if (has_section("filters_per_app") && !agg.filter_by_app.empty()) {
+        auto gradient_color = [](double ratio) -> std::string {
+            if (ratio > 0.8) return COLOR_RED_BRIGHT;
+            if (ratio > 0.5) return COLOR_RED;
+            if (ratio > 0.3) return COLOR_YELLOW;
+            return COLOR_GREEN;
+        };
+        auto ascii_bar = [](double ratio) -> std::string {
+            int n = static_cast<int>(ratio * 20 + 0.5);
+            if (n < 1) n = 1;
+            if (n > 20) n = 20;
+            return std::string(n, '#');
+        };
         print_separator("Filters per Application");
         std::vector<std::vector<std::string>> fa_rows;
 
-        // Find max count for gradient coloring
         long long max_fa_count = 0;
-        for (const auto& [app_name, filters] : agg.filter_by_app) {
-            for (const auto& [filter, cnt] : filters) {
-                if (cnt > max_fa_count) max_fa_count = cnt;
-            }
-        }
+        for (const auto& [key, cnt] : agg.filter_by_app)
+            if (cnt > max_fa_count) max_fa_count = cnt;
 
-        std::string prev_app;
+        std::string current_app;
         int app_color_idx = 0;
-        for (const auto& [app_name, filters] : agg.filter_by_app) {
-            auto sorted_filters = sort_map_by_value_desc(filters);
-            int rank = 0;
-            for (const auto& [filter, cnt] : sorted_filters) {
-                if (++rank > limit) break;
-
-                std::string app_display = app_name;
-                if (color_mode >= 1) {
-                    if (app_name != prev_app) {
-                        app_color_idx++;
-                        prev_app = app_name;
+        std::vector<std::pair<long long, std::string>> app_filters;
+        for (const auto& [key, cnt] : agg.filter_by_app) {
+            if (key.first != current_app) {
+                if (!current_app.empty()) {
+                    std::sort(app_filters.begin(), app_filters.end(), std::greater<>());
+                    int rank = 0;
+                    for (const auto& [fcnt, f] : app_filters) {
+                        if (++rank > limit) break;
+                        std::string app_display = current_app;
+                        if (color_mode >= 1) {
+                            std::string app_color = (app_color_idx % 2 == 0) ? COLOR_CYAN : COLOR_GREEN;
+                            app_display = app_color + current_app + COLOR_RESET;
+                        }
+                        std::string color = (color_mode >= 1)
+                            ? gradient_color(static_cast<double>(fcnt) / max_fa_count) : "";
+                        std::string bar = (color_mode >= 1)
+                            ? ascii_bar(static_cast<double>(fcnt) / max_fa_count) : "";
+                        fa_rows.push_back({app_display, f, fmt_int(fcnt) + " " + color + bar});
                     }
+                    app_filters.clear();
+                }
+                current_app = key.first;
+                app_color_idx++;
+            }
+            app_filters.emplace_back(cnt, key.second);
+        }
+        if (!current_app.empty()) {
+            std::sort(app_filters.begin(), app_filters.end(), std::greater<>());
+            int rank = 0;
+            for (const auto& [fcnt, f] : app_filters) {
+                if (++rank > limit) break;
+                std::string app_display = current_app;
+                if (color_mode >= 1) {
                     std::string app_color = (app_color_idx % 2 == 0) ? COLOR_CYAN : COLOR_GREEN;
-                    app_display = app_color + app_name + COLOR_RESET;
+                    app_display = app_color + current_app + COLOR_RESET;
                 }
-
-                std::string cnt_str = fmt_int(cnt);
-                if (color_mode >= 1 && max_fa_count > 0) {
-                    double ratio = static_cast<double>(cnt) / max_fa_count;
-                    std::string c;
-                    if (ratio > 0.8) c = COLOR_RED_BRIGHT;
-                    else if (ratio > 0.5) c = COLOR_RED;
-                    else if (ratio > 0.3) c = COLOR_YELLOW;
-                    else c = COLOR_GREEN;
-                    cnt_str = c + cnt_str + COLOR_RESET;
-                }
-
-                fa_rows.push_back({app_display, filter, cnt_str});
+                std::string color = (color_mode >= 1)
+                    ? gradient_color(static_cast<double>(fcnt) / max_fa_count) : "";
+                std::string bar = (color_mode >= 1)
+                    ? ascii_bar(static_cast<double>(fcnt) / max_fa_count) : "";
+                fa_rows.push_back({app_display, f, fmt_int(fcnt) + " " + color + bar});
             }
         }
-        print_table({"App", "Filter", "Count"}, fa_rows);
+        print_table({"Application", "Filter", "Count"}, fa_rows);
     }
 
     // Top requested attributes
@@ -572,8 +633,8 @@ void print_text_report(const Aggregator& agg, double processing_time, bool compa
     // Identifies which client applications (by "who" field) issued the
     // most operations and consumed the most server time.
     if (has_section("apps")) {
-        print_string_count_map("Top Applications (by count)", "Application", agg.app_count, limit);
-        print_string_double_map("Top Applications (by etime)", "Application", agg.app_etime_total, limit);
+        print_string_count_map("Top Applications (by count)", "Application", agg.app_stats, limit);
+        print_string_double_map("Top Applications (by etime)", "Application", agg.app_stats, limit);
     }
 
     // Extended operations
@@ -919,34 +980,48 @@ void print_html_report(const Aggregator& agg, double duration, bool /*compact*/)
     }
 
     // Top search bases
-    auto print_h_count_table = [&](const std::string& title, const std::string& col1, const std::map<std::string, long long>& m, int limit = 20) {
+    auto print_h_count_table = [&](const std::string& title, const std::string& col1, const auto& m, int limit = 20) {
         if (m.empty()) return;
         std::cout << "<h2>" << title << "</h2>\n<table>\n<tr><th>" << col1 << "</th><th>Count</th></tr>\n";
-        auto sorted = sort_map_by_value_desc(m);
+        std::vector<std::pair<long long, std::string>> sorted;
+        for (const auto& [key, val] : m) {
+            if constexpr (std::is_arithmetic_v<std::decay_t<decltype(val)>>)
+                sorted.emplace_back(val, key);
+            else
+                sorted.emplace_back(val.count, key);
+        }
+        std::sort(sorted.begin(), sorted.end(), std::greater<>());
         int cnt = 0;
-        for (const auto& [key, val] : sorted) {
+        for (const auto& [c, key] : sorted) {
             if (cnt++ >= limit) break;
-            std::cout << "<tr><td>" << key << "</td><td>" << val << "</td></tr>\n";
+            std::cout << "<tr><td>" << key << "</td><td>" << c << "</td></tr>\n";
         }
         std::cout << "</table>\n";
     };
-    auto print_h_double_table = [&](const std::string& title, const std::string& col1, const std::map<std::string, double>& m, int limit = 20) {
+    auto print_h_double_table = [&](const std::string& title, const std::string& col1, const auto& m, int limit = 20) {
         if (m.empty()) return;
         std::cout << "<h2>" << title << "</h2>\n<table>\n<tr><th>" << col1 << "</th><th>Total etime</th></tr>\n";
-        auto sorted = sort_map_by_value_desc_double(m);
+        std::vector<std::pair<double, std::string>> sorted;
+        for (const auto& [key, val] : m) {
+            if constexpr (std::is_same_v<std::decay_t<decltype(val)>, double>)
+                sorted.emplace_back(val, key);
+            else
+                sorted.emplace_back(val.etime_total, key);
+        }
+        std::sort(sorted.begin(), sorted.end(), std::greater<>());
         int cnt = 0;
-        for (const auto& [key, val] : sorted) {
+        for (const auto& [t, key] : sorted) {
             if (cnt++ >= limit) break;
-            std::cout << "<tr><td>" << key << "</td><td><span style=\"" << etime_color(val) << "\">" << fmt_double(val) << "</span></td></tr>\n";
+            std::cout << "<tr><td>" << key << "</td><td><span style=\"" << etime_color(t) << "\">" << fmt_double(t) << "</span></td></tr>\n";
         }
         std::cout << "</table>\n";
     };
 
-    print_h_count_table("Top Search Bases (by count)", "Base", agg.base_count);
-    print_h_double_table("Top Search Bases (by etime)", "Base", agg.base_etime_total);
+    print_h_count_table("Top Search Bases (by count)", "Base", agg.base_stats);
+    print_h_double_table("Top Search Bases (by etime)", "Base", agg.base_stats);
 
-    print_h_count_table("Top Filters (by count)", "Filter", agg.filter_count);
-    print_h_double_table("Top Filters (by etime)", "Filter", agg.filter_etime_total);
+    print_h_count_table("Top Filters (by count)", "Filter", agg.filter_stats);
+    print_h_double_table("Top Filters (by etime)", "Filter", agg.filter_stats);
     print_h_count_table("Top Filters (nentries=1)", "Filter", agg.norm_filter_n1_count);
     print_h_count_table("Top Filters (nentries=0)", "Filter", agg.norm_filter_n0_count);
     print_h_count_table("Top Wildcard Filters", "Wildcard Filter", agg.wildcard_filter_count);
@@ -955,8 +1030,8 @@ void print_html_report(const Aggregator& agg, double duration, bool /*compact*/)
     print_h_count_table("Top Requested Attributes", "Attribute", agg.attr_count);
 
     // Top applications
-    print_h_count_table("Top Applications (by count)", "Application", agg.app_count);
-    print_h_double_table("Top Applications (by etime)", "Application", agg.app_etime_total);
+    print_h_count_table("Top Applications (by count)", "Application", agg.app_stats);
+    print_h_double_table("Top Applications (by etime)", "Application", agg.app_stats);
 
     // Filters per application
     // HTML version of the per-app filter table; count cells are coloured
@@ -964,18 +1039,36 @@ void print_html_report(const Aggregator& agg, double duration, bool /*compact*/)
     if (!agg.filter_by_app.empty()) {
         std::cout << "<h2>Filters per Application</h2>\n<table>\n<tr><th>App</th><th>Filter</th><th>Count</th></tr>\n";
         long long max_fa_count = 0;
-        for (const auto& [app_name, filters] : agg.filter_by_app) {
-            for (const auto& [filter, cnt] : filters) {
-                if (cnt > max_fa_count) max_fa_count = cnt;
+        for (const auto& [key, cnt] : agg.filter_by_app)
+            if (cnt > max_fa_count) max_fa_count = cnt;
+
+        std::string current_app;
+        std::vector<std::pair<long long, std::string>> app_filters;
+        for (const auto& [key, cnt] : agg.filter_by_app) {
+            if (key.first != current_app) {
+                if (!current_app.empty()) {
+                    std::sort(app_filters.begin(), app_filters.end(), std::greater<>());
+                    int rank = 0;
+                    for (const auto& [fcnt, f] : app_filters) {
+                        if (++rank > 20) break;
+                        std::cout << "<tr><td>" << current_app << "</td><td>" << f
+                                  << "</td><td style=\"" << gradient_ratio(fcnt, max_fa_count)
+                                  << "\">" << fcnt << "</td></tr>\n";
+                    }
+                    app_filters.clear();
+                }
+                current_app = key.first;
             }
+            app_filters.emplace_back(cnt, key.second);
         }
-        for (const auto& [app_name, filters] : agg.filter_by_app) {
-            auto sorted_filters = sort_map_by_value_desc(filters);
+        if (!current_app.empty()) {
+            std::sort(app_filters.begin(), app_filters.end(), std::greater<>());
             int rank = 0;
-            for (const auto& [filter, cnt] : sorted_filters) {
+            for (const auto& [fcnt, f] : app_filters) {
                 if (++rank > 20) break;
-                std::cout << "<tr><td>" << app_name << "</td><td>" << filter
-                          << "</td><td style=\"" << gradient_ratio(cnt, max_fa_count) << "\">" << cnt << "</td></tr>\n";
+                std::cout << "<tr><td>" << current_app << "</td><td>" << f
+                          << "</td><td style=\"" << gradient_ratio(fcnt, max_fa_count)
+                          << "\">" << fcnt << "</td></tr>\n";
             }
         }
         std::cout << "</table>\n";
@@ -1167,15 +1260,17 @@ void print_json_report(const Aggregator& agg, double duration, bool /*compact*/)
     // Top bases
     // Array of objects sorted by count descending (limit 20).
     json bases = json::array();
-    auto bases_sorted = sort_map_by_value_desc(agg.base_count);
+    std::vector<std::pair<long long, std::string>> bases_sorted;
+    for (const auto& [k, v] : agg.base_stats) bases_sorted.emplace_back(v.count, k);
+    std::sort(bases_sorted.begin(), bases_sorted.end(), std::greater<>());
     int count = 0;
-    for (const auto& [base, c] : bases_sorted) {
+    for (const auto& [c, base] : bases_sorted) {
         if (count++ >= 20) break;
         json entry;
         entry["base"] = base;
         entry["count"] = c;
-        auto it = agg.base_etime_total.find(base);
-        if (it != agg.base_etime_total.end()) entry["etime_total"] = it->second;
+        auto it = agg.base_stats.find(base);
+        if (it != agg.base_stats.end()) entry["etime_total"] = it->second.etime_total;
         bases.push_back(entry);
     }
     report["top_bases"] = bases;
@@ -1183,15 +1278,17 @@ void print_json_report(const Aggregator& agg, double duration, bool /*compact*/)
     // Top filters
     // Array of objects sorted by count descending (limit 20).
     json filters = json::array();
-    auto filters_sorted = sort_map_by_value_desc(agg.filter_count);
+    std::vector<std::pair<long long, std::string>> filters_sorted;
+    for (const auto& [k, v] : agg.filter_stats) filters_sorted.emplace_back(v.count, k);
+    std::sort(filters_sorted.begin(), filters_sorted.end(), std::greater<>());
     count = 0;
-    for (const auto& [filter, c] : filters_sorted) {
+    for (const auto& [c, filter] : filters_sorted) {
         if (count++ >= 20) break;
         json entry;
         entry["filter"] = filter;
         entry["count"] = c;
-        auto it = agg.filter_etime_total.find(filter);
-        if (it != agg.filter_etime_total.end()) entry["etime_total"] = it->second;
+        auto it = agg.filter_stats.find(filter);
+        if (it != agg.filter_stats.end()) entry["etime_total"] = it->second.etime_total;
         filters.push_back(entry);
     }
     report["top_filters"] = filters;

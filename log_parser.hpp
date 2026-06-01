@@ -248,21 +248,26 @@ struct Aggregator {
     double qtime_total = 0.0; // Sum of qtime across all completed operations.
 
     // -- Per-app breakdown --
-    std::map<std::string, long long> app_count;       // App name -> operation count.
-    std::map<std::string, double> app_etime_total;    // App name -> sum of etime.
+    // Combined into a single map so each unique app name stores its
+    // string key once instead of twice (was app_count + app_etime_total).
+    struct AppInfo { long long count = 0; double etime_total = 0.0; };
+    std::map<std::string, AppInfo> app_stats;
 
     // -- Per-base breakdown --
-    std::map<std::string, long long> base_count;      // Search base DN -> count.
-    std::map<std::string, double> base_etime_total;   // Search base DN -> sum of etime.
+    struct BaseInfo { long long count = 0; double etime_total = 0.0; };
+    std::map<std::string, BaseInfo> base_stats;
 
     // -- Per-filter breakdown --
-    std::map<std::string, long long> filter_count;          // Filter string -> count.
-    std::map<std::string, double> filter_etime_total;       // Filter string -> sum of etime.
+    struct FilterInfo { long long count = 0; double etime_total = 0.0; };
+    std::map<std::string, FilterInfo> filter_stats;
     std::map<std::string, long long> norm_filter_attrs_count;  // Normalised filter (attrs only) -> count.
     std::map<std::string, long long> norm_filter_n1_count;     // Normalised filter with 1 RDN -> count.
     std::map<std::string, long long> norm_filter_n0_count;     // Normalised filter with 0 RDNs -> count.
     std::map<std::string, long long> wildcard_filter_count;    // Filters containing wildcards -> count.
-    std::map<std::string, std::map<std::string, long long>> filter_by_app; // App -> filter -> count.
+    // Flat map (app, filter) -> count. Was a nested map, which stored
+    // duplicated filter strings per app; a single combined key avoids
+    // the per-app map node overhead.
+    std::map<std::pair<std::string, std::string>, long long> filter_by_app;
     std::map<std::string, long long> attr_count;            // Requested attribute -> count.
 
     // -- "?" (unindexed) filter tracking --
