@@ -494,18 +494,42 @@ int main(int argc, char* argv[]) {
     }
 
     // ------------------------------------------------------------------
-    // Worker threads: one thread per file.
+    // Worker threads: bounded thread pool.
     //
-    // Each thread captures its index by value (i) to avoid races, calls
-    // process_file() on its slice of the file list, and increments
-    // files_done when finished.  The per-thread Aggregator (thread_aggs[i])
-    // accumulates results without any locking.
+    // Spawning one thread per file is the simplest model and works well
+    // for a handful of files.  On large directories with hundreds of
+    // files, however, it creates resource pressure (memory, fd limits)
+    // that can lead to allocation failures and std::terminate.
+    //
+    // Instead we cap the pool at a reasonable concurrency level
+    // (hardware concurrency, at least 1), and farm out files via an
+    // atomic work-stealing index.  Each worker body is wrapped in a
+    // try/catch so that a corrupt or unreadable file never kills the
+    // entire run — the exception is caught, a diagnostic is printed,
+    // and the worker proceeds to the next file.
     // ------------------------------------------------------------------
-    std::vector<std::thread> workers;
-    for (size_t i = 0; i < files.size(); ++i) {
-        workers.emplace_back([&, i]() {
-            process_file(files[i], thread_aggs[i], progress);
-            files_done++;
+    size_t num_workers = std::thread::hardware_concurrency();
+    if (num_workers == 0) num_workers = 1;
+    if (num_workers > files.size()) num_workers = files.size();
+
+    std::vector<std::thread> workers(num_workers);
+    std::atomic<size_t> next_file(0);
+
+    for (auto& t : workers) {
+        t = std::thread([&]() {
+            for (;;) {
+                size_t i = next_file.fetch_add(1, std::memory_order_relaxed);
+                if (i >= files.size()) break;
+                try {
+                    process_file(files[i], thread_aggs[i], progress);
+                } catch (const std::exception& e) {
+                    std::cerr << "\nError processing " << files[i] << ": "
+                              << e.what() << "\n";
+                } catch (...) {
+                    std::cerr << "\nUnknown error processing " << files[i] << "\n";
+                }
+                files_done++;
+            }
         });
     }
 
