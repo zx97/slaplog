@@ -27,3 +27,4 @@ build_number.txt
 *~
 *.swp
 *.tmp
+session*.md
