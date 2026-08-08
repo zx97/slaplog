@@ -48,6 +48,7 @@
 #include <vector>
 #include <iostream>
 #include <mutex>
+#include <atomic>
 #include <fstream>
 #include <cstring>
 #include <zlib.h>
@@ -62,6 +63,66 @@
 #include <charconv>
 
 // using namespace slaplog_rx;
+
+static LogFormat g_log_format = LogFormat::AUTO;
+
+static std::mutex g_replay_mtx;
+static std::ofstream g_replay_file;
+static std::string g_replay_path;
+static long long g_replay_ops_written = 0;
+static long long g_replay_ops_limit = 1000000;
+static long long g_replay_ops_dropped = 0;
+
+void set_log_format(LogFormat fmt) {
+    g_log_format = fmt;
+}
+
+LogFormat get_log_format() {
+    return g_log_format;
+}
+
+void init_replay_tempfile() {
+    char tmp[] = "/tmp/slaplog_replay_XXXXXX";
+    int fd = mkstemp(tmp);
+    if (fd >= 0) {
+        g_replay_path = tmp;
+        g_replay_file.open(g_replay_path, std::ios::out);
+        close(fd);
+    }
+    g_replay_ops_written = 0;
+    g_replay_ops_dropped = 0;
+}
+
+void cleanup_replay_tempfile() {
+    std::lock_guard<std::mutex> lock(g_replay_mtx);
+    if (g_replay_file.is_open()) g_replay_file.close();
+    if (!g_replay_path.empty()) std::remove(g_replay_path.c_str());
+}
+
+std::string get_replay_tempfile_path() {
+    std::lock_guard<std::mutex> lock(g_replay_mtx);
+    return g_replay_path;
+}
+
+void close_replay_tempfile() {
+    std::lock_guard<std::mutex> lock(g_replay_mtx);
+    if (g_replay_file.is_open()) {
+        g_replay_file.flush();
+        g_replay_file.close();
+    }
+}
+
+long long get_replay_ops_written() {
+    return g_replay_ops_written;
+}
+
+long long get_replay_ops_dropped() {
+    return g_replay_ops_dropped;
+}
+
+void set_replay_ops_limit(long long limit) {
+    g_replay_ops_limit = limit;
+}
 
 // =========================================================================
 // Helper Functions — string manipulation and data conversion
@@ -246,7 +307,7 @@
  * Maintains agg.firsttime (earliest) and agg.lasttime (latest) timestamps
  * by comparing sort keys derived via ts_sort_key().
  */
-    void update_time_bounds(Aggregator& agg, const std::string& ts) {
+void update_time_bounds(Aggregator& agg, const std::string& ts) {
         if (ts.empty()) return;
         std::string key = ts_sort_key(ts);
         if (agg.firsttime.empty() || key < ts_sort_key(agg.firsttime)) {
@@ -257,8 +318,319 @@
         }
     }
 
-// =========================================================================
-// Aggregator Helper Functions
+    // =========================================================================
+    // Log Format Conversion Functions
+    // =========================================================================
+
+    // Month name to number mapping for syslog format
+    static const std::map<std::string, int> MONTH_MAP = {
+        {"Jan", 1}, {"Feb", 2}, {"Mar", 3}, {"Apr", 4},
+        {"May", 5}, {"Jun", 6}, {"Jul", 7}, {"Aug", 8},
+        {"Sep", 9}, {"Oct", 10}, {"Nov", 11}, {"Dec", 12}
+    };
+
+    // Parse syslog timestamp (e.g., "Aug  5 14:23:01") to time_t
+    // Assumes current year if not specified
+    static std::chrono::system_clock::time_point parse_syslog_timestamp(const std::string& ts, bool is_utc) {
+        std::tm tm = {};
+        char mon[4] = {};
+        int day = 0, hour = 0, min = 0, sec = 0;
+
+        if (std::sscanf(ts.c_str(), "%3s %d %d:%d:%d", mon, &day, &hour, &min, &sec) != 5) {
+            return {};
+        }
+
+        std::string mon_str(mon);
+        auto it = MONTH_MAP.find(mon_str);
+        if (it == MONTH_MAP.end()) return {};
+
+        tm.tm_mon = it->second - 1;
+        tm.tm_mday = day;
+        tm.tm_hour = hour;
+        tm.tm_min = min;
+        tm.tm_sec = sec;
+        tm.tm_isdst = -1;
+
+        auto now = std::chrono::system_clock::now();
+        std::time_t now_c = std::chrono::system_clock::to_time_t(now);
+        std::tm* now_tm = std::localtime(&now_c);
+        tm.tm_year = now_tm->tm_year;
+
+        if (is_utc) {
+            std::time_t t = std::mktime(&tm);
+            std::tm local_tm = *std::localtime(&t);
+            std::tm utc_tm = *std::gmtime(&t);
+            long offset = static_cast<long>(difftime(std::mktime(&local_tm), std::mktime(&utc_tm)));
+            return std::chrono::system_clock::from_time_t(t - offset);
+        } else {
+            return std::chrono::system_clock::from_time_t(std::mktime(&tm));
+        }
+    }
+
+    // Parse debug format hex timestamp (e.g., "411d2b6a.1f4b2c3a")
+    static std::chrono::system_clock::time_point parse_debug_timestamp(const std::string& ts) {
+        size_t dot_pos = ts.find('.');
+        if (dot_pos == std::string::npos) return {};
+
+        std::string sec_hex = ts.substr(0, dot_pos);
+        std::string frac_hex = ts.substr(dot_pos + 1);
+
+        unsigned long long sec = 0;
+        unsigned long long frac = 0;
+
+        try {
+            sec = std::stoull(sec_hex, nullptr, 16);
+            frac = std::stoull(frac_hex, nullptr, 16);
+        } catch (...) {
+            return {};
+        }
+
+        // frac is in nanoseconds (9 hex digits) or microseconds (5-6 hex digits)
+        // Determine precision by length
+        long long nsec = 0;
+        if (frac_hex.length() >= 8) {
+            // Nanoseconds (9 hex digits = 36 bits, max ~68ns * 2^36... actually 9 hex = 36 bits)
+            // But the format uses %08x or %09ld - let's handle both
+            nsec = static_cast<long long>(frac);
+        } else {
+            // Microseconds - convert to nanoseconds
+            nsec = static_cast<long long>(frac) * 1000;
+        }
+
+        auto tp = std::chrono::system_clock::from_time_t(static_cast<std::time_t>(sec));
+        tp += std::chrono::nanoseconds(nsec);
+        return tp;
+    }
+
+    // Convert time_point to RFC3339 UTC string
+    static std::string format_rfc3339_utc(std::chrono::system_clock::time_point tp) {
+        std::time_t t = std::chrono::system_clock::to_time_t(tp);
+        std::tm* tm = std::gmtime(&t);
+
+        // Get fractional seconds
+        auto duration = tp.time_since_epoch();
+        auto secs = std::chrono::duration_cast<std::chrono::seconds>(duration);
+        auto frac = duration - secs;
+        long long nsec = std::chrono::duration_cast<std::chrono::nanoseconds>(frac).count();
+
+        std::ostringstream oss;
+        oss << std::put_time(tm, "%Y-%m-%dT%H:%M:%S");
+        if (nsec > 0) {
+            oss << '.' << std::setw(9) << std::setfill('0') << nsec;
+        }
+        oss << 'Z';
+        return oss.str();
+    }
+
+    std::string convert_to_rfc3339_utc(const std::string& timestamp, LogFormat fmt) {
+        std::chrono::system_clock::time_point tp;
+
+        switch (fmt) {
+            case LogFormat::DEBUG: {
+                // Format: "411d2b6a.1f4b2c3a" (hex seconds.hex fraction)
+                tp = parse_debug_timestamp(timestamp);
+                break;
+            }
+            case LogFormat::SYSLOG_UTC: {
+                // Format: "Aug  5 14:23:01" (UTC)
+                tp = parse_syslog_timestamp(timestamp, true);
+                break;
+            }
+            case LogFormat::SYSLOG_LOCALTIME: {
+                // Format: "Aug  5 14:23:01" (local time)
+                tp = parse_syslog_timestamp(timestamp, false);
+                break;
+            }
+            case LogFormat::RFC3339_UTC: {
+                // Already in RFC3339 UTC format (with fractional seconds and Z)
+                // Example: "2026-08-05T14:23:01.123456789Z"
+                return timestamp;
+            }
+            case LogFormat::OL26: {
+                // Format: "[2024-01-15T08:30:00+00:00]" - strip brackets
+                std::string ts = timestamp;
+                if (ts.size() >= 2 && ts.front() == '[' && ts.back() == ']') {
+                    ts = ts.substr(1, ts.size() - 2);
+                }
+                // Parse as RFC3339
+                std::tm tm = {};
+                std::istringstream ss(ts);
+                ss >> std::get_time(&tm, "%Y-%m-%dT%H:%M:%S");
+                if (ss.fail()) return "";
+                tp = std::chrono::system_clock::from_time_t(std::mktime(&tm));
+                break;
+            }
+            case LogFormat::RFC3339: {
+                // Generic RFC3339
+                std::tm tm = {};
+                std::istringstream ss(timestamp);
+                ss >> std::get_time(&tm, "%Y-%m-%dT%H:%M:%S");
+                if (ss.fail()) return "";
+                tp = std::chrono::system_clock::from_time_t(std::mktime(&tm));
+                break;
+            }
+            case LogFormat::SYSLOG: {
+                // Generic syslog - try UTC first
+                tp = parse_syslog_timestamp(timestamp, true);
+                break;
+            }
+            case LogFormat::AUTO:
+            default:
+                return "";
+        }
+
+        if (tp == std::chrono::system_clock::time_point{}) return "";
+        return format_rfc3339_utc(tp);
+    }
+
+    std::chrono::system_clock::time_point parse_any_timestamp(const std::string& timestamp) {
+        if (timestamp.empty()) return {};
+
+        // Try RFC3339 format first (most specific)
+        static const std::regex rfc3339(R"(^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2}))");
+        std::smatch m;
+        if (std::regex_search(timestamp, m, rfc3339)) {
+            std::tm tm = {};
+            std::istringstream ss(timestamp);
+            ss >> std::get_time(&tm, "%Y-%m-%dT%H:%M:%S");
+            if (!ss.fail()) {
+                return std::chrono::system_clock::from_time_t(std::mktime(&tm));
+            }
+        }
+
+        // Try syslog format
+        static const std::regex syslog(R"(^([A-Z][a-z]{2})\s+(\d+)\s+(\d{2}):(\d{2}):(\d{2}))");
+        if (std::regex_search(timestamp, m, syslog)) {
+            return parse_syslog_timestamp(timestamp, true);
+        }
+
+        // Try debug format (hex timestamp)
+        static const std::regex debug(R"(^[0-9a-f]{8}\.[0-9a-f]+)");
+        if (std::regex_search(timestamp, m, debug)) {
+            return parse_debug_timestamp(timestamp);
+        }
+
+        return {};
+    }
+
+    std::string format_timestamp(std::chrono::system_clock::time_point tp, const std::string& format) {
+        if (tp == std::chrono::system_clock::time_point{}) return "";
+
+        if (format == "epoch") {
+            auto epoch = std::chrono::duration_cast<std::chrono::seconds>(tp.time_since_epoch()).count();
+            return std::to_string(epoch);
+        } else if (format == "iso8601") {
+            auto in_time_t = std::chrono::system_clock::to_time_t(tp);
+            std::tm* tm = std::localtime(&in_time_t);
+            char buf[32];
+            std::strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%S", tm);
+            return buf;
+        } else if (format == "syslog") {
+            auto in_time_t = std::chrono::system_clock::to_time_t(tp);
+            std::tm* tm = std::localtime(&in_time_t);
+            char buf[32];
+            std::strftime(buf, sizeof(buf), "%b %d %H:%M:%S", tm);
+            return buf;
+        } else {
+            // Default: RFC3339 UTC
+            return format_rfc3339_utc(tp);
+        }
+    }
+
+    bool try_parse_header(const std::string& line, LogFormat fmt,
+                          std::string& timestamp, std::string& host,
+                          std::string& proc, std::string& rest,
+                          LogFormat* detected_fmt) {
+        std::smatch m;
+
+        switch (fmt) {
+            case LogFormat::DEBUG: {
+                if (std::regex_match(line, m, slaplog_rx::RE_HDR_DEBUG)) {
+                    timestamp = m[1].str() + "." + m[2].str();
+                    // m[3] is thread ID, we skip it
+                    rest = m[4].str();
+                    if (detected_fmt) *detected_fmt = LogFormat::DEBUG;
+                    return true;
+                }
+                break;
+            }
+            case LogFormat::SYSLOG_UTC:
+            case LogFormat::SYSLOG_LOCALTIME:
+            case LogFormat::SYSLOG: {
+                if (std::regex_match(line, m, slaplog_rx::RE_HDR_SYSLOG)) {
+                    timestamp = m[1].str();
+                    host = m[2].str();
+                    proc = m[3].str();
+                    rest = m[4].str();
+                    if (detected_fmt) *detected_fmt = fmt;
+                    return true;
+                }
+                if (std::regex_match(line, m, slaplog_rx::RE_HDR_SYSLOG_UTC)) {
+                    timestamp = m[1].str();
+                    host = m[2].str();
+                    proc = m[3].str();
+                    rest = m[4].str();
+                    if (detected_fmt) *detected_fmt = LogFormat::SYSLOG_UTC;
+                    return true;
+                }
+                if (std::regex_match(line, m, slaplog_rx::RE_HDR_SYSLOG_LOCAL)) {
+                    timestamp = m[1].str();
+                    host = m[2].str();
+                    proc = m[3].str();
+                    rest = m[4].str();
+                    if (detected_fmt) *detected_fmt = LogFormat::SYSLOG_LOCALTIME;
+                    return true;
+                }
+                break;
+            }
+            case LogFormat::RFC3339_UTC: {
+                if (std::regex_match(line, m, slaplog_rx::RE_HDR_RFC3339_UTC)) {
+                    timestamp = m[1].str();
+                    host = m[2].str();
+                    proc = m[3].str();
+                    rest = m[4].str();
+                    if (detected_fmt) *detected_fmt = LogFormat::RFC3339_UTC;
+                    return true;
+                }
+                break;
+            }
+            case LogFormat::OL26: {
+                if (std::regex_match(line, m, slaplog_rx::RE_HDR_OL26)) {
+                    timestamp = m[1].str();
+                    rest = m[2].str();
+                    if (detected_fmt) *detected_fmt = LogFormat::OL26;
+                    return true;
+                }
+                break;
+            }
+            case LogFormat::RFC3339: {
+                if (std::regex_match(line, m, slaplog_rx::RE_HDR_RFC3339)) {
+                    timestamp = m[1].str();
+                    host = m[2].str();
+                    proc = m[3].str();
+                    rest = m[4].str();
+                    if (detected_fmt) *detected_fmt = LogFormat::RFC3339;
+                    return true;
+                }
+                break;
+            }
+            case LogFormat::AUTO:
+            default: {
+                // Try all formats in order of specificity
+                if (try_parse_header(line, LogFormat::DEBUG, timestamp, host, proc, rest, detected_fmt)) return true;
+                if (try_parse_header(line, LogFormat::RFC3339_UTC, timestamp, host, proc, rest, detected_fmt)) return true;
+                if (try_parse_header(line, LogFormat::OL26, timestamp, host, proc, rest, detected_fmt)) return true;
+                if (try_parse_header(line, LogFormat::RFC3339, timestamp, host, proc, rest, detected_fmt)) return true;
+                if (try_parse_header(line, LogFormat::SYSLOG_UTC, timestamp, host, proc, rest, detected_fmt)) return true;
+                if (try_parse_header(line, LogFormat::SYSLOG_LOCALTIME, timestamp, host, proc, rest, detected_fmt)) return true;
+                break;
+            }
+        }
+        return false;
+    }
+
+    // =========================================================================
+    // Aggregator Helper Functions
 // =========================================================================
 
 /**
@@ -343,9 +715,8 @@
 /**
  * add_top_op: Insert a completed operation into the top-100 slowest list.
  *
- * Once the list exceeds 100 entries, it is sorted descending by etime
- * and truncated to keep only the top 100.  This avoids storing all
- * completed operations in memory while still capturing the slowest ones.
+ * The operation is also serialized to a temp file for replay output,
+ * keeping memory usage bounded regardless of total operation count.
  */
     /* struct TopOpRow {
        double etime;
@@ -360,6 +731,28 @@
        }; */
     void add_top_op(Aggregator& agg, const ::TopOpRow& row) {
         agg.top_ops.push_back(row);
+        bool limit_reached = g_replay_ops_limit > 0 && g_replay_ops_written >= g_replay_ops_limit;
+        if (!limit_reached) {
+            std::lock_guard<std::mutex> lock(g_replay_mtx);
+            if (g_replay_file.is_open()) {
+                g_replay_file << row.etime << '\t'
+                    << row.conn << '\t' << row.op << '\t'
+                    << row.type << '\t' << row.who << '\t'
+                    << row.base << '\t' << row.filter << '\t'
+                    << row.attrs << '\t'
+                    << (row.scope.has_value() ? std::to_string(*row.scope) : "") << '\t'
+                    << (row.deref.has_value() ? std::to_string(*row.deref) : "") << '\t'
+                    << row.binddn << '\t' << row.authcid << '\t'
+                    << row.authzid << '\t'
+                    << (row.nentries.has_value() ? std::to_string(*row.nentries) : "") << '\t'
+                    << (row.err.has_value() ? std::to_string(*row.err) : "") << '\t'
+                    << (row.qtime.has_value() ? std::to_string(*row.qtime) : "") << '\t'
+                    << row.text << '\t' << row.timestamp << '\n';
+            }
+            ++g_replay_ops_written;
+        } else {
+            ++g_replay_ops_dropped;
+        }
         if (agg.top_ops.size() > 100) {
             std::sort(agg.top_ops.begin(), agg.top_ops.end(),
                     [](const ::TopOpRow& a, const ::TopOpRow& b) { return a.etime > b.etime; });
@@ -423,75 +816,33 @@ Event parse_line(const std::string& line) {
     Event ev;
     ev.raw = line;
 
-    // ------------------------------------------------------------------
-    // Stage 1 — Header Parsing
-    // ------------------------------------------------------------------
-    // Three header formats are supported:
-    //   - OL26   : [2024-01-15T08:30:00] payload
-    //   - RFC3339: 2024-01-15T08:30:00.123456Z LOGNAME slapd[123]: payload
-    //   - SYSLOG : Jan 15 08:30:00 hostname slapd[123]: payload
-    //
-    // Each matcher populates ev.ts (timestamp) and optionally ev.host and
-    // ev.proc (process info).  The remainder (payload) is stored in `rest`.
-    //
-    // If none match, the line is UNKNOWN_LINE.
-    std::smatch m;
-    std::string rest;
+    std::string timestamp, host, proc, rest;
 
-    if (std::regex_match(line, m, slaplog_rx::RE_HDR_OL26)) {
-        ev.ts = m[1];
-        rest = m[2];
-    } else if (std::regex_match(line, m, slaplog_rx::RE_HDR_RFC3339)) {
-        ev.ts = m[1];
-        ev.host = m[2];
-        ev.proc = m[3];
-        rest = m[4];
-    } else if (std::regex_match(line, m, slaplog_rx::RE_HDR_SYSLOG)) {
-        ev.ts = m[1];
-        ev.host = m[2];
-        ev.proc = m[3];
-        rest = m[4].str();
-    } else {
+    LogFormat detected_fmt = g_log_format;
+    if (!try_parse_header(line, g_log_format, timestamp, host, proc, rest, &detected_fmt)) {
         ev.kind = "UNKNOWN_LINE";
         return ev;
     }
 
-    // ------------------------------------------------------------------
-    // Stage 1b — Cleanup
-    // ------------------------------------------------------------------
-    // Strip trailing carriage-return characters (common in Windows/DOS
-    // log files) and trim leading/trailing whitespace from the payload.
-    // IMPORTANT: espaces/CR doivent etre enleves avant regex avec '^'.
+    std::string rfc3339_ts = convert_to_rfc3339_utc(timestamp, detected_fmt);
+    if (!rfc3339_ts.empty()) {
+        ev.ts = rfc3339_ts;
+    } else {
+        ev.ts = timestamp;
+    }
+    ev.host = host;
+    ev.proc = proc;
+
     if (!rest.empty() && rest.back() == '\r')
         rest.pop_back();
     rest = trim(rest);
 
-    // DEBUG: afficher un seul log
-    /*
-       static bool once = true;
-       if (once) {
-       once = false;
-       std::cerr << "HDR MATCH RFC3339=" << std::regex_match(line, m, slaplog_rx::RE_HDR_RFC3339) << "\n";
-       std::cerr << "m.size=" << m.size() << "\n";
-       for (size_t i = 0; i < m.size(); ++i) std::cerr << "m["<<i<<"]="<<m[i].str()<<"\n";
-       std::cerr << "line="<<line<<"\n";
-       }
-       */
-    // Certains logs peuvent laisser des espaces en tete alors que nos
-    // regex utilisent '^'.  Strip any remaining leading whitespace.
     size_t p = 0;
     while (p < rest.size() && std::isspace(static_cast<unsigned char>(rest[p]))) ++p;
     if (p) rest.erase(0, p);
 
-    // ------------------------------------------------------------------
-    // Stage 2 — Connection and Operation ID Extraction
-    // ------------------------------------------------------------------
-    // The standard "conn=N op=M" prefix is matched with RE_CONN_OP.
-    // If it matches, both IDs and the remaining text are captured at once.
-    // Otherwise, individual RE_CONN and RE_OP patterns are searched for
-    // anywhere in the remainder (fallback for non-standard line formats).
-    //
-    // to_int() uses std::from_chars for efficient zero-allocation parsing.
+    std::smatch m;
+
     if (std::regex_match(rest, m, slaplog_rx::RE_CONN_OP)) {
         ev.conn = to_int(m[1]);
         ev.op = to_int(m[2]);
@@ -1351,6 +1702,8 @@ void update_aggregator(Aggregator& agg, const Event& ev,
         op.who = who;
         op.base = ev.base.empty() ? "" : normalize_filter(ev.base);
         op.filter = ev.filter.empty() ? "" : normalize_filter(ev.filter);
+        if (ev.scope.has_value()) op.scope = ev.scope;
+        if (ev.deref.has_value()) op.deref = ev.deref;
         if (!op.base.empty()) agg.base_stats[op.base].count++;
 
         if (!op.filter.empty()) {
@@ -1425,6 +1778,7 @@ void update_aggregator(Aggregator& agg, const Event& ev,
         if (ev.nentries.has_value()) op.nentries = ev.nentries;
         if (ev.tag.has_value()) op.tag = ev.tag;
         if (!ev.text.empty()) op.text = ev.text;
+        if (!ev.ts.empty()) op.timestamp = ev.ts;
 
         double etime = ev.etime.value_or(0.0);
 
@@ -1444,7 +1798,10 @@ void update_aggregator(Aggregator& agg, const Event& ev,
             agg.app_stats[who].etime_total += etime;
         }
 
-        add_top_op(agg, TopOpRow{etime, cid, opid, op.type, who, op.base, op.filter, op.nentries, op.err});
+        add_top_op(agg, TopOpRow{etime, cid, opid, op.type, who, op.base, op.filter,
+                                  op.attrs, op.scope, op.deref, conn.binddn, op.authcid,
+                                  op.authzid, op.nentries, op.err, op.qtime, op.text,
+                                  op.timestamp});
         conn.completed_ops++;
         conn.ops.erase(opid);
         return;
@@ -1484,6 +1841,7 @@ void update_aggregator(Aggregator& agg, const Event& ev,
         if (ev.nentries.has_value()) op.nentries = ev.nentries;
         if (ev.tag.has_value()) op.tag = ev.tag;
         if (!ev.text.empty()) op.text = ev.text;
+        if (!ev.ts.empty()) op.timestamp = ev.ts;
 
         double etime = ev.etime.value_or(0.0);
         bool is_search = (op.type == "SRCH");
@@ -1505,7 +1863,10 @@ void update_aggregator(Aggregator& agg, const Event& ev,
             agg.app_stats[who].etime_total += etime;
         }
 
-        add_top_op(agg, TopOpRow{etime, cid, opid, op.type, who, op.base, op.filter, op.nentries, op.err});
+        add_top_op(agg, TopOpRow{etime, cid, opid, op.type, who, op.base, op.filter,
+                                  op.attrs, op.scope, op.deref, conn.binddn, op.authcid,
+                                  op.authzid, op.nentries, op.err, op.qtime, op.text,
+                                  op.timestamp});
         conn.completed_ops++;
         conn.ops.erase(opid);
         return;

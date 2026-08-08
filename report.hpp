@@ -33,35 +33,12 @@
 #include <set>
 #include <vector>
 
-/**
- * print_text_report  –  Formatted terminal output.
- *
- * @param agg         Aggregator holding all parsed log statistics.
- * @param duration    Wall-clock seconds spent processing the log files.
- * @param compact     When true, truncate "top-N" tables to 5 rows instead of 20.
- * @param color_mode  0 = no ANSI escapes, 1 = basic (errors), 2 = full (etime
- *                    gradient too).
- * @param sections    Set of section names to show; a set containing "all"
- *                    (or the empty default) means show everything.
- */
-void print_text_report(const Aggregator& agg, double duration, bool compact = false, int color_mode = 1, const std::set<std::string>& sections = {"all"});
+void print_text_report(const Aggregator& agg, double duration, bool compact = false, int color_mode = 1, const std::set<std::string>& sections = {"all"}, const std::string& output_date_format = "rfc3339");
 
-/**
- * print_html_report – Self-contained HTML page with inline CSS.
- *
- * @param agg         Aggregator with parsed statistics.
- * @param duration    Wall-clock processing time.
- * @param compact     Currently unused; reserved for future truncation.
- */
-void print_html_report(const Aggregator& agg, double duration, bool compact = false);
+void print_html_report(const Aggregator& agg, double duration, bool compact = false, const std::string& output_date_format = "rfc3339");
 
-/**
- * print_json_report – Machine-readable JSON via nlohmann/json.
- *
- * @param agg         Aggregator with parsed statistics.
- * @param duration    Wall-clock processing time.
- * @param compact     Currently unused; reserved for future truncation.
- */
-void print_json_report(const Aggregator& agg, double duration, bool compact = false);
+void print_json_report(const Aggregator& agg, double duration, bool compact = false, const std::string& output_date_format = "rfc3339");
+
+void print_replay_report(const Aggregator& agg, double duration, const std::string& output_date_format = "rfc3339", const std::string& separator = "|");
 
 #endif

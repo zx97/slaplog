@@ -57,10 +57,7 @@
 #include <regex>          // std::regex (included for potential regex-based filtering)
 #include <unistd.h>       // isatty() — auto-disable progress bar / colors on non-TTY
 
-#define SLAPLOG_VERSION "3.1.0"
-#ifndef BUILD_NUMBER
-#define BUILD_NUMBER 0
-#endif
+#include "version.hpp"
 #define STRINGIFY2(x) #x
 #define STRINGIFY(x) STRINGIFY2(x)
 #define SLAPLOG_BUILD __DATE__ " " __TIME__ " build " STRINGIFY(BUILD_NUMBER)
@@ -259,13 +256,19 @@ static std::vector<std::string> collect_input_files(const std::vector<std::strin
 //
 // Prints the help text describing all available CLI options:
 //
-//   -o, --output FORMAT        Select output format: text, textcolor, html, or json.
+//   -o, --output FORMAT        Select output format: text, textcolor, html, json, or replay.
 //   -c, --compact              Limit lists to top 5 instead of the default top 20.
 //   -r, --recursive            Recurse into subdirectories when scanning directories.
 //   -q, --quiet                Suppress the progress bar (batch / non-interactive use).
 //   -n, --max-files N          Analyze only the N most recently modified files.
 //   -m, --mtime DAYS           Analyze only files modified within the last DAYS days.
+//   -j, --jobs N               Worker thread count (default: CPU cores - 1).
 //   -s, --section LIST         Comma-separated list of report sections to include.
+//   --log-format FORMAT        Input log format: auto, debug, syslog-utc, syslog-localtime,
+//                               rfc3339-utc, ol26, rfc3339, syslog (default: auto).
+//   --output-date-format FMT   Output date format: rfc3339, iso8601, syslog, epoch, preserve.
+//   --replay-separator SEP     Delimiter for replay output (default: "|").
+//   --replay-limit N           Max ops stored for replay (default: 1000000, 0=unlimited).
 //   --unknown-lines FILE       Write unparseable log lines to a file, then generate report.
 //   --unknown-lines-only FILE  Same as above but skip the final report (extraction mode).
 //   -d, --debug                Enable verbose diagnostic output.
@@ -278,7 +281,7 @@ static void usage(const char* prog) {
     std::cerr << "License: GNU Affero General Public License v3.0 or later (https://www.gnu.org/licenses/agpl-3.0.html)\n";
     std::cerr << "Usage: " << prog << " [options] <logfile|directory> [file|dir ...]\n";
     std::cerr << "Options:\n";
-    std::cerr << "  -o, --output FORMAT        Output format: text | textcolor | html | json\n";
+    std::cerr << "  -o, --output FORMAT        Output format: text | textcolor | html | json | replay\n";
     std::cerr << "  -c, --compact              Compact output (top 5 instead of top 20)\n";
     std::cerr << "  -r, --recursive            Recurse into directories\n";
     std::cerr << "  -q, --quiet                Suppress the progress bar (batch mode)\n";
@@ -291,6 +294,14 @@ static void usage(const char* prog) {
     std::cerr << "                             filters_per_app,attrs,apps,extops,\n";
     std::cerr << "                             qmark,csn,server,index,sessions,\n";
     std::cerr << "                             topops,topconns\n";
+    std::cerr << "  --log-format FORMAT        Input log format: auto (default), debug,\n";
+    std::cerr << "                             syslog-utc, syslog-localtime, rfc3339-utc,\n";
+    std::cerr << "                             ol26, rfc3339, syslog\n";
+    std::cerr << "  --output-date-format FMT   Output date format: rfc3339 (default), iso8601,\n";
+    std::cerr << "                             syslog, epoch, preserve\n";
+    std::cerr << "  --replay-separator SEP     Delimiter for replay output (default: \"|\")\n";
+    std::cerr << "                             Use \"tab\" for tabulation, \"comma\" for CSV\n";
+    std::cerr << "  --replay-limit N           Max ops stored for replay (default: 1000000, 0=unlimited)\n";
     std::cerr << "  --unknown-lines FILE       Write unknown lines to FILE\n";
     std::cerr << "  --unknown-lines-only FILE  Like --unknown-lines, no final report\n";
     std::cerr << "  -D, --documentation        Print documentation to stdout\n";
@@ -324,13 +335,17 @@ int main(int argc, char* argv[]) {
     //
     // inputs              -- positional arguments (files / directories)
     // recursive           -- whether to traverse directories recursively
-    // output_format       -- "text", "textcolor" (default), "html", "json"
+    // output_format       -- "text", "textcolor" (default), "html", "json", "replay"
     // compact_mode        -- if true, show top 5 instead of top 20
     // unknown_lines_file  -- path for writing unparseable lines (empty = disabled)
     // unknown_lines_only  -- if true, skip the final report after writing unknowns
     // debug               -- enable extra diagnostic output on stderr
     // color_mode          -- 0 = plain text, 2 = ANSI color (derived from output_format)
     // enabled_sections    -- set of report sections; defaults to {"all"}
+    // log_format          -- input log format
+    // output_date_format  -- desired date format in reports
+    // replay_separator    -- delimiter for replay output (default: "|")
+    // replay_limit        -- max ops stored for replay (default: 1000000, 0=unlimited)
     // ------------------------------------------------------------------
     std::vector<std::string> inputs;
     bool recursive = false;
@@ -341,12 +356,16 @@ int main(int argc, char* argv[]) {
     bool show_documentation = false;
     bool show_licence = false;
     bool debug = false;
-    bool quiet = false;        // -q/--quiet: suppress the progress bar
-    int max_files = 0;         // --max-files N: keep N most recent files (0 = unlimited)
-    int mtime_days = 0;        // --mtime DAYS: keep files from last DAYS days (0 = no limit)
-    int jobs = 0;              // -j N: worker thread count (0 = auto: hw_concurrency - 1)
+    bool quiet = false;
+    int max_files = 0;
+    int mtime_days = 0;
+    int jobs = 0;
     int color_mode = 2;
     std::set<std::string> enabled_sections = {"all"};
+    std::string log_format_str = "auto";
+    std::string output_date_format = "rfc3339";
+    std::string replay_separator = "|";
+    int replay_limit = 1000000;
 
     // ------------------------------------------------------------------
     // Argument parsing loop.
@@ -394,8 +413,6 @@ int main(int argc, char* argv[]) {
             }
             if (jobs < 1) { std::cerr << "Error: " << arg << " must be >= 1\n"; return 1; }
         } else if ((arg == "-s" || arg == "--section") && i + 1 < argc) {
-            // When --section is used, the default "all" is removed from the
-            // set so that only the explicitly requested sections are shown.
             enabled_sections.erase("all");
             std::string val = argv[++i];
             std::istringstream iss(val);
@@ -403,6 +420,20 @@ int main(int argc, char* argv[]) {
             while (std::getline(iss, tok, ',')) {
                 if (!tok.empty()) enabled_sections.insert(tok);
             }
+        } else if ((arg == "--log-format") && i + 1 < argc) {
+            log_format_str = argv[++i];
+        } else if ((arg == "--output-date-format") && i + 1 < argc) {
+            output_date_format = argv[++i];
+        } else if ((arg == "--replay-separator") && i + 1 < argc) {
+            replay_separator = argv[++i];
+        } else if ((arg == "--replay-limit") && i + 1 < argc) {
+            try {
+                replay_limit = std::stoi(argv[++i]);
+            } catch (const std::exception&) {
+                std::cerr << "Error: invalid value for " << arg << " (expected integer)\n";
+                return 1;
+            }
+            if (replay_limit < 0) replay_limit = 0;
         } else if (arg == "--unknown-lines" && i + 1 < argc) {
             unknown_lines_file = argv[++i];
         } else if (arg == "--unknown-lines-only" && i + 1 < argc) {
@@ -427,6 +458,11 @@ int main(int argc, char* argv[]) {
         }
     }
 
+    set_log_format(parse_log_format(log_format_str));
+
+    if (replay_separator == "tab") replay_separator = "\t";
+    else if (replay_separator == "comma") replay_separator = ",";
+
     // ------------------------------------------------------------------
     // Auto-detect non-TTY output.
     //
@@ -439,11 +475,13 @@ int main(int argc, char* argv[]) {
     // An explicit -o textcolor still forces colour regardless.
     // ------------------------------------------------------------------
     if (!isatty(STDERR_FILENO) && !quiet) {
-        // User did not explicitly pass --quiet; auto-silence the bar.
         quiet = true;
     }
     if (!isatty(STDOUT_FILENO) && output_format == "textcolor") {
         output_format = "text";
+        color_mode = 0;
+    }
+    if (output_format == "replay") {
         color_mode = 0;
     }
 
@@ -534,6 +572,11 @@ int main(int argc, char* argv[]) {
     std::atomic<size_t> progress(0);
     std::atomic<size_t> files_done(0);
     auto start_time = std::chrono::system_clock::now();
+
+    if (output_format == "replay") {
+        init_replay_tempfile();
+        set_replay_ops_limit(replay_limit);
+    }
 
     // ------------------------------------------------------------------
     // Progress bar thread.
@@ -787,23 +830,28 @@ int main(int argc, char* argv[]) {
     //   - json       -> print_json_report()
     //   - html       -> print_html_report()
     //   - text       -> print_text_report()   with color_mode=0 (no colour)
+    //   - replay     -> print_replay_report() for jMeter/LoadRunner
     // ------------------------------------------------------------------
     try {
         if (output_format == "textcolor") {
-            print_text_report(final_agg, duration, compact_mode, 2, enabled_sections);
+            print_text_report(final_agg, duration, compact_mode, 2, enabled_sections, output_date_format);
         } else if (output_format == "json") {
-            print_json_report(final_agg, duration, compact_mode);
+            print_json_report(final_agg, duration, compact_mode, output_date_format);
         } else if (output_format == "html") {
-            print_html_report(final_agg, duration, compact_mode);
+            print_html_report(final_agg, duration, compact_mode, output_date_format);
+        } else if (output_format == "replay") {
+            print_replay_report(final_agg, duration, output_date_format, replay_separator);
         } else {
-            print_text_report(final_agg, duration, compact_mode, color_mode, enabled_sections);
+            print_text_report(final_agg, duration, compact_mode, color_mode, enabled_sections, output_date_format);
         }
     } catch (const std::exception& e) {
         std::cerr << "\nFatal error during report generation: " << e.what()
                   << "\nThe data was too large to format in the requested "
                      "output mode.\n";
+        cleanup_replay_tempfile();
         return 1;
     }
 
+    cleanup_replay_tempfile();
     return 0;
 }

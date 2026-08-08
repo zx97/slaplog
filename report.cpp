@@ -38,15 +38,14 @@
 #include <algorithm>
 #include <chrono>
 #include <sstream>
+#include <fstream>
 #include <map>
 #include <set>
 #include <tuple>
 #include <type_traits>
 #include <nlohmann/json.hpp>
 
-#ifndef SLAPLOG_VERSION
-#define SLAPLOG_VERSION "3.1.0"
-#endif
+#include "version.hpp"
 
 using json = nlohmann::json;
 
@@ -386,7 +385,7 @@ namespace {
  *   v > 0.1 s  → cyan           (acceptable)
  *   else       → green          (fast)
  */
-void print_text_report(const Aggregator& agg, double processing_time, bool compact, int color_mode, const std::set<std::string>& sections) {
+void print_text_report(const Aggregator& agg, double processing_time, bool compact, int color_mode, const std::set<std::string>& sections, const std::string& /*output_date_format*/) {
     set_color_output(color_mode);
     int limit = compact ? 5 : 20;
 
@@ -761,7 +760,7 @@ void print_text_report(const Aggregator& agg, double processing_time, bool compa
  *   > 0.1 s  → #00aaaa
  *   else     → #00aa00
  */
-void print_html_report(const Aggregator& agg, double duration, bool /*compact*/) {
+void print_html_report(const Aggregator& agg, double duration, bool /*compact*/, const std::string& /*output_date_format*/) {
     auto etime_color = [](double v) -> std::string {
         if (v > 5.0) return "color:#ff4444;font-weight:bold";
         if (v > 1.0) return "color:#cc0000";
@@ -1171,7 +1170,7 @@ void print_html_report(const Aggregator& agg, double duration, bool /*compact*/)
  *   "qmark_filter_attributes":  { attr: count, ... }
  * }
  */
-void print_json_report(const Aggregator& agg, double duration, bool /*compact*/) {
+void print_json_report(const Aggregator& agg, double duration, bool /*compact*/, const std::string& /*output_date_format*/) {
     json report;
 
     // Top-level scalar metrics
@@ -1359,4 +1358,115 @@ void print_json_report(const Aggregator& agg, double duration, bool /*compact*/)
 
     // Pretty-print with 2-space indentation
     std::cout << report.dump(2) << "\n";
+}
+
+void print_replay_report(const Aggregator& agg, double /*duration*/, const std::string& output_date_format, const std::string& separator) {
+    const char* sep = separator.c_str();
+    std::cout << "timestamp" << sep << "conn" << sep << "op" << sep << "type" << sep << "base" << sep << "filter" << sep << "attrs" << sep << "scope" << sep << "deref" << sep << "binddn" << sep << "authcid" << sep << "authzid" << sep << "err" << sep << "etime" << sep << "qtime" << sep << "nentries" << sep << "text\n";
+
+    long long dropped = get_replay_ops_dropped();
+    if (dropped > 0) {
+        std::cerr << "WARNING: " << dropped << " operations dropped due to --replay-limit. "
+                  << "Use --replay-limit 0 for unlimited.\n";
+    }
+
+    std::string path = get_replay_tempfile_path();
+    if (path.empty()) return;
+
+    close_replay_tempfile();
+
+    std::ifstream in(path);
+    if (!in.is_open()) return;
+
+    struct ReplayRow {
+        double etime; int conn; int op;
+        std::string type, who, base, filter, attrs;
+        std::string scope, deref;
+        std::string binddn, authcid, authzid;
+        std::string nentries, err, qtime;
+        std::string text, timestamp;
+    };
+
+    std::vector<ReplayRow> rows;
+    std::string line;
+    while (std::getline(in, line)) {
+        if (line.empty()) continue;
+        std::istringstream ss(line);
+        ReplayRow r{};
+        std::string etime_s;
+        std::getline(ss, etime_s, '\t'); r.etime = 0.0;
+        if (!etime_s.empty()) { try { r.etime = std::stod(etime_s); } catch (...) {} }
+        std::string conn_s, op_s;
+        std::getline(ss, conn_s, '\t'); r.conn = 0;
+        if (!conn_s.empty()) { try { r.conn = std::stoi(conn_s); } catch (...) {} }
+        std::getline(ss, op_s, '\t'); r.op = 0;
+        if (!op_s.empty()) { try { r.op = std::stoi(op_s); } catch (...) {} }
+        std::getline(ss, r.type, '\t');
+        std::getline(ss, r.who, '\t');
+        std::getline(ss, r.base, '\t');
+        std::getline(ss, r.filter, '\t');
+        std::getline(ss, r.attrs, '\t');
+        std::getline(ss, r.scope, '\t');
+        std::getline(ss, r.deref, '\t');
+        std::getline(ss, r.binddn, '\t');
+        std::getline(ss, r.authcid, '\t');
+        std::getline(ss, r.authzid, '\t');
+        std::getline(ss, r.nentries, '\t');
+        std::getline(ss, r.err, '\t');
+        std::getline(ss, r.qtime, '\t');
+        std::getline(ss, r.text, '\t');
+        std::getline(ss, r.timestamp, '\t');
+        rows.push_back(std::move(r));
+    }
+    in.close();
+
+    std::sort(rows.begin(), rows.end(),
+        [](const ReplayRow& a, const ReplayRow& b) {
+            if (a.timestamp < b.timestamp) return true;
+            if (a.timestamp > b.timestamp) return false;
+            if (a.conn != b.conn) return a.conn < b.conn;
+            return a.op < b.op;
+        });
+
+    auto scope_to_str = [](const std::string& s) -> std::string {
+        if (s.empty()) return "";
+        try {
+            switch (std::stoi(s)) {
+                case 0: return "base";
+                case 1: return "one";
+                case 2: return "sub";
+                default: return s;
+            }
+        } catch (...) { return s; }
+    };
+
+    for (const auto& r : rows) {
+        std::string timestamp = r.timestamp.empty() ? agg.firsttime : r.timestamp;
+        std::string ts = timestamp;
+        if (output_date_format != "preserve") {
+            auto tp = parse_any_timestamp(timestamp);
+            if (tp != std::chrono::system_clock::time_point{}) {
+                ts = format_timestamp(tp, output_date_format);
+            }
+        }
+        std::ostringstream out;
+        out << ts << sep;
+        out << r.conn << sep;
+        out << r.op << sep;
+        out << r.type << sep;
+        out << r.base << sep;
+        out << r.filter << sep;
+        out << r.attrs << sep;
+        out << scope_to_str(r.scope) << sep;
+        out << r.deref << sep;
+        out << r.binddn << sep;
+        out << r.authcid << sep;
+        out << r.authzid << sep;
+        out << r.err << sep;
+        out << fmt_double(r.etime) << sep;
+        out << r.qtime << sep;
+        out << r.nentries << sep;
+        out << r.text;
+        std::cout << out.str() << "\n";
+    }
 }

@@ -43,6 +43,86 @@
 #include <iomanip>
 #include <algorithm>
 #include <cctype>
+#include <variant>
+
+enum class LogFormat {
+    AUTO,
+    DEBUG,
+    SYSLOG_UTC,
+    SYSLOG_LOCALTIME,
+    RFC3339_UTC,
+    OL26,
+    RFC3339,
+    SYSLOG
+};
+
+inline std::string log_format_to_string(LogFormat fmt) {
+    switch (fmt) {
+        case LogFormat::AUTO: return "auto";
+        case LogFormat::DEBUG: return "debug";
+        case LogFormat::SYSLOG_UTC: return "syslog-utc";
+        case LogFormat::SYSLOG_LOCALTIME: return "syslog-localtime";
+        case LogFormat::RFC3339_UTC: return "rfc3339-utc";
+        case LogFormat::OL26: return "ol26";
+        case LogFormat::RFC3339: return "rfc3339";
+        case LogFormat::SYSLOG: return "syslog";
+    }
+    return "unknown";
+}
+
+inline LogFormat parse_log_format(const std::string& s) {
+    std::string lower = s;
+    std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
+    if (lower == "auto") return LogFormat::AUTO;
+    if (lower == "debug") return LogFormat::DEBUG;
+    if (lower == "syslog-utc") return LogFormat::SYSLOG_UTC;
+    if (lower == "syslog-localtime") return LogFormat::SYSLOG_LOCALTIME;
+    if (lower == "rfc3339-utc") return LogFormat::RFC3339_UTC;
+    if (lower == "ol26") return LogFormat::OL26;
+    if (lower == "rfc3339") return LogFormat::RFC3339;
+    if (lower == "syslog") return LogFormat::SYSLOG;
+    return LogFormat::AUTO;
+}
+
+std::string convert_to_rfc3339_utc(const std::string& timestamp, LogFormat fmt);
+
+/**
+ * parse_any_timestamp - Parse a timestamp in any supported format and return
+ * a time_point. This is used by the report functions to convert timestamps
+ * to the requested output format.
+ *
+ * @param timestamp  The timestamp string (any format)
+ * @return           The parsed time_point, or empty time_point on failure
+ */
+std::chrono::system_clock::time_point parse_any_timestamp(const std::string& timestamp);
+
+/**
+ * format_timestamp - Format a time_point according to the requested output format.
+ *
+ * @param tp          The time_point to format
+ * @param format      The output format: "rfc3339", "iso8601", "syslog", "epoch", "preserve"
+ * @return            The formatted timestamp string
+ */
+std::string format_timestamp(std::chrono::system_clock::time_point tp, const std::string& format);
+
+bool try_parse_header(const std::string& line, LogFormat fmt,
+                      std::string& timestamp, std::string& host,
+                      std::string& proc, std::string& rest,
+                      LogFormat* detected_fmt = nullptr);
+
+void set_log_format(LogFormat fmt);
+LogFormat get_log_format();
+
+// Replay temp file: completed ops are written to a temp file instead of
+// being kept in memory.  This bounds memory usage regardless of log size.
+// init must be called before processing; cleanup after the report.
+void init_replay_tempfile();
+void close_replay_tempfile();
+void cleanup_replay_tempfile();
+std::string get_replay_tempfile_path();
+long long get_replay_ops_written();
+long long get_replay_ops_dropped();
+void set_replay_ops_limit(long long limit);
 
 // ---- Event ----
 // Represents a single parsed line from the LDAP access log.  Every field
@@ -126,7 +206,10 @@ struct OpState {
     std::optional<int> nentries; // Entry count from result.
     std::optional<int> err;      // Result code.
     std::optional<int> tag;      // Protocol tag.
+    std::optional<int> scope;    // Search scope (0=base, 1=one, 2=sub).
+    std::optional<int> deref;    // Aliases dereference policy.
     std::string text;            // Additional free-text from result.
+    std::string timestamp;       // Timestamp of the result line (replay format).
 };
 
 // ---- ConnState ----
@@ -163,8 +246,17 @@ struct TopOpRow {
     std::string who;         // Who issued the operation.
     std::string base;        // Search base DN.
     std::string filter;      // Search filter.
+    std::string attrs;       // Requested attributes (for SRCH).
+    std::optional<int> scope; // Search scope (0=base, 1=one, 2=sub).
+    std::optional<int> deref; // Aliases dereference policy.
+    std::string binddn;      // Authenticated DN.
+    std::string authcid;     // Authentication identity.
+    std::string authzid;     // Authorization identity.
     std::optional<int> nentries; // Number of entries returned.
     std::optional<int> err;      // Result code.
+    std::optional<double> qtime; // Queue time (ms).
+    std::string text;        // Additional free-text from result.
+    std::string timestamp;   // Timestamp of the result line (replay format).
 };
 
 // ---- TopConnRow ----
@@ -294,7 +386,7 @@ struct Aggregator {
     std::map<std::string, long long> not_indexed_attr; // Attribute -> count for not-indexed.
 
     // -- Top-N slowest operations / connections --
-    std::vector<TopOpRow> top_ops;      // All completed ops (sorted by etime after processing).
+    std::vector<TopOpRow> top_ops;      // Top 100 slowest ops (sorted by etime).
     std::vector<TopConnRow> top_conns;  // All connections (sorted by total_etime after processing).
 
     // -- Active / peak connection tracking --

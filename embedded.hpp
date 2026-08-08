@@ -695,7 +695,7 @@ For more information on this, and how to apply and follow the GNU AGPL, see
 
 **SPDX-License-Identifier:** AGPL-3.0-or-later  
 **License:** GNU Affero General Public License v3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)  
-**Version:** 3.1.0  
+**Version:** 3.6.0  
 **Author:** Manuel FLURY  
 **Copyright:** © 2026 Manuel FLURY. All rights reserved.
 
@@ -732,7 +732,8 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ## Overview
 
 `slaplog` is a command-line tool that parses OpenLDAP `slapd` access logs and
-produces structured reports in text (with ANSI color), HTML, or JSON format.
+produces structured reports in text (with ANSI color), HTML, JSON, or replay
+format (for jMeter/LoadRunner).
 
 It is designed to handle large log volumes (multi-GB, thousands of files) by
 processing files in parallel using one thread per file. Each thread builds its
@@ -741,8 +742,9 @@ avoiding any mutex contention during parsing.
 
 Key features:
 
-- Parses three common slapd log header formats (RFC 3339, OL26 bracket-style,
-  syslog).
+- Parses all OpenLDAP log formats (debug, syslog-utc, syslog-localtime,
+  rfc3339-utc, ol26, rfc3339, syslog) with automatic per-line detection and
+  mixed-format support.
 - Recognises all standard LDAP operations: BIND, SRCH, ADD, DEL, MOD, MODRDN,
   CMP, EXT, ABANDON, UNBIND, and RESULTS.
 - Tracks connection state (ACCEPT, CLOSED, TLS), replication CSN events,
@@ -759,8 +761,11 @@ Key features:
 - Compact mode for top-5 summaries.
 - Unknown-line collection for diagnosing log lines the parser does not yet
   handle.
+- Replay output format for jMeter/LoadRunner with configurable delimiters.
 
 ## Supported Log Formats
+
+slaplog supports all OpenLDAP log formats with automatic per-line detection:
 
 ### RFC 3339 (fractional seconds)
 
@@ -780,8 +785,20 @@ Key features:
 Mar 12 10:00:00 host slapd[1234]: conn=12345 op=1 SRCH base="dc=example,dc=com" scope=2 deref=0 filter="(uid=test)"
 ```
 
-If a line does not match any header format, it is marked as `UNKNOWN_LINE` and
-collected for diagnostic output.
+### Debug (hex timestamp + thread ID)
+
+```
+411d2b6a.1f4b2c3a 0x7f9c1e33a700 conn=12345 op=1 SRCH base="dc=example,dc=com" scope=2 deref=0 filter="(uid=test)"
+```
+
+### Mixed format support
+
+Log files can contain lines in different formats (e.g., when `olcLogFileFormat`
+is changed at runtime). The `auto` mode (default) tries all formats per line,
+so mixed files are handled transparently.
+
+Use `--log-format` to specify a fixed format for faster parsing when you know
+all lines share the same format.
 
 ## Build & Install
 
@@ -873,7 +890,7 @@ slaplog --unknown-lines unknown.txt /var/log/slapd/access.log
 
 | Option | Description |
 |--------|-------------|
-| `-o, --output FORMAT` | Output format: `text` (plain), `textcolor` (ANSI, default), `html`, `json` |
+| `-o, --output FORMAT` | Output format: `text` (plain), `textcolor` (ANSI, default), `html`, `json`, `replay` |
 | `-c, --compact` | Show top 5 instead of top 20 for ranked sections |
 | `-r, --recursive` | Recurse into directories when collecting log files |
 | `-q, --quiet` | Suppress the progress bar on stderr (useful for batch / cron runs) |
@@ -881,6 +898,10 @@ slaplog --unknown-lines unknown.txt /var/log/slapd/access.log
 | `-m, --mtime DAYS` | Analyze only files modified within the last `DAYS` days (like `find -mtime`) |
 | `-j, --jobs N` | Worker thread count (default: CPU cores - 1) |
 | `-s, --section LIST` | Comma-separated list of sections to display (see below) |
+| `--log-format FORMAT` | Input log format: `auto` (default), `debug`, `syslog-utc`, `syslog-localtime`, `rfc3339-utc`, `ol26`, `rfc3339`, `syslog` |
+| `--output-date-format FMT` | Output date format: `rfc3339` (default), `iso8601`, `syslog`, `epoch`, `preserve` |
+| `--replay-separator SEP` | Delimiter for replay output (default: `\|`). Use `tab` for tabulation, `comma` for CSV |
+| `--replay-limit N` | Max operations written to the replay temp file (default: `1000000`, `0` = unlimited). Acts as a safety cap; a warning is printed when ops are dropped. |
 | `--unknown-lines FILE` | Write unrecognised lines to FILE, then generate the full report |
 | `--unknown-lines-only FILE` | Like `--unknown-lines` but skip the report |
 | `-d, --debug` | Print debug information (file count, parsing details, per-file traces) |
@@ -985,10 +1006,10 @@ Same layout as text but with ANSI escape sequences for:
 - Section headers in cyan bold
 - Metric labels in green
 - Etime values color-coded: green (<0.1s), cyan (<0.5s), yellow (<1s),
-  red (<5s), bright red (≥5s)
+  red (<5s), bright red (>=5s)
 - Error codes color-coded: green for success/referral, red for failures
 - Alternating application colors in filters-per-app table
-- Count gradient: green → yellow → red → bright red
+- Count gradient: green -> yellow -> red -> bright red
 
 ### HTML (`-o html`)
 
@@ -1005,6 +1026,29 @@ Standalone HTML page with embedded CSS featuring:
 Complete machine-readable output via `nlohmann/json` with all aggregated data
 structures (operation counts, error distribution, top operations, session
 correlations, etc.).
+
+### Replay (`-o replay`)
+
+Pipe-delimited single-line operations for jMeter/LoadRunner replay. Each
+completed operation is output as a single line with all relevant fields:
+
+```
+timestamp|conn|op|type|base|filter|attrs|scope|deref|binddn|authcid|authzid|err|etime|qtime|nentries|text
+```
+
+The delimiter defaults to `|` and can be changed with `--replay-separator`:
+- `--replay-separator tab` for tab-separated output
+- `--replay-separator comma` for CSV format
+- Any custom string as delimiter
+
+Use `--replay-limit N` to cap the number of operations written to the temp file.
+This acts as a safety cap for extremely large log sets or limited `/tmp` space.
+
+Example usage for jMeter:
+```bash
+slaplog -o replay --replay-separator comma --output-date-format epoch \
+  --replay-limit 500000 --log-format auto -q /var/log/slapd/access.log > jmeter_replay.csv
+```
 
 ## Session Tracking
 
@@ -1064,9 +1108,11 @@ main.cpp
 
 Each log line goes through two distinct stages:
 
-**Stage 1: `parse_line()`** → `Event`
+**Stage 1: `parse_line()`** -> `Event`
 
-- Strips the timestamp header (RFC 3339 / OL26 / syslog).
+- Detects the header format (RFC 3339 / OL26 / syslog / debug) via
+  `try_parse_header()` with automatic per-line detection in AUTO mode.
+- Converts the timestamp to RFC3339 UTC via `convert_to_rfc3339_utc()`.
 - Extracts `conn=`, `op=`, `fd=` identifiers.
 - Strips `[IP=... NAME=... USERNAME=...]` session tracking blocks.
 - Dispatches to the correct regex group based on the first character of the
@@ -1109,15 +1155,19 @@ All data structures:
 - **`Event`**: The output of `parse_line()`. Contains the parsed kind, raw
   text, optional LDAP fields, and session tracking fields.
 - **`OpState`**: Mutable state for one LDAP operation within a connection.
-  Tracks type, base, filter, who, etime, etc.
+  Tracks type, base, filter, attrs, scope, deref, who, etime, qtime,
+  nentries, err, text, timestamp, etc.
 - **`ConnState`**: Per-connection mutable state. Contains a map of ops,
   accumulated etime, binddn, authcid, src, session tracking fields.
 - **`TopOpRow`** / **`TopConnRow`**: Rows for the top-N leaderboards.
+  `TopOpRow` includes all fields needed for replay output.
 - **`Stats`**: Simple scalar counters (lines, connections, unknowns).
 - **`Aggregator`**: The main aggregation structure containing all maps,
   counters, and state. Includes `SessionCorrelation` and `server_events`.
   Also holds `restart_count` for correct session tracking across slapd
   restarts.
+- **`LogFormat`** enum and helpers: `parse_log_format()`, `convert_to_rfc3339_utc()`,
+  `try_parse_header()` with auto-detection support.
 
 ### `log_parser.cpp`
 
@@ -1125,6 +1175,11 @@ All parsing and aggregation logic:
 
 - **Helpers**: `dequote`, `to_int`, `trim`, `normalize_filter`,
   `normalize_attrs`, `ts_sort_key`, `update_time_bounds`.
+- **Format conversion**: `convert_to_rfc3339_utc()` with helpers
+  `parse_debug_timestamp()`, `parse_syslog_timestamp()`, `format_rfc3339_utc()`.
+  Converts any supported format to RFC3339 UTC.
+- **`try_parse_header()`**: Multi-format header detection. In `AUTO` mode,
+  tries all formats per line and reports the detected format via output parameter.
 - **`parse_line()`**: ~450 lines of regex dispatch. Starts with header
   parsing, then connection/operation ID extraction, session tracking strip,
   and prefix-character-based dispatch to ~30 regex patterns.
@@ -1153,6 +1208,13 @@ Report generation:
   responsive, styled tables with colour gradients for etime values.
 - **`print_json_report()`**: Machine-readable JSON output with all
   aggregated data, including session correlations.
+- **`print_replay_report()`**: Pipe-delimited single-line output for
+  jMeter/LoadRunner replay. Configurable delimiter via `--replay-separator`.
+  Data written to a temp file during processing (bounded memory).
+
+### `version.hpp`
+
+Single source of truth for `SLAPLOG_VERSION` and `BUILD_NUMBER`.
 
 ### `utils.hpp`
 
