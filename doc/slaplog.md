@@ -2,7 +2,7 @@
 
 **SPDX-License-Identifier:** AGPL-3.0-or-later  
 **License:** GNU Affero General Public License v3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)  
-**Version:** 3.1.0  
+**Version:** 3.6.0  
 **Author:** Manuel FLURY  
 **Copyright:** © 2026 Manuel FLURY. All rights reserved.
 
@@ -48,8 +48,13 @@ avoiding any mutex contention during parsing.
 
 Key features:
 
-- Parses three common slapd log header formats (RFC 3339, OL26 bracket-style,
-  syslog).
+- **Multi-format support**: Parses all OpenLDAP log formats (debug, syslog-utc,
+  syslog-localtime, rfc3339-utc, ol26, rfc3339, syslog) with automatic per-line
+  detection, supporting mixed formats in a single file.
+- **Replay output format**: Pipe-delimited single-line operations for
+  jMeter/LoadRunner replay with configurable separators.
+- **Configurable date output**: Reports can output timestamps in rfc3339, iso8601,
+  syslog, epoch, or preserve original format.
 - Recognises all standard LDAP operations: BIND, SRCH, ADD, DEL, MOD, MODRDN,
   CMP, EXT, ABANDON, UNBIND, and RESULTS.
 - Tracks connection state (ACCEPT, CLOSED, TLS), replication CSN events,
@@ -69,23 +74,20 @@ Key features:
 
 ## Supported Log Formats
 
-### RFC 3339 (fractional seconds)
+slaplog supports all OpenLDAP log formats with automatic per-line detection:
 
-```
-2026-05-27T14:49:01.393037259Z myserver.example.com slapd[597222]: conn=700635 fd=45687 ACCEPT from IP=10.226.49.169:46174 (IP=0.0.0.0:11636)
-```
+| Format | Example | Description |
+|--------|---------|-------------|
+| `auto` | (default) | Tries all formats per line, supports mixed formats in a single file |
+| `debug` | `411d2b6a.1f4b2c3a 0x7f9c1e33a700` | Hex timestamp + thread ID |
+| `syslog-utc` | `Aug  5 14:23:01` | Syslog format in UTC |
+| `syslog-localtime` | `Aug  5 14:23:01` | Syslog format in local time |
+| `rfc3339-utc` | `2026-08-05T14:23:01.123456Z` | RFC3339 UTC with fractional seconds |
+| `ol26` | `[2026-08-05T14:23:01.123Z]` | Bracket-style timestamp |
+| `rfc3339` | `2026-08-05T14:23:01Z` | Generic RFC3339 |
+| `syslog` | `Aug  5 14:23:01` | Generic syslog |
 
-### OL26 (bracket-style)
-
-```
-[2025-03-12T10:00:00Z] conn=12345 op=1 BIND dn="cn=admin,dc=example,dc=com" method=128
-```
-
-### Syslog
-
-```
-Mar 12 10:00:00 host slapd[1234]: conn=12345 op=1 SRCH base="dc=example,dc=com" scope=2 deref=0 filter="(uid=test)"
-```
+Use `--log-format` to specify a fixed format for faster parsing when you know all lines share the same format.
 
 If a line does not match any header format, it is marked as `UNKNOWN_LINE` and
 collected for diagnostic output.
@@ -180,7 +182,7 @@ slaplog --unknown-lines unknown.txt /var/log/slapd/access.log
 
 | Option | Description |
 |--------|-------------|
-| `-o, --output FORMAT` | Output format: `text` (plain), `textcolor` (ANSI, default), `html`, `json` |
+| `-o, --output FORMAT` | Output format: `text` (plain), `textcolor` (ANSI, default), `html`, `json`, `replay` |
 | `-c, --compact` | Show top 5 instead of top 20 for ranked sections |
 | `-r, --recursive` | Recurse into directories when collecting log files |
 | `-q, --quiet` | Suppress the progress bar on stderr (useful for batch / cron runs) |
@@ -188,6 +190,10 @@ slaplog --unknown-lines unknown.txt /var/log/slapd/access.log
 | `-m, --mtime DAYS` | Analyze only files modified within the last `DAYS` days (like `find -mtime`) |
 | `-j, --jobs N` | Worker thread count (default: CPU cores - 1) |
 | `-s, --section LIST` | Comma-separated list of sections to display (see below) |
+| `--log-format FORMAT` | Input log format: `auto` (default), `debug`, `syslog-utc`, `syslog-localtime`, `rfc3339-utc`, `ol26`, `rfc3339`, `syslog` |
+| `--output-date-format FMT` | Output date format in reports: `rfc3339` (default), `iso8601`, `syslog`, `epoch`, `preserve` |
+| `--replay-separator SEP` | Delimiter for replay output (default: `\|`). Use `tab` for tabulation, `comma` for CSV |
+| `--replay-limit N` | Max operations written to the replay temp file (default: `1000000`, `0` = unlimited). Acts as a safety cap; a warning is printed when ops are dropped. |
 | `--unknown-lines FILE` | Write unrecognised lines to FILE, then generate the full report |
 | `--unknown-lines-only FILE` | Like `--unknown-lines` but skip the report |
 | `-d, --debug` | Print debug information (file count, parsing details, per-file traces) |
@@ -312,6 +318,35 @@ Standalone HTML page with embedded CSS featuring:
 Complete machine-readable output via `nlohmann/json` with all aggregated data
 structures (operation counts, error distribution, top operations, session
 correlations, etc.).
+
+### Replay (`-o replay`)
+
+Pipe-delimited single-line format for jMeter/LoadRunner replay. Multi-line
+operations (SRCH + SRCH_ATTR) are merged into a single line with results
+included:
+
+```
+timestamp|conn|op|type|base|filter|attrs|scope|deref|binddn|authcid|authzid|err|etime|qtime|nentries|text
+```
+
+Use `--replay-separator` to change the delimiter:
+```bash
+slaplog -o replay --replay-separator tab access.log   # tab-separated
+slaplog -o replay --replay-separator comma access.log # CSV format
+```
+
+Use `--replay-limit` to cap the number of operations written to the temp file:
+```bash
+slaplog -o replay --replay-limit 500000 access.log   # max 500K ops
+slaplog -o replay --replay-limit 0 access.log         # unlimited
+```
+
+Replay data is written to a temporary file during processing, keeping memory
+usage bounded regardless of log file size. Use `--replay-limit` as a safety
+cap for extremely large log sets or limited disk space on `/tmp`.
+
+This format is useful for replaying LDAP operations against a test server or
+analyzing operation timing with external tools.
 
 ## Session Tracking
 

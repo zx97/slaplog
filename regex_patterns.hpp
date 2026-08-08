@@ -38,7 +38,7 @@ namespace slaplog_rx {
     // -----------------------------------------------------------------
     // --- Headers ---
     // -----------------------------------------------------------------
-    // The three log-line header formats.  Every line processed by the
+    // The log-line header formats.  Every line processed by the
     // analyser is expected to start with one of these timestamp/prefix
     // patterns.  After the header is stripped, the remainder (payload) is
     // matched against the operation-specific patterns below.
@@ -58,6 +58,46 @@ namespace slaplog_rx {
     // [group  3] process / component name
     // [group  4] rest of the line (payload)
     inline const std::regex RE_HDR_SYSLOG(R"(^([A-Z][a-z]{2}\s+\d+\s+\d{2}:\d{2}:\d{2})\s+(\S+)\s+(\S+):\s+(.*)$)");
+
+    // -----------------------------------------------------------------
+    // --- OpenLDAP olcLogFileFormat specific header formats ---
+    // -----------------------------------------------------------------
+    // These formats correspond to the values of olcLogFileFormat directive:
+    // debug, syslog-utc, syslog-localtime, rfc3339-utc
+
+    // debug format: hex timestamp + thread ID
+    // Format: "%lx.%08x %p " (with CLOCK_GETTIME) or "%lx.%05x %p " (with gettimeofday)
+    // [group  1] hex seconds (time_t in hex)
+    // [group  2] hex fractional seconds (nanoseconds or microseconds)
+    // [group  3] thread ID (pointer as hex)
+    // [group  4] rest of the line (payload)
+    // Example: 411d2b6a.1f4b2c3a 0x7f9c1e33a700 conn=...
+    inline const std::regex RE_HDR_DEBUG(R"(^([0-9a-f]+)\.([0-9a-f]+)\s+(0x[0-9a-f]+)\s+(.*)$)");
+
+    // syslog-utc format: syslog-style timestamp in UTC
+    // Format: "%b %d %H:%M:%S" (e.g. "Aug  5 14:23:01")
+    // [group  1] syslog timestamp (month day hour:min:sec)
+    // [group  2] hostname
+    // [group  3] process / component name
+    // [group  4] rest of the line (payload)
+    inline const std::regex RE_HDR_SYSLOG_UTC(R"(^([A-Z][a-z]{2}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2})\s+(\S+)\s+(\S+):\s+(.*)$)");
+
+    // syslog-localtime format: syslog-style timestamp in local time
+    // Format: "%b %d %H:%M:%S" (e.g. "Aug  5 14:23:01")
+    // [group  1] syslog timestamp (month day hour:min:sec)
+    // [group  2] hostname
+    // [group  3] process / component name
+    // [group  4] rest of the line (payload)
+    inline const std::regex RE_HDR_SYSLOG_LOCAL(R"(^([A-Z][a-z]{2}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2})\s+(\S+)\s+(\S+):\s+(.*)$)");
+
+    // rfc3339-utc format: RFC3339 UTC with fractional seconds
+    // Format: "%Y-%m-%dT%H:%M:%S.%09ldZ" (CLOCK_GETTIME) or "%Y-%m-%dT%H:%M:%S.%06ldZ" (gettimeofday)
+    // [group  1] full RFC3339 timestamp with fractional seconds and Z suffix
+    // [group  2] log level / facility
+    // [group  3] process / component name
+    // [group  4] rest of the line (payload)
+    // Example: 2026-08-05T14:23:01.123456789Z myserver slapd[123]: conn=...
+    inline const std::regex RE_HDR_RFC3339_UTC(R"(^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+Z)\s+(\S+)\s+(\S+):\s+(.*)$)");
 
     // -----------------------------------------------------------------
     // --- Connection identifiers ---

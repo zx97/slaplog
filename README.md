@@ -3,7 +3,7 @@
 
 **SPDX-License-Identifier:** AGPL-3.0-or-later  
 **License:** GNU Affero General Public License v3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)  
-**Version:** 3.1.0  
+**Version:** 3.6.0  
 **Author:** Manuel FLURY  
 **Copyright:** © 2026 Manuel FLURY. All rights reserved.  
   
@@ -35,7 +35,7 @@ make
 
 ## Features
 
-- **3 output formats**: text/ANSI color, HTML (standalone with CSS), JSON
+- **4 output formats**: text/ANSI color, HTML (standalone with CSS), JSON, replay (for jMeter/LoadRunner)
 - **Parallel processing**: one thread per file, no mutex contention
 - **Compressed logs**: `.gz`, `.bz2`, `.xz` transparently handled
 - **Session tracking**: correlates NAT'd IPs to real clients via `[IP=... NAME=... USERNAME=...]`
@@ -43,6 +43,7 @@ make
 - **Top-N analysis**: 100 slowest ops, busiest connections, most-used filters
 - **Server events**: start/stop/shutdown detection
 - **Restart-aware**: handles slapd connection-ID counter resets
+- **Multi-format support**: parses debug, syslog-utc, syslog-localtime, rfc3339-utc formats with auto-detection
 
 ## Usage
 
@@ -50,7 +51,7 @@ make
 Usage: ./slaplog [options] <logfile|directory> [file|dir ...]
 
 Options:
-  -o, --output FORMAT        text | textcolor | html | json
+  -o, --output FORMAT        text | textcolor | html | json | replay
   -c, --compact              Top 5 instead of top 20
   -r, --recursive            Recurse into directories
   -q, --quiet                Suppress the progress bar (batch mode)
@@ -60,6 +61,14 @@ Options:
   -s, --section LIST         Comma-sep section list: all,stats,ops,errors,
                              bases,filters,attrs,apps,extops,csn,server,
                              index,sessions,topops,topconns,...
+  --log-format FORMAT        Input log format: auto, debug, syslog-utc,
+                             syslog-localtime, rfc3339-utc, ol26, rfc3339,
+                             syslog (default: auto)
+  --output-date-format FMT   Output date format in reports: rfc3339, iso8601,
+                             syslog, epoch, preserve (default: rfc3339)
+  --replay-separator SEP     Delimiter for replay output (default: "|")
+                             Use "tab" for tabulation, "comma" for CSV
+  --replay-limit N           Max ops stored for replay (default: 1000000, 0=unlimited)
   --unknown-lines FILE       Write unparseable lines to FILE
   --unknown-lines-only FILE  Like above but skip report
   -D, --documentation        Print full documentation
@@ -68,6 +77,44 @@ Options:
   -h, --help                 Show help
   -V, --version              Show version
 ```
+
+## Supported Log Formats
+
+slaplog supports all OpenLDAP log formats with automatic per-line detection:
+
+| Format | Example | Description |
+|--------|---------|-------------|
+| `auto` | (default) | Tries all formats per line, supports mixed formats in a single file |
+| `debug` | `411d2b6a.1f4b2c3a 0x7f9c1e33a700` | Hex timestamp + thread ID |
+| `syslog-utc` | `Aug  5 14:23:01` | Syslog format in UTC |
+| `syslog-localtime` | `Aug  5 14:23:01` | Syslog format in local time |
+| `rfc3339-utc` | `2026-08-05T14:23:01.123456Z` | RFC3339 UTC with fractional seconds |
+| `ol26` | `[2026-08-05T14:23:01.123Z]` | Bracket-style timestamp |
+| `rfc3339` | `2026-08-05T14:23:01Z` | Generic RFC3339 |
+| `syslog` | `Aug  5 14:23:01` | Generic syslog |
+
+Use `--log-format` to specify a fixed format for faster parsing when you know all lines share the same format.
+
+## Replay Output Format
+
+The `replay` output format generates pipe-delimited single-line operations for jMeter/LoadRunner replay:
+
+```
+timestamp|conn|op|type|base|filter|attrs|scope|deref|binddn|authcid|authzid|err|etime|qtime|nentries|text
+```
+
+Example:
+```bash
+./slaplog -o replay /var/log/slapd/access.log | tee replay.csv
+```
+
+Use `--replay-separator` to change the delimiter:
+```bash
+./slaplog -o replay --replay-separator tab /var/log/slapd/access.log   # tab-separated
+./slaplog -o replay --replay-separator comma /var/log/slapd/access.log # CSV format
+```
+
+This format is useful for replaying LDAP operations against a test server or analyzing operation timing with external tools.
 
 ## Build requirements
 
