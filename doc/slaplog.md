@@ -2,9 +2,11 @@
 
 **SPDX-License-Identifier:** AGPL-3.0-or-later  
 **License:** GNU Affero General Public License v3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)  
-**Version:** 3.6.1  
+**Version:** 3.6.2  
 **Author:** Manuel FLURY  
 **Copyright:** © 2026 Manuel FLURY. All rights reserved.
+
+See the [CHANGELOG](../CHANGELOG.md) for the release history.
 
 This file is part of slaplog - an OpenLDAP Log Analysis Tool.
 
@@ -328,6 +330,28 @@ included:
 ```
 timestamp|conn|op|type|base|filter|attrs|scope|deref|binddn|authcid|authzid|err|etime|qtime|nentries|text
 ```
+
+Every LDAP operation produces exactly one line, including those with no
+RESULT line in the access log:
+
+| Type | Notes |
+|------|-------|
+| `BIND` | `binddn` carries the DN; `err` is the expected result code. |
+| `SRCH` | `base`, `filter`, `attrs`, `scope`, `deref`; `nentries` is the expected entry count. |
+| `CMP` / `COMPARE` | `base` carries the entry DN. |
+| `ADD`, `DEL`, `MOD`, `MODRDN` | write operations: `base` carries the target DN. |
+| `EXT` | extended operation. |
+| `ABANDON` | fire-and-forget cancellation; `filter` carries the numeric message id of the operation to abandon. |
+| `UNBIND` | graceful disconnect. |
+
+`ABANDON` and `UNBIND` have no RESULT line in the slapd access log, so their
+replay rows carry no `err`/`etime`/`nentries`. They are still emitted (from
+their own log line) so the replayer sees every operation.
+
+The companion replayer (`jMeter_OpenLDAP_replay`) replays only `BIND`, `SRCH`,
+`CMP`, `UNBIND` and `ABANDON`; the write operations (`ADD`, `DEL`, `MOD`,
+`MODRDN`, `EXT`) are written here for traceability but skipped by the
+replayer.
 
 Use `--replay-separator` to change the delimiter:
 ```bash

@@ -773,7 +773,14 @@ int main(int argc, char* argv[]) {
     // referenced by any report printer.  They are overwritten on every
     // merge (so they only hold data from the last file), but we clear
     // them here for good measure before the report phase.
+    //
+    // For the replay output, flush any operation still in-flight first so
+    // that ops with no RESULT line (ABANDON, UNBIND, abandoned searches)
+    // still produce a replay row.
     // ------------------------------------------------------------------
+    if (output_format == "replay") {
+        flush_inflight_ops(final_agg);
+    }
     final_agg.conn_state.clear();
     final_agg.binddn_by_conn.clear();
     final_agg.src_by_conn.clear();

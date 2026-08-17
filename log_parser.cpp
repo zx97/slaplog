@@ -729,8 +729,7 @@ void update_time_bounds(Aggregator& agg, const std::string& ts) {
        std::optional<int> nentries;
        std::optional<int> err;
        }; */
-    void add_top_op(Aggregator& agg, const ::TopOpRow& row) {
-        agg.top_ops.push_back(row);
+    void write_replay_row(const ::TopOpRow& row) {
         bool limit_reached = g_replay_ops_limit > 0 && g_replay_ops_written >= g_replay_ops_limit;
         if (!limit_reached) {
             std::lock_guard<std::mutex> lock(g_replay_mtx);
@@ -753,10 +752,31 @@ void update_time_bounds(Aggregator& agg, const std::string& ts) {
         } else {
             ++g_replay_ops_dropped;
         }
+    }
+
+    void add_top_op(Aggregator& agg, const ::TopOpRow& row) {
+        agg.top_ops.push_back(row);
+        write_replay_row(row);
         if (agg.top_ops.size() > 100) {
             std::sort(agg.top_ops.begin(), agg.top_ops.end(),
                     [](const ::TopOpRow& a, const ::TopOpRow& b) { return a.etime > b.etime; });
             agg.top_ops.resize(100);
+        }
+    }
+
+    // Flush every operation still in-flight across all connections.  Called
+    // once after all files are processed and before the per-connection maps
+    // are discarded, so that ops with no RESULT line (ABANDON, UNBIND, or an
+    // abandoned search) still produce a replay row.
+    void flush_inflight_ops(Aggregator& agg) {
+        for (auto& [cid, conn] : agg.conn_state) {
+            std::string who = app_for_conn(agg, cid);
+            for (auto& [opid, op] : conn.ops) {
+                write_replay_row(TopOpRow{op.etime.value_or(0.0), cid, opid, op.type, who,
+                                          op.base, op.filter, op.attrs, op.scope, op.deref,
+                                          conn.binddn, op.authcid, op.authzid, op.nentries,
+                                          op.err, op.qtime, op.text, op.timestamp});
+            }
         }
     }
 
@@ -1104,7 +1124,7 @@ Event parse_line(const std::string& line) {
     // MODRDN: "MODRDN dn=cn=user,dc=example,dc=com"
     // MOD:    "MOD dn=cn=user,dc=example,dc=com" or "MOD attr=userPassword"
     if (fc == 'M') {
-        if (rest.compare(0, 5, "MODRDN") == 0) {
+        if (rest.compare(0, 6, "MODRDN") == 0) {
             if (std::regex_match(rest, m, slaplog_rx::RE_MODRDN)) {
                 ev.kind = "MODRDN";
                 ev.dn = m[1].str();
@@ -1554,6 +1574,11 @@ void update_aggregator(Aggregator& agg, const Event& ev,
     auto& op = ensure_op(agg, cid, opid);
     std::string who = app_for_conn(agg, cid);
 
+    // Record the first timestamp seen for this operation so that ops with no
+    // RESULT line (ABANDON, UNBIND, or an abandoned in-flight op) still carry
+    // a usable timestamp when flushed to the replay output.
+    if (op.timestamp.empty() && !ev.ts.empty()) op.timestamp = ev.ts;
+
     // ------------------------------------------------------------------
     // Session Tracking Save
     // ------------------------------------------------------------------
@@ -1895,7 +1920,7 @@ void update_aggregator(Aggregator& agg, const Event& ev,
         ensure_total_counted(agg, cid, opid);
         op.type = "ADD";
         op.who = who;
-        if (!ev.dn.empty()) op.dn = ev.dn;
+        if (!ev.dn.empty()) op.base = dequote(ev.dn);
         return;
     }
 
@@ -1906,7 +1931,7 @@ void update_aggregator(Aggregator& agg, const Event& ev,
         ensure_total_counted(agg, cid, opid);
         op.type = "DEL";
         op.who = who;
-        if (!ev.dn.empty()) op.dn = ev.dn;
+        if (!ev.dn.empty()) op.base = dequote(ev.dn);
         return;
     }
 
@@ -1919,7 +1944,7 @@ void update_aggregator(Aggregator& agg, const Event& ev,
         ensure_total_counted(agg, cid, opid);
         op.type = "MOD";
         op.who = who;
-        if (!ev.dn.empty()) op.dn = ev.dn;
+        if (!ev.dn.empty()) op.base = dequote(ev.dn);
         if (!ev.attrs.empty()) {
             std::istringstream iss(ev.attrs);
             std::string a;
@@ -1939,7 +1964,7 @@ void update_aggregator(Aggregator& agg, const Event& ev,
         ensure_total_counted(agg, cid, opid);
         op.type = "MODRDN";
         op.who = who;
-        if (!ev.dn.empty()) op.dn = ev.dn;
+        if (!ev.dn.empty()) op.base = dequote(ev.dn);
         return;
     }
 
@@ -1950,7 +1975,7 @@ void update_aggregator(Aggregator& agg, const Event& ev,
         ensure_total_counted(agg, cid, opid);
         op.type = "CMP";
         op.who = who;
-        if (!ev.dn.empty()) op.dn = ev.dn;
+        if (!ev.dn.empty()) op.base = dequote(ev.dn);
         return;
     }
 
@@ -1963,25 +1988,48 @@ void update_aggregator(Aggregator& agg, const Event& ev,
         ensure_total_counted(agg, cid, opid);
         op.type = "COMPARE";
         op.who = who;
-        if (!ev.dn.empty()) op.dn = ev.dn;
+        if (!ev.dn.empty()) op.base = dequote(ev.dn);
         return;
     }
 
     // --- ABANDON (abandon operation) ---
+    // ABANDON has no RESULT line in the slapd log: it is a fire-and-forget
+    // cancellation.  We finalise the operation immediately so that it still
+    // produces a single replay row.  The replayer reads the numeric message
+    // id of the operation to cancel from the `filter` column (see
+    // replay_ldap.groovy), so we store ev.msgid there.
     if (ev.kind == "ABANDON") {
         agg.operation_count["ABANDON"]++;
         ensure_total_counted(agg, cid, opid);
         op.type = "ABANDON";
         op.who = who;
+        if (ev.msgid.has_value()) op.filter = std::to_string(*ev.msgid);
+        if (!ev.ts.empty()) op.timestamp = ev.ts;
+        write_replay_row(TopOpRow{0.0, cid, opid, op.type, who, op.base, op.filter,
+                                  op.attrs, op.scope, op.deref, conn.binddn, op.authcid,
+                                  op.authzid, op.nentries, op.err, op.qtime, op.text,
+                                  op.timestamp});
+        conn.completed_ops++;
+        conn.ops.erase(opid);
         return;
     }
 
     // --- UNBIND (unbind operation) ---
+    // UNBIND has no RESULT line either: it is a graceful disconnect.  We
+    // finalise it immediately so that it produces a single replay row
+    // (the replayer stops issuing further ops on that connection).
     if (ev.kind == "UNBIND") {
         agg.operation_count["UNBIND"]++;
         ensure_total_counted(agg, cid, opid);
         op.type = "UNBIND";
         op.who = who;
+        if (!ev.ts.empty()) op.timestamp = ev.ts;
+        write_replay_row(TopOpRow{0.0, cid, opid, op.type, who, op.base, op.filter,
+                                  op.attrs, op.scope, op.deref, conn.binddn, op.authcid,
+                                  op.authzid, op.nentries, op.err, op.qtime, op.text,
+                                  op.timestamp});
+        conn.completed_ops++;
+        conn.ops.erase(opid);
         return;
     }
 

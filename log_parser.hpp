@@ -444,6 +444,12 @@ void update_aggregator(Aggregator& agg, const Event& ev,
                        std::ostream* unknown_out = nullptr,
                        std::mutex* unknown_mtx = nullptr);
 
+// Flush every operation still in-flight across all connections to the replay
+// temp file.  Called once after all files are processed and before the
+// per-connection maps are discarded, so ops with no RESULT line (ABANDON,
+// UNBIND, or an abandoned search) still produce a replay row.
+void flush_inflight_ops(Aggregator& agg);
+
 // Merge the contents of `src` into `dest`.  Used when combining results
 // from multiple files processed in parallel.
 void merge_aggregators(Aggregator& dest, const Aggregator& src);
