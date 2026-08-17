@@ -3,9 +3,11 @@
 
 **SPDX-License-Identifier:** AGPL-3.0-or-later  
 **License:** GNU Affero General Public License v3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)  
-**Version:** 3.6.1  
+**Version:** 3.6.2  
 **Author:** Manuel FLURY  
-**Copyright:** © 2026 Manuel FLURY. All rights reserved.  
+**Copyright:** © 2026 Manuel FLURY. All rights reserved.
+
+See the [CHANGELOG](CHANGELOG.md) for the release history.  
   
     This file is part of slaplog - an OpenLDAP Log Analysis Tool.  
  
@@ -102,6 +104,16 @@ The `replay` output format generates pipe-delimited single-line operations for j
 ```
 timestamp|conn|op|type|base|filter|attrs|scope|deref|binddn|authcid|authzid|err|etime|qtime|nentries|text
 ```
+
+Every LDAP operation produces exactly one line, including `ABANDON` and
+`UNBIND` which have no RESULT line in the access log (their rows carry no
+`err`/`etime`/`nentries`). `ABANDON` stores the numeric message id of the
+operation to cancel in the `filter` column.
+
+Write operations (`ADD`, `DEL`, `MOD`, `MODRDN`) are emitted with the target
+DN in the `base` column for traceability, but the companion replayer
+(`jMeter_OpenLDAP_replay`) only replays `BIND`, `SRCH`, `CMP`, `UNBIND` and
+`ABANDON` and skips the writes.
 
 Example:
 ```bash
