@@ -86,6 +86,15 @@ inline LogFormat parse_log_format(const std::string& s) {
 
 std::string convert_to_rfc3339_utc(const std::string& timestamp, LogFormat fmt);
 
+// Timestamps are held with nanosecond resolution regardless of the platform's
+// system_clock resolution — nanoseconds under libstdc++ (GCC), microseconds
+// under libc++ (clang/Emscripten).  Pinning nanoseconds preserves the
+// sub-microsecond fraction of OpenLDAP "debug"-format timestamps on every
+// toolchain.  On platforms whose system_clock already ticks in nanoseconds
+// (libstdc++) this is the very same type, so it is a strict no-op there.
+using SystemTimePoint =
+    std::chrono::time_point<std::chrono::system_clock, std::chrono::nanoseconds>;
+
 /**
  * parse_any_timestamp - Parse a timestamp in any supported format and return
  * a time_point. This is used by the report functions to convert timestamps
@@ -94,7 +103,7 @@ std::string convert_to_rfc3339_utc(const std::string& timestamp, LogFormat fmt);
  * @param timestamp  The timestamp string (any format)
  * @return           The parsed time_point, or empty time_point on failure
  */
-std::chrono::system_clock::time_point parse_any_timestamp(const std::string& timestamp);
+SystemTimePoint parse_any_timestamp(const std::string& timestamp);
 
 /**
  * format_timestamp - Format a time_point according to the requested output format.
@@ -103,7 +112,7 @@ std::chrono::system_clock::time_point parse_any_timestamp(const std::string& tim
  * @param format      The output format: "rfc3339", "iso8601", "syslog", "epoch", "preserve"
  * @return            The formatted timestamp string
  */
-std::string format_timestamp(std::chrono::system_clock::time_point tp, const std::string& format);
+std::string format_timestamp(SystemTimePoint tp, const std::string& format);
 
 bool try_parse_header(const std::string& line, LogFormat fmt,
                       std::string& timestamp, std::string& host,
@@ -271,6 +280,46 @@ struct TopConnRow {
     std::string binddn;       // Authenticated DN.
     std::string reason;       // Disconnect reason or last error text.
 };
+
+// ---- Deterministic ordering for the top-N tables ----
+// Both tables used to be sorted on the timing field alone (etime / total_etime).
+// Rows sharing a timing were therefore left in an arbitrary order that depended
+// on the standard library's sort implementation (libstdc++ and libc++ order
+// equal elements differently) — so the same log could render in a different
+// order, and even a different set of rows could survive the top-100 cut.
+// These comparators break every tie on the remaining fields, making the order
+// total and hence reproducible on any standard library.  Rows that are equal on
+// every field render identically, so their relative order is irrelevant.
+inline bool top_op_before(const TopOpRow& a, const TopOpRow& b) {
+    if (a.etime != b.etime) return a.etime > b.etime;   // slowest first
+    if (a.conn != b.conn) return a.conn < b.conn;
+    if (a.op != b.op) return a.op < b.op;
+    if (a.type != b.type) return a.type < b.type;
+    if (a.base != b.base) return a.base < b.base;
+    if (a.filter != b.filter) return a.filter < b.filter;
+    if (a.who != b.who) return a.who < b.who;
+    if (a.attrs != b.attrs) return a.attrs < b.attrs;
+    if (a.scope != b.scope) return a.scope < b.scope;
+    if (a.deref != b.deref) return a.deref < b.deref;
+    if (a.binddn != b.binddn) return a.binddn < b.binddn;
+    if (a.authcid != b.authcid) return a.authcid < b.authcid;
+    if (a.authzid != b.authzid) return a.authzid < b.authzid;
+    if (a.nentries != b.nentries) return a.nentries < b.nentries;
+    if (a.err != b.err) return a.err < b.err;
+    if (a.qtime != b.qtime) return a.qtime < b.qtime;
+    if (a.text != b.text) return a.text < b.text;
+    return a.timestamp < b.timestamp;
+}
+
+inline bool top_conn_before(const TopConnRow& a, const TopConnRow& b) {
+    if (a.total_etime != b.total_etime) return a.total_etime > b.total_etime; // slowest first
+    if (a.conn != b.conn) return a.conn < b.conn;
+    if (a.who != b.who) return a.who < b.who;
+    if (a.src != b.src) return a.src < b.src;
+    if (a.ops_count != b.ops_count) return a.ops_count < b.ops_count;
+    if (a.binddn != b.binddn) return a.binddn < b.binddn;
+    return a.reason < b.reason;
+}
 
 // ---- Stats ----
 // Simple aggregate counters collected across the entire log set.

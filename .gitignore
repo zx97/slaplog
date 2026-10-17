@@ -28,3 +28,10 @@ build_number.txt
 *.swp
 *.tmp
 session*.md
+
+# === WebAssembly port ===
+# Sources are tracked; cross-built libs and compiler output are not.
+!/wasm/
+/wasm/prebuilt/
+/wasm/web/slaplog.js
+/wasm/web/slaplog.wasm

@@ -132,8 +132,9 @@ namespace {
      * format_time – Convert a system_clock time_point to a locale-aware
      * date-time string (YYYY-MM-DD HH:MM:SS).
      */
-    std::string format_time(std::chrono::system_clock::time_point tp) {
-        auto in_time_t = std::chrono::system_clock::to_time_t(tp);
+    std::string format_time(SystemTimePoint tp) {
+        auto in_time_t = std::chrono::system_clock::to_time_t(
+            std::chrono::time_point_cast<std::chrono::system_clock::duration>(tp));
         std::stringstream ss;
         ss << std::put_time(std::localtime(&in_time_t), "%Y-%m-%d %H:%M:%S");
         return ss.str();
@@ -1385,6 +1386,7 @@ void print_replay_report(const Aggregator& agg, double /*duration*/, const std::
         std::string binddn, authcid, authzid;
         std::string nentries, err, qtime;
         std::string text, timestamp;
+        size_t seq = 0;   // input position, used as the final sort key
     };
 
     std::vector<ReplayRow> rows;
@@ -1416,16 +1418,24 @@ void print_replay_report(const Aggregator& agg, double /*duration*/, const std::
         std::getline(ss, r.qtime, '\t');
         std::getline(ss, r.text, '\t');
         std::getline(ss, r.timestamp, '\t');
+        r.seq = rows.size();
         rows.push_back(std::move(r));
     }
     in.close();
 
+    // Sort by timestamp, then connection, then operation.  Rows agreeing on all
+    // three are ordered chronologically (by input position): plain std::sort is
+    // not stable, so the relative order of such ties used to depend on the sort
+    // implementation — and libstdc++ (GCC) and libc++ (clang/Emscripten) order
+    // them differently.  Breaking the tie on 'seq' makes the ordering total,
+    // hence reproducible on any standard library, while keeping the original
+    // log order for equal-keyed rows.
     std::sort(rows.begin(), rows.end(),
         [](const ReplayRow& a, const ReplayRow& b) {
-            if (a.timestamp < b.timestamp) return true;
-            if (a.timestamp > b.timestamp) return false;
+            if (a.timestamp != b.timestamp) return a.timestamp < b.timestamp;
             if (a.conn != b.conn) return a.conn < b.conn;
-            return a.op < b.op;
+            if (a.op != b.op) return a.op < b.op;
+            return a.seq < b.seq;
         });
 
     auto scope_to_str = [](const std::string& s) -> std::string {
@@ -1445,7 +1455,7 @@ void print_replay_report(const Aggregator& agg, double /*duration*/, const std::
         std::string ts = timestamp;
         if (output_date_format != "preserve") {
             auto tp = parse_any_timestamp(timestamp);
-            if (tp != std::chrono::system_clock::time_point{}) {
+            if (tp != SystemTimePoint{}) {
                 ts = format_timestamp(tp, output_date_format);
             }
         }

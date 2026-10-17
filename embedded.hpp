@@ -695,7 +695,7 @@ For more information on this, and how to apply and follow the GNU AGPL, see
 
 **SPDX-License-Identifier:** AGPL-3.0-or-later  
 **License:** GNU Affero General Public License v3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)  
-**Version:** 3.6.2  
+**Version:** 3.7.0  
 **Author:** Manuel FLURY  
 **Copyright:** © 2026 Manuel FLURY. All rights reserved.
 
@@ -832,6 +832,24 @@ The Makefile auto-increments a build number on each compilation.
 ```bash
 make clean
 ```
+
+### WebAssembly build (browser)
+
+slaplog can also be compiled to WebAssembly, so a log file can be analysed
+**entirely inside a browser tab** — the file never leaves the machine. Several
+files can be dropped at once: they are analysed sequentially and aggregated
+into a single report, with a progress indicator.
+
+```bash
+make wasm                                   # -> wasm/web/slaplog.js + slaplog.wasm
+python3 -m http.server -d wasm/web 8000     # then open http://localhost:8000/
+```
+
+This requires the [Emscripten SDK](https://emscripten.org/) (`em++` on the
+`PATH`). zlib and bzip2 come from Emscripten's own ports; liblzma is cross-built
+once by `wasm/build_liblzma.sh`. The target is fully separate from the native
+build, which is left untouched. See `wasm/README.md` for the architecture and
+for the ordering details that differ from earlier releases.
 
 ## Usage
 
