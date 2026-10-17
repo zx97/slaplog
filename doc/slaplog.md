@@ -41,7 +41,8 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ## Overview
 
 `slaplog` is a command-line tool that parses OpenLDAP `slapd` access logs and
-produces structured reports in text (with ANSI color), HTML, or JSON format.
+produces structured reports in text (with ANSI color), HTML, JSON, or replay
+format (for jMeter/LoadRunner).
 
 It is designed to handle large log volumes (multi-GB, thousands of files) by
 processing files in parallel using one thread per file. Each thread builds its
@@ -262,9 +263,38 @@ Counts per operation type: BIND, BIND ANONYMOUS, EXT, ADD, DEL, MOD, MODRDN,
 CMP, SRCH, SRCH ATTR, RESULT, SEARCH RESULT, ABANDON, UNBIND, TLS, SASL,
 GLOBAL_CONTROL, SYNCPROV, CSN_GET/QUEUE/GRADUATE, NOT_INDEXED, STARTTLS.
 
-### Error Counts
+### LDAP Result Codes
 
-Distribution of LDAP result error codes with human-readable names.
+Every LDAP result code with its human-readable name and count.  A code does not
+say *error or not*: it points at who is at fault — or, for one class, says the
+log cannot tell — and only the server-side class says anything about the
+directory's health.  Rows, table cells and charts are coloured by class:
+
+| Colour | Class | What it means | Codes |
+|--------|-------|---------------|-------|
+| green | informational | the operation did what was asked, or the protocol is progressing | `0`, `5`, `6`, `10`, `14` |
+| amber | client-side | the request, the identity or the data were at fault; slapd answered correctly | `2`, `7`, `16`–`21`, `32`, `34`, `48`, `49`, `64`–`69` |
+| violet | by configuration | the server refused or limited **by configuration** — a numeric limit it was told to enforce, which the client is told about and can page or split around | `3`, `4`, `11` |
+| amber over violet, hatched | by configuration, or client-side | the same "no", but the log cannot say which side should have known better: a request the client had no right to make and one it legitimately expected to work are refused with the very same code | `8`, `13`, `50`, `53` |
+| red | server-side | slapd itself: internal error, overload, unavailable backend, broken alias | `1`, `12`, `33`, `36`, `51`, `52`, `54`, `71`, `80` |
+
+The five lists cover the whole mnemonic table, so no code is left unclassified;
+a code outside it is reported server-side (and named `unknown`) rather than
+guessed into a harmless class.  The informational codes are recalled in a note
+above the table, and left out of the two charts that show *failures*.
+
+The *by configuration, or client-side* class is drawn **hatched** — amber
+diagonal stripes over the violet base — because the result code alone does not
+say who should have done otherwise.
+`53 unwillingToPerform` is the clearest case: OpenLDAP returns it when it refuses
+by policy (a referral it will not follow, TLS that is required, a password-policy
+outcome), and the same code answers a client that had no business asking and a
+client whose legitimate request stumbles on the configuration.  `50
+insufficientAccessRights` is the same question asked of an ACL: a genuine
+"no" to an overreaching client, or an ACL that is too tight.  The class says
+*look at the request*, not *someone is guilty* — and unlike the numeric limits
+(`3`, `4`, `11`), nothing in the result tells the client it could have avoided
+the refusal.
 
 ### Search Analysis
 
@@ -289,12 +319,16 @@ WhoAmI, Cancel, etc.), plus unrecognised global control OIDs.
 ### Session Tracking Correlations
 
 When OpenLDAP's session tracking request control is enabled, slapd logs
-`[IP=... NAME=... USERNAME=...]` blocks on operation lines. The session
-tracking table correlates:
+`[IP=... NAME=... USERNAME=...]` blocks on operation lines. The table is
+**grouped by client** and sorted by session count, because the tracking name
+usually carries a per-session identifier that would otherwise make every row
+unique:
 
-- **ACCEPT IP**: The source IP from the TCP accept (may be NAT'd).
+- **Sessions**: Number of sessions seen for this client.
+- **NAT IPs**: Number of distinct NAT addresses it connected from.
 - **Real IP**: The actual client IP from the session tracking control.
-- **Name**: Client identifier (hostname, pod name, etc.).
+- **Name**: Client identifier (hostname, pod name, …), with a trailing session
+  id such as `…=sessionId-1792207915730` stripped so that sessions group.
 - **Username**: Application username or DN.
 - **BIND dn**: The DN used to authenticate on this connection.
 
@@ -322,7 +356,11 @@ Same layout as text but with ANSI escape sequences for:
 - Metric labels in green
 - Etime values color-coded: green (<0.1s), cyan (<0.5s), yellow (<1s),
   red (<5s), bright red (≥5s)
-- Error codes color-coded: green for success/referral, red for failures
+- Error codes color-coded by class: green for information, amber for
+  client-side, magenta for what the configuration refused, red for slapd's own
+  failures — and a colour key printed above the table.  The dual class shares
+  the magenta: ANSI has no hatch, and the text report names no class, so it is
+  the HTML side that draws the "either cause" reading
 - Alternating application colors in filters-per-app table
 - Count gradient: green → yellow → red → bright red
 
@@ -335,13 +373,80 @@ Standalone HTML page with embedded CSS featuring:
 - Server events with green (start) / red (stop) left border indicators
 - Color-coded etime values
 - Responsive layout (`@media` query for mobile)
-- **Inline SVG charts** — drawn by default, disable with `--no-graph`:
+- **Eight inline SVG charts**, each placed under the section it summarises —
+  drawn by default, disable with `--no-graph`.  None of them carries a
+  *"How to read it"* note.  A note under a drawing that needs no explaining (a
+  share ring, a connection curve, a pie) is noise, and a note that talks past the
+  thing the reader is stuck on is worse than none.  Where a word really is needed,
+  it belongs in the chart's subtitle — which is where every one of them now says
+  what it shows:
   - *Simultaneous Connections*: how many connections were open across the
-    analysed time range, with a marker on every server start/stop event;
+    analysed time range, with a marker on every server start/stop event, a
+    shaded band over each downtime period, and an orange marker for a restart
+    that had no shutdown before it (a likely crash);
+  - *Errors Over Time*: **failing** results only — informational codes (success,
+    both Compare answers, a referral) are not plotted, so the curve is not
+    inflated by operations that did what they were asked.  The curve is
+    **stacked by result code**: the silhouette is the total, exactly where a
+    single curve would be, and the colour underneath says which code built it —
+    amber for what the client asked, violet for what the configuration refuses,
+    red for what slapd failed to do, shaded by rank so two codes of one class
+    stay distinguishable.  A refusal the log cannot attribute to either side
+    (see the result-code classes) is a diagonal amber/violet **hatch** instead of
+    a flat colour, and its legend swatch carries the same hatch.  A peak in one
+    colour is one problem; a rise spread over several is a general one.  The
+    legend under the chart names each band and its share, and hovering a slice
+    lists the codes it is made of;
+  - *Response Time Distribution*: how many operations fall into each etime
+    bucket, each bar labelled with its exact count and share — the latency tail
+    at a glance.  A cumulative share curve with its own 0-100 % axis used to run
+    down the right-hand side; it was removed because the bars already carried
+    every figure it derived from, and because on that axis each row past the
+    second reads 100 %: the reader had to work out what the number referred to,
+    for nothing.  The bars now have the width it and its label column took;
+  - *Response Time Density*: the **shape** of that same distribution, on a
+    logarithmic x axis whose window follows the data.  The eleven buckets above
+    cannot show a shape that fits in one of them, and on a real 1 GiB access log
+    99.9992 % of the operations finish under 1 ms; here the bins are equal in
+    ratio (×1.58 per step) so the profile is readable — and this is also the
+    only axis on which a latency distribution could ever look like a bell, which
+    is what a log-normal latency is;
   - *Resource Consumers by Bind Account*: share of the cumulative operation
-    time (etime) per bind DN.
-  Both are interactive — a tooltip follows the mouse and shows the exact value
+    time (etime) per bind DN, with each account's operation count and average
+    time per operation;
+  - *Operation Types*: share of SRCH / BIND / MOD / … ;
+  - *Result Code Breakdown*: every result code, successes included, as bars
+    coloured by class, with the same codes drawn as **a pie** on the right — same
+    order, same colours, sized by area.  One huge slice and a tail of slivers is
+    what a result-code distribution looks like: on a concentrated log the first code
+    alone is 63 % of everything and the top six are 99.99 %, so the chart says how
+    few codes carry how much at a glance — no axis, no curve, no caption.  That
+    right-hand side has been drawn four ways: a cumulative *curve* with its figures
+    repeated in a text column beside it (the same number rendered twice, and the
+    reader had to interpolate between 24 px rows to answer a question that is asked
+    row by row), then a flat bar per row (which answered once the row was found),
+    then those bars stacked so the sum could be seen being built (which needed a
+    note to be read at all), and now the pie — which needs none.  Every code keeps
+    **one colour** all through the report: the colour of its bar, of its slice here,
+    and of its band in the stacked chart above.  A code of the dual class is the
+    one exception, and it is deliberate: it is painted with the amber/violet
+    **hatch** everywhere — bar, slice and band — so it reads as "either cause" at
+    every place it appears, while its label and tooltip keep the violet base
+    colour.  The left bars are on a log scale —
+    counts span five orders of magnitude, and a linear scale would leave every code
+    but the first invisible — so each bar carries its exact count and share, and
+    **the scale itself is labelled under the bars** in decades: one step is ten
+    times the one before.  Without that label the chart showed a percentage grid and
+    nothing at all to measure a bar against;
+  - *Failing Result Codes*: share of each failing result code, coloured by
+    class — the dual class as the same amber/violet hatch as everywhere else.
+    The informational results are not drawn as slices but counted and
+    named in a note under the legend — on a 1 GiB production access log the
+    Compare answers alone were 169 894 results, 32 % of the slices, which made
+    the failure count read 48 % higher than it is.
+  All are interactive — a tooltip follows the mouse and shows the exact value
   under the cursor.
+- The OpenLDAP version, when the startup banner is present in the log.
 
 ### JSON (`-o json`)
 
@@ -399,6 +504,12 @@ cap for extremely large log sets or limited disk space on `/tmp`.
 
 This format is useful for replaying LDAP operations against a test server or
 analyzing operation timing with external tools.
+
+A complete jMeter run, with the options combined:
+```bash
+slaplog -o replay --replay-separator comma --output-date-format epoch \
+  --replay-limit 500000 --log-format auto -q /var/log/slapd/access.log > jmeter_replay.csv
+```
 
 ## Session Tracking
 
@@ -460,7 +571,9 @@ Each log line goes through two distinct stages:
 
 **Stage 1: `parse_line()`** → `Event`
 
-- Strips the timestamp header (RFC 3339 / OL26 / syslog).
+- Detects the header format (RFC 3339 / OL26 / syslog / debug) via
+  `try_parse_header()` — automatic per-line detection in `auto` mode — and
+  converts the timestamp to RFC 3339 UTC via `convert_to_rfc3339_utc()`.
 - Extracts `conn=`, `op=`, `fd=` identifiers.
 - Strips `[IP=... NAME=... USERNAME=...]` session tracking blocks.
 - Dispatches to the correct regex group based on the first character of the
@@ -503,15 +616,19 @@ All data structures:
 - **`Event`**: The output of `parse_line()`. Contains the parsed kind, raw
   text, optional LDAP fields, and session tracking fields.
 - **`OpState`**: Mutable state for one LDAP operation within a connection.
-  Tracks type, base, filter, who, etime, etc.
+  Tracks type, base, filter, attrs, scope, deref, who, etime, qtime,
+  nentries, err, text, timestamp, etc.
 - **`ConnState`**: Per-connection mutable state. Contains a map of ops,
   accumulated etime, binddn, authcid, src, session tracking fields.
 - **`TopOpRow`** / **`TopConnRow`**: Rows for the top-N leaderboards.
+  `TopOpRow` includes all fields needed for replay output.
 - **`Stats`**: Simple scalar counters (lines, connections, unknowns).
 - **`Aggregator`**: The main aggregation structure containing all maps,
   counters, and state. Includes `SessionCorrelation` and `server_events`.
   Also holds `restart_count` for correct session tracking across slapd
   restarts.
+- **`LogFormat`** enum and helpers: `parse_log_format()`,
+  `convert_to_rfc3339_utc()`, `try_parse_header()` with auto-detection support.
 
 ### `log_parser.cpp`
 
@@ -519,6 +636,12 @@ All parsing and aggregation logic:
 
 - **Helpers**: `dequote`, `to_int`, `trim`, `normalize_filter`,
   `normalize_attrs`, `ts_sort_key`, `update_time_bounds`.
+- **Format conversion**: `convert_to_rfc3339_utc()` with helpers
+  `parse_debug_timestamp()`, `parse_syslog_timestamp()`, `format_rfc3339_utc()`.
+  Converts any supported format to RFC3339 UTC.
+- **`try_parse_header()`**: Multi-format header detection. In `AUTO` mode,
+  tries all formats per line and reports the detected format via output
+  parameter.
 - **`parse_line()`**: ~450 lines of regex dispatch. Starts with header
   parsing, then connection/operation ID extraction, session tracking strip,
   and prefix-character-based dispatch to ~30 regex patterns.
@@ -547,6 +670,21 @@ Report generation:
   responsive, styled tables with colour gradients for etime values.
 - **`print_json_report()`**: Machine-readable JSON output with all
   aggregated data, including session correlations.
+- **`print_replay_report()`**: Pipe-delimited single-line output for
+  jMeter/LoadRunner replay. Configurable delimiter via `--replay-separator`.
+  Data written to a temp file during processing (bounded memory).
+
+### `version.hpp`
+
+Single source of truth for `SLAPLOG_VERSION` and `BUILD_NUMBER`.
+
+### `embedded.hpp`
+
+Holds the licence text and **this document**, printed by `-l` and `-D`.  It is
+a **generated** file: `LICENSE` and `doc/slaplog.md` are the sources and
+`make embedded` rewrites it — `make` does it automatically as soon as either
+source changes, and `make check-doc` fails when it is stale.  Never edit it by
+hand: the two copies used to be maintained that way and drifted apart.
 
 ### `utils.hpp`
 

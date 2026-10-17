@@ -57,6 +57,30 @@ clean:
 .PHONY: all clean FORCE
 
 # ===================================================================
+# Embedded documentation  --  `make embedded` / `make check-doc`
+# ===================================================================
+# embedded.hpp holds LICENSE and doc/slaplog.md as raw string literals,
+# printed by `slaplog -l` and `slaplog -D`.  Those two copies used to be
+# kept in step by hand and drifted apart (131 differing lines at v3.8.0,
+# each side carrying changes the other lacked), so embedded.hpp is now a
+# GENERATED file: doc/slaplog.md is the source, the .hpp the artefact.
+#
+# `make` regenerates it as soon as a source or the template changes (the
+# -MMD dependency files then rebuild whoever includes it); `make check-doc`
+# fails when it is stale, which is the guard to run before a release.
+# ===================================================================
+$(ROOT_DIR)embedded.hpp: $(ROOT_DIR)doc/slaplog.md $(ROOT_DIR)LICENSE \
+                         $(ROOT_DIR)tools/embedded.hpp.in \
+                         $(ROOT_DIR)tools/gen_embedded.py
+	@$(ROOT_DIR)tools/gen_embedded.py
+
+.PHONY: embedded check-doc
+embedded:
+	@$(ROOT_DIR)tools/gen_embedded.py
+check-doc:
+	@$(ROOT_DIR)tools/gen_embedded.py --check
+
+# ===================================================================
 # WebAssembly build (Emscripten)  --  `make wasm`
 # ===================================================================
 # This section is purely additive: it defines new variables and new
@@ -95,7 +119,7 @@ WASM_FLAGS := -std=c++17 -O2 -Wall -Wextra \
               -sALLOW_MEMORY_GROWTH=1 \
               -sSTACK_SIZE=5242880 \
               -sFORCE_FILESYSTEM=1 \
-              -sEXPORTED_FUNCTIONS='["_main","_slaplog_run","_slaplog_begin","_slaplog_input_begin","_slaplog_input_end","_slaplog_add_file","_slaplog_add_text","_slaplog_end","_malloc","_free"]' \
+              -sEXPORTED_FUNCTIONS='["_main","_slaplog_run","_slaplog_begin","_slaplog_input_begin","_slaplog_input_end","_slaplog_add_file","_slaplog_add_text","_slaplog_end","_slaplog_version","_malloc","_free"]' \
               -sEXPORTED_RUNTIME_METHODS='["ccall","cwrap","FS","HEAPU8"]'
 
 .PHONY: wasm wasm-clean

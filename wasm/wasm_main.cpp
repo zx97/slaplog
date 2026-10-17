@@ -41,6 +41,7 @@
 
 #include "log_parser.hpp"
 #include "report.hpp"
+#include "version.hpp"
 
 #include <emscripten.h>
 
@@ -312,6 +313,12 @@ extern "C" EMSCRIPTEN_KEEPALIVE int slaplog_add_text(const char* data, int len) 
 extern "C" EMSCRIPTEN_KEEPALIVE int slaplog_end(void) {
     if (!g_session) return -1;
     return emit_report();
+}
+
+// Version of the engine actually running, so the page can show it in its
+// footer instead of hard-coding a number that would drift from version.hpp.
+extern "C" EMSCRIPTEN_KEEPALIVE const char* slaplog_version(void) {
+    return SLAPLOG_VERSION;
 }
 
 // ---------------------------------------------------------------------------

@@ -28,13 +28,29 @@
 // is limited to a tooltip that follows the mouse; it reads the value from the
 // data-* attributes of whichever element is under the cursor, so no coordinate
 // maths or scale duplication is needed on the JS side.
+//
+// Seven charts are produced.  Five are fed by aggregates collected during
+// parsing only when graphs are requested (--no-graph turns them off); the two
+// that draw plain counts (operation types, result codes) exist whatever the
+// flag, so html_charts_available() tests the flag explicitly instead of relying
+// on those aggregates being empty.
+//
+//   • simultaneous connections over time   (connection timeline)
+//   • errors over time                     (error timestamps, failures only)
+//   • response time distribution           (etime histogram)
+//   • resource consumers by bind account   (per-account etime)
+//   • operation types                      (operation_count)
+//   • every result code, successes included(error_count — bars + cumulative)
+//   • the failing ones only                (error_count — donut)
 
 #include "html_chart.hpp"
+#include "report.hpp"     // ldap_error_name(), ldap_code_class(), …_color()
 
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <iostream>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -61,9 +77,78 @@ std::string xml_escape(const std::string& s) {
 
 std::string num(double v, int decimals) {
     char buf[48];
-    std::snprintf(buf, sizeof(buf), decimals == 0 ? "%.0f" : "%.1f", v);
+    // The decimals argument is honoured: a bin ratio of 1.5849 has to be able to
+    // read "1.58" rather than being silently rounded to one place.
+    std::snprintf(buf, sizeof(buf), "%.*f", decimals < 0 ? 0 : decimals, v);
     return buf;
 }
+
+// Defined with the donuts below; the stacked error chart uses it first.
+std::string share_text(double pct);
+
+// There is no "how to read it" note anywhere in the report, and deliberately no
+// helper to print one.  Every chart that needs a word says it in its subtitle, and
+// the last note to survive — under the result-code breakdown's cumulative bars —
+// went away with the bars: a pie of the same codes says the same thing at a
+// glance, so there is nothing left to explain.  The test for ever adding one back:
+// does the reader have a question the drawing itself cannot answer?
+//
+// Class colour shaded by rank inside the class: two client codes would otherwise
+// share the same amber and read as one bar.  Shared by the stacked error chart and
+// by the result-code breakdown, so a given code keeps one colour all through the
+// report — the same colour on its bar and on its slice of the pie.
+const double CLASS_SHADES[] = {0.95, 0.70, 0.50, 0.34};
+
+// ---- the hatched "either cause" class -------------------------------------
+//
+// One class — PolicyOrClient — says the log cannot attribute the refusal: the
+// same "no" answers a request the client had no right to make and one it
+// legitimately expected to work.  It is drawn as a diagonal amber/violet hatch
+// wherever it appears; violet stays the base colour (the label, the tooltip
+// text), the hatch carries the amber.  The handoff note for this feature and the
+// reasoning behind the code list live in log_parser.hpp.
+//
+// An SVG paint server (a <pattern>) is resolved per drawing, so the <defs> must
+// be emitted inside the very <svg> that fills with it — hence one helper to emit
+// the pattern (called only by a chart that actually draws a dual shape) and one
+// to produce the paint reference.  The tag must be unique across the page: ids
+// are document-global and two patterns sharing one id are a duplicate id.
+void print_hatch_defs(const char* tag) {
+    const char* base = ldap_code_class_color(LdapCodeClass::Policy);                  // violet
+    const char* over = ldap_code_class_hatch_color(LdapCodeClass::PolicyOrClient);    // amber
+    std::cout << "<defs><pattern id=\"" << tag
+              << "\" width=\"9\" height=\"9\" patternUnits=\"userSpaceOnUse\" "
+                 "patternTransform=\"rotate(45)\">"
+                 "<rect width=\"9\" height=\"9\" fill=\"" << base << "\"/>"
+                 "<rect width=\"4.5\" height=\"9\" fill=\"" << over << "\"/>"
+                 "</pattern></defs>\n";
+}
+
+// The paint of one class: the hatch for the dual class, its plain colour
+// otherwise.  `tag` names the pattern emitted in this same svg.
+std::string class_fill(LdapCodeClass cls, const char* tag) {
+    if (cls == LdapCodeClass::PolicyOrClient) return std::string("url(#") + tag + ")";
+    return ldap_code_class_color(cls);
+}
+
+// The same two colours as an HTML background: a legend swatch cannot reference an
+// SVG pattern, so the hatch is laid out as a CSS gradient there.
+std::string hatch_background_css() {
+    return std::string("repeating-linear-gradient(45deg,") +
+           ldap_code_class_color(LdapCodeClass::Policy) + " 0 3px," +
+           ldap_code_class_hatch_color(LdapCodeClass::PolicyOrClient) + " 3px 6px)";
+}
+
+// One tag per chart, never reused: see print_hatch_defs().
+const char* const HATCH_TAG_STACK = "sl-hatch-stack";
+const char* const HATCH_TAG_BREAKDOWN = "sl-hatch-breakdown";
+const char* const HATCH_TAG_DONUT = "sl-hatch-donut";
+
+// A per-element colour is emitted as an inline `style`, never as the SVG
+// presentation attribute `fill`: a stylesheet rule on the element's class beats
+// a presentation attribute, so `.sl-bar{fill:#3498db}` repainted every
+// class-coloured bar blue while `fill="#27ae60"` sat right there in the markup.
+// Only a render shows this, so the rule is spelled out here once.
 
 // Round a value down to a "readable" axis tick spacing.
 double nice_step(double range, int ticks) {
@@ -79,7 +164,7 @@ double nice_step(double range, int ticks) {
 
 void print_chart_style() {
     std::cout << R"CSS(<style>
-  .sl-chart{background:#fff;border-radius:6px;padding:14px 20px 10px;margin:0 0 18px;position:relative}
+  .sl-chart{background:#fff;border-radius:6px;padding:14px 20px 10px;max-width:1100px;margin:0 auto 18px;position:relative}
   .sl-chart-title{font-size:0.95rem;font-weight:600;color:#2c3e50;margin-bottom:2px}
   .sl-chart-sub{font-size:0.78rem;color:#7f8c9b;margin-bottom:10px}
   .sl-chart svg{width:100%;height:auto;display:block}
@@ -95,8 +180,27 @@ void print_chart_style() {
   .sl-ev-dot-start{fill:#27ae60}
   .sl-ev-dot-stop{fill:#e74c3c}
   .sl-slice{stroke:#fff;stroke-width:1.5}
+  .sl-downtime{fill:#e74c3c;fill-opacity:0.10}
+  .sl-downtime-edge{stroke:#e74c3c;stroke-opacity:0.55;stroke-dasharray:3 3;stroke-width:1}
+  .sl-ev-abrupt{stroke:#e67e22;stroke-dasharray:2 2;stroke-width:1.5}
+  .sl-ev-dot-abrupt{fill:#e67e22}
+  .sl-bar{fill:#3498db;fill-opacity:0.75}
   .sl-legend-name{fill:#2c3e50;font-size:12.5px}
   .sl-legend-val{fill:#7f8c9b;font-size:12.5px;font-family:'Consolas','Courier New',monospace}
+  .sl-legend-det{fill:#a4b0be;font-size:11px;font-family:'Consolas','Courier New',monospace}
+  .sl-chart-note{font-size:0.78rem;color:#7f8c9b;margin:6px 0 2px}
+  /* Latency density: the filled profile of the logarithmic bins. */
+  .sl-density-area{fill:#3498db;fill-opacity:0.18}
+  .sl-density-line{fill:none;stroke:#2980b9;stroke-width:2;stroke-linejoin:round}
+  .sl-density-dot{fill:#2980b9}
+  /* Stacked errors: the same silhouette as one total curve, with the colour
+     underneath naming the result code that built each part of it. */
+  .sl-stack-total{fill:none;stroke:#2c3e50;stroke-width:1.5;stroke-linejoin:round}
+  .sl-stack-legend{display:flex;flex-wrap:wrap;gap:5px 18px;font-size:0.76rem;color:#5b6b7c;
+                   line-height:1.5;margin:8px 0 2px;padding-left:2px}
+  .sl-stack-key{white-space:nowrap}
+  .sl-stack-key i{display:inline-block;width:11px;height:11px;border-radius:2px;margin-right:6px;
+                  vertical-align:-1px}
   .sl-tip{position:absolute;pointer-events:none;background:#2c3e50;color:#ecf0f1;border-radius:5px;
           padding:4px 9px;font-size:12px;white-space:nowrap;transform:translate(12px,-50%);z-index:9;
           box-shadow:0 2px 6px rgba(0,0,0,.25)}
@@ -130,9 +234,37 @@ void print_chart_script() {
 )JS";
 }
 
-// ---- simultaneous connections --------------------------------------------
+// ---- time charts ----------------------------------------------------------
+
+// Emit the plot frame (horizontal and vertical grid plus tick labels) that the
+// two time-series charts share.
+void print_time_frame(double L, double T, double pw, double ph, double H,
+                      long long t0, long long t1, double ytop, double ystep,
+                      double ymax_px) {
+    const double W = L + pw + 14;
+    for (double v = 0.0; v <= ytop + 0.5 * ystep; v += ystep) {
+        const double y = T + ph - (ymax_px > 0 ? (v / ytop) * ph : 0.0);
+        std::cout << "<line class=\"sl-grid\" x1=\"" << num(L, 0) << "\" y1=\"" << num(y, 1)
+                  << "\" x2=\"" << num(W - 14, 0) << "\" y2=\"" << num(y, 1) << "\"/>\n";
+        std::cout << "<text class=\"sl-tick\" x=\"" << num(L - 8, 0) << "\" y=\"" << num(y + 4, 1)
+                  << "\" text-anchor=\"end\">" << num(v, 0) << "</text>\n";
+    }
+    const double span = static_cast<double>(t1 - t0);
+    const int XT = 5;
+    for (int i = 0; i <= XT; ++i) {
+        const long long t = t0 + static_cast<long long>(span * i / XT);
+        const double x = L + (span > 0 ? (static_cast<double>(t - t0) / span) * pw : 0.0);
+        std::cout << "<line class=\"sl-grid\" x1=\"" << num(x, 1) << "\" y1=\"" << num(T, 0)
+                  << "\" x2=\"" << num(x, 1) << "\" y2=\"" << num(T + ph, 0) << "\"/>\n";
+        std::cout << "<text class=\"sl-tick\" x=\"" << num(x, 1) << "\" y=\"" << num(H - 12, 0)
+                  << "\" text-anchor=\"middle\">" << xml_escape(format_epoch_seconds(t)) << "</text>\n";
+    }
+    std::cout << "<line class=\"sl-axis\" x1=\"" << num(L, 0) << "\" y1=\"" << num(T + ph, 0)
+              << "\" x2=\"" << num(W - 14, 0) << "\" y2=\"" << num(T + ph, 0) << "\"/>\n";
+}
 
 void print_connection_chart(const Aggregator& agg) {
+    if (agg.conn_timeline.empty()) return;
     std::vector<ConnEvent> ev = agg.conn_timeline;
     // Stable sort on time only: the timeline is collected in log order, and
     // reordering events that share a second would change the running count
@@ -187,34 +319,89 @@ void print_connection_chart(const Aggregator& agg) {
     auto xof = [&](long long t) { return L + (static_cast<double>(t - t0) / span) * pw; };
     auto yof = [&](double v) { return T + ph - (v / static_cast<double>(ytop)) * ph; };
 
+    // ---- server lifecycle events -------------------------------------------
+    // Turned into:
+    //   • downtime bands — from the first shutdown event of a group to the next
+    //     start (or to the end of the window when the server never came back),
+    //     drawn as a shaded background;
+    //   • abrupt restarts — a start NOT preceded by a shutdown, which means the
+    //     previous instance died without logging one (crash, OOM, kill -9 …).
+    struct SrvEvent { long long t; std::string what; bool start; };
+    std::vector<SrvEvent> sev;
+    sev.reserve(agg.server_event_list.size());
+    for (const auto& [ts, what] : agg.server_event_list) {
+        if (auto t = ts_epoch_seconds(ts)) {
+            sev.push_back({*t, what, what.rfind("slapd starting", 0) == 0});
+        }
+    }
+    std::stable_sort(sev.begin(), sev.end(), [](const SrvEvent& a, const SrvEvent& b) {
+        if (a.t != b.t) return a.t < b.t;
+        return a.what < b.what;      // deterministic for events sharing a second
+    });
+
+    std::vector<std::pair<long long, long long>> raw_bands;
+    std::vector<SrvEvent> abrupt;
+    std::optional<long long> outage;             // set while the server is down
+    for (size_t i = 0; i < sev.size(); ++i) {
+        if (sev[i].start) {
+            if (outage) { raw_bands.emplace_back(*outage, sev[i].t); outage.reset(); }
+            else if (i > 0) abrupt.push_back(sev[i]);
+        } else if (!outage) {
+            outage = sev[i].t;                   // first shutdown event of the outage
+        }
+    }
+    if (outage) raw_bands.emplace_back(*outage, t1);   // no start before the end
+
+    // Only keep the bands the log actually corroborates.  An outage means *no
+    // traffic*, so a stop followed by connection activity was not an outage:
+    // this happens when the log mixes several slapd instances, when a restart
+    // line carries an unexpected wording, or when the file was rotated between
+    // the stop and the next start — the following start then lives in another
+    // file.  Without this check a single unmatched stop shaded 43 % of a real
+    // two-day log.
+    std::vector<std::pair<long long, long long>> bands;
+    std::vector<std::pair<double, double>> band_x;      // pixel span, floored
+    for (const auto& [a, b] : raw_bands) {
+        if (b <= a) continue;                        // no measurable downtime
+        auto it = std::upper_bound(ev.begin(), ev.end(), a,
+                                   [](long long v, const ConnEvent& e) { return v < e.t; });
+        if (it != ev.end() && it->t < b) continue;   // traffic during the "outage"
+        double x0 = xof(a), x1 = xof(b);
+        // A two-minute outage is 0.4 px on a two-day chart; floor the width so
+        // it stays visible.  The tooltip still reports the real duration.
+        const double MIN_W = 5.0;
+        if ((x1 - x0) < MIN_W) {
+            const double c = (x0 + x1) / 2.0;
+            x0 = c - MIN_W / 2.0;
+            x1 = c + MIN_W / 2.0;
+        }
+        x0 = std::max(x0, L);
+        x1 = std::min(x1, W - R);
+        bands.emplace_back(a, b);
+        band_x.emplace_back(x0, x1);
+    }
+
     std::cout << "<h2>Simultaneous Connections</h2>\n";
     std::cout << "<div class=\"sl-chart\">\n";
     std::cout << "<div class=\"sl-chart-sub\">" << xml_escape(agg.firsttime)
               << " &rarr; " << xml_escape(agg.lasttime)
-              << " &middot; peak " << peak << " connection(s)</div>\n";
+              << " &middot; peak " << peak << " connection(s)";
+    if (!bands.empty()) std::cout << " &middot; " << bands.size() << " downtime period(s)";
+    // The marker key belongs with the legend, not in a note: these three marks
+    // are the whole of the chart's vocabulary and nothing else explains them.
+    std::cout << " &middot; markers: green start, red stop, orange restart without a clean shutdown";
+    std::cout << "</div>\n";
     std::cout << "<svg viewBox=\"0 0 1000 300\" role=\"img\" "
                  "aria-label=\"Simultaneous connections over time\">\n";
 
-    // horizontal grid + y labels
-    for (long long v = 0; v <= ytop; v += static_cast<long long>(step)) {
-        const double y = yof(static_cast<double>(v));
-        std::cout << "<line class=\"sl-grid\" x1=\"" << num(L, 0) << "\" y1=\"" << num(y, 1)
-                  << "\" x2=\"" << num(W - R, 0) << "\" y2=\"" << num(y, 1) << "\"/>\n";
-        std::cout << "<text class=\"sl-tick\" x=\"" << num(L - 8, 0) << "\" y=\"" << num(y + 4, 1)
-                  << "\" text-anchor=\"end\">" << v << "</text>\n";
+    // downtime bands, behind everything else
+    for (const auto& [x0, x1] : band_x) {
+        std::cout << "<rect class=\"sl-downtime\" x=\"" << num(x0, 1) << "\" y=\"" << num(T, 0)
+                  << "\" width=\"" << num(x1 - x0, 1) << "\" height=\"" << num(ph, 0) << "\"/>\n";
     }
-    // vertical grid + x labels
-    const int XT = 5;
-    for (int i = 0; i <= XT; ++i) {
-        const long long t = t0 + static_cast<long long>(span * i / XT);
-        const double x = xof(t);
-        std::cout << "<line class=\"sl-grid\" x1=\"" << num(x, 1) << "\" y1=\"" << num(T, 0)
-                  << "\" x2=\"" << num(x, 1) << "\" y2=\"" << num(T + ph, 0) << "\"/>\n";
-        std::cout << "<text class=\"sl-tick\" x=\"" << num(x, 1) << "\" y=\"" << num(H - 12, 0)
-                  << "\" text-anchor=\"middle\">" << xml_escape(format_epoch_seconds(t)) << "</text>\n";
-    }
-    std::cout << "<line class=\"sl-axis\" x1=\"" << num(L, 0) << "\" y1=\"" << num(T + ph, 0)
-              << "\" x2=\"" << num(W - R, 0) << "\" y2=\"" << num(T + ph, 0) << "\"/>\n";
+
+    print_time_frame(L, T, pw, ph, H, t0, t1, static_cast<double>(ytop), step,
+                     static_cast<double>(ytop));
 
     // area + line, one point per bucket
     std::string area = "M " + num(xof(t0), 1) + "," + num(yof(0), 1);
@@ -229,21 +416,28 @@ void print_connection_chart(const Aggregator& agg) {
     std::cout << "<path class=\"sl-area\" d=\"" << area << "\"/>\n";
     std::cout << "<path class=\"sl-line\" d=\"" << line << "\"/>\n";
 
-    // server start/stop markers
-    for (const auto& [ts, what] : agg.server_event_list) {
-        auto t = ts_epoch_seconds(ts);
-        if (!t || *t < t0 || *t > t1) continue;
-        const bool start = what.rfind("slapd starting", 0) == 0;
-        const double x = xof(*t);
-        std::cout << "<line class=\"sl-ev-line " << (start ? "sl-ev-start" : "sl-ev-stop")
-                  << "\" x1=\"" << num(x, 1) << "\" y1=\"" << num(T, 0)
-                  << "\" x2=\"" << num(x, 1) << "\" y2=\"" << num(T + ph, 0) << "\"/>\n";
-        std::cout << "<circle class=\"" << (start ? "sl-ev-dot-start" : "sl-ev-dot-stop")
-                  << "\" cx=\"" << num(x, 1) << "\" cy=\"" << num(T + 5, 0) << "\" r=\"4\"/>\n";
-        std::cout << "<rect class=\"sl-hit\" x=\"" << num(x - 4, 1) << "\" y=\"" << num(T, 0)
-                  << "\" width=\"8\" height=\"" << num(ph, 0)
-                  << "\" data-x=\"" << xml_escape(format_epoch_seconds(*t))
-                  << "\" data-y=\"" << xml_escape(what) << "\"/>\n";
+    // vertical rules for every lifecycle event.  Dots are staggered so that the
+    // several events of one restart (shutdown requested / waiting / stopped /
+    // starting), which land within a few pixels of each other, stay visible
+    // instead of being overdrawn by the last one.
+    auto is_abrupt = [&](const SrvEvent& e) {
+        for (const auto& a : abrupt) if (a.t == e.t && a.what == e.what) return true;
+        return false;
+    };
+    double last_dot_x = -1e9;
+    int dot_level = 0;
+    for (const auto& e : sev) {
+        if (e.t < t0 || e.t > t1) continue;
+        const bool ab = is_abrupt(e);
+        const char* cls = e.start ? (ab ? "sl-ev-start sl-ev-abrupt" : "sl-ev-start") : "sl-ev-stop";
+        const double x = xof(e.t);
+        std::cout << "<line class=\"sl-ev-line " << cls << "\" x1=\"" << num(x, 1) << "\" y1=\""
+                  << num(T, 0) << "\" x2=\"" << num(x, 1) << "\" y2=\"" << num(T + ph, 0) << "\"/>\n";
+        if (std::fabs(x - last_dot_x) < 10.0) dot_level = (dot_level + 1) % 4; else dot_level = 0;
+        last_dot_x = x;
+        const char* dot = ab ? "sl-ev-dot-abrupt" : (e.start ? "sl-ev-dot-start" : "sl-ev-dot-stop");
+        std::cout << "<circle class=\"" << dot << "\" cx=\"" << num(x, 1) << "\" cy=\""
+                  << num(T + 5 + dot_level * 12.0, 1) << "\" r=\"4\"/>\n";
     }
 
     // one hit strip per bucket, carrying the tooltip values
@@ -256,116 +450,895 @@ void print_connection_chart(const Aggregator& agg) {
                   << "\" data-y=\"" << peak_in[b] << " connection(s)\"/>\n";
     }
 
-    std::cout << "</svg>\n<div class=\"sl-tip\" hidden></div>\n</div>\n";
+    // Downtime-band and event hit areas come LAST so they sit on top of the
+    // bucket strips; emitted before them they would never receive the hover.
+    for (size_t i = 0; i < bands.size(); ++i) {
+        const auto& [a, b] = bands[i];
+        const auto& [x0, x1] = band_x[i];
+        std::cout << "<rect class=\"sl-hit\" x=\"" << num(x0, 1) << "\" y=\"" << num(T, 0)
+                  << "\" width=\"" << num(x1 - x0, 1) << "\" height=\""
+                  << num(ph, 0) << "\" data-x=\"" << xml_escape(format_epoch_seconds(a)) << " down"
+                  << "\" data-y=\"" << (b - a) << " s without the server\"/>\n";
+    }
+    for (const auto& e : sev) {
+        if (e.t < t0 || e.t > t1) continue;
+        const std::string note = is_abrupt(e)
+            ? e.what + " — restarted without a clean shutdown (previous instance likely died)"
+            : e.what;
+        std::cout << "<rect class=\"sl-hit\" x=\"" << num(xof(e.t) - 4, 1) << "\" y=\"" << num(T, 0)
+                  << "\" width=\"9\" height=\"" << num(ph, 0)
+                  << "\" data-x=\"" << xml_escape(format_epoch_seconds(e.t))
+                  << "\" data-y=\"" << xml_escape(note) << "\"/>\n";
+    }
+
+    std::cout << "</svg>\n<div class=\"sl-tip\" hidden></div>\n";
+    // No reading note here: how many connections were open at a glance needs no
+    // explaining, and the marker key is in the subtitle.
+    std::cout << "</div>\n";
 }
 
-// ---- resource consumers by bind account ----------------------------------
+// One band of the stacked "errors over time" chart: a result code, its colour
+// (the class colour, shaded by rank inside the class), and its count per time
+// slice.  The folded tail of small codes shares a single grey band.  `hatched`
+// marks the dual class, whose paint is an SVG pattern reference and whose legend
+// swatch must therefore be drawn as a CSS gradient instead of a flat background.
+struct ErrorBand {
+    int code = 0;
+    std::string label;              // "49 invalidCredentials", or "other"
+    std::string fill;
+    double fill_opacity = 1.0;
+    bool hatched = false;
+    std::vector<long long> series;  // one count per time slice
+    long long total = 0;
+};
 
-void print_account_chart(const Aggregator& agg) {
-    // "Resource" means cumulative operation time (etime); if the log carries no
-    // timing at all, fall back to the operation count so the chart still says
-    // something useful.
-    double total_etime = 0.0;
-    long long total_count = 0;
-    for (const auto& [name, ui] : agg.user_stats) {
-        total_etime += ui.etime_total;
-        total_count += ui.count;
-    }
-    const bool by_etime = total_etime > 0.0;
-    const double total = by_etime ? total_etime : static_cast<double>(total_count);
-    if (total <= 0.0) return;
+// "Errors over time", stacked by result code.  The outline is exactly what a
+// single total curve would draw — it *is* the total — but the colour underneath
+// says which code built each part of it, so a peak that is one code (a client
+// spraying wrong passwords, a directory that stopped accepting writes) can be
+// told apart from a general rise.  The bands keep the class colours of the rest
+// of the report, so amber still means "the client asked", violet "the
+// configuration refuses", red "slapd failed".
+void print_error_series_chart(const Aggregator& agg, long long t0, long long t1,
+                              const std::string& sub) {
+    if (agg.error_times_by_code.empty() || t1 <= t0) return;
 
-    std::vector<std::pair<std::string, double>> rows;
-    rows.reserve(agg.user_stats.size());
-    for (const auto& [name, ui] : agg.user_stats) {
-        const double v = by_etime ? ui.etime_total : static_cast<double>(ui.count);
-        if (v > 0.0) rows.emplace_back(name, v);
+    const int NB = 240;
+    const double span = static_cast<double>(t1 - t0);
+
+    std::vector<ErrorBand> bands;
+    for (const auto& [code, times] : agg.error_times_by_code) {
+        ErrorBand b;
+        b.code = code;
+        b.label = std::to_string(code) + " " + ldap_error_name(code);
+        b.total = static_cast<long long>(times.size());
+        b.series.assign(NB, 0);
+        for (long long t : times) {
+            long long k = static_cast<long long>((t - t0) / span * NB);
+            if (k < 0) k = 0;
+            if (k >= NB) k = NB - 1;
+            b.series[static_cast<size_t>(k)]++;
+        }
+        bands.push_back(std::move(b));
     }
-    if (rows.empty()) return;
-    std::sort(rows.begin(), rows.end(), [](const auto& a, const auto& b) {
-        if (a.second != b.second) return a.second > b.second;
-        return a.first < b.first;             // deterministic tie-break
+    // Tallest band at the bottom: the stack is then stable to read across the
+    // whole width, and the biggest contributor is always the one in view.
+    std::sort(bands.begin(), bands.end(), [](const ErrorBand& a, const ErrorBand& b) {
+        if (a.total != b.total) return a.total > b.total;
+        return a.code < b.code;                    // deterministic tie-break
     });
 
-    const size_t MAXS = 8;
-    if (rows.size() > MAXS) {
-        double rest = 0.0;
-        for (size_t i = MAXS; i < rows.size(); ++i) rest += rows[i].second;
-        rows.resize(MAXS);
-        rows.emplace_back("other accounts", rest);
+    // Six bands are what a legend can carry; the tail is honest summed rather
+    // than dropped, and the tooltips still name the codes underneath it.
+    constexpr size_t KEEP = 6;
+    long long grand = 0;
+    for (const auto& b : bands) grand += b.total;
+    if (bands.size() > KEEP) {
+        ErrorBand other;
+        other.label = "other";
+        other.fill = "#7f8c8d";
+        other.fill_opacity = 0.45;
+        other.series.assign(NB, 0);
+        for (size_t i = KEEP; i < bands.size(); ++i) {
+            other.total += bands[i].total;
+            for (int k = 0; k < NB; ++k) other.series[static_cast<size_t>(k)] += bands[i].series[static_cast<size_t>(k)];
+        }
+        bands.resize(KEEP);
+        bands.push_back(std::move(other));
     }
 
+    // Class colour, shaded by rank inside the class: two client codes would
+    // otherwise share the same amber and read as one band.  The dual class is
+    // painted with the hatch instead of the flat colour and flagged so its legend
+    // swatch can be drawn the HTML way.
+    int rank_by_class[5] = {0, 0, 0, 0, 0};
+    bool any_hatch = false;
+    for (auto& b : bands) {
+        if (!b.fill.empty()) continue;              // the folded grey band
+        const LdapCodeClass cls = ldap_code_class(b.code);
+        b.fill = class_fill(cls, HATCH_TAG_STACK);
+        b.hatched = (cls == LdapCodeClass::PolicyOrClient);
+        any_hatch = any_hatch || b.hatched;
+        const int rank = rank_by_class[static_cast<int>(cls)]++;
+        b.fill_opacity = CLASS_SHADES[rank < 4 ? rank : 3];
+    }
+    std::vector<long long> total_per(NB, 0);
+    for (const auto& b : bands) {
+        for (int k = 0; k < NB; ++k) total_per[static_cast<size_t>(k)] += b.series[static_cast<size_t>(k)];
+    }
+    long long ymax = 0;
+    for (auto c : total_per) ymax = std::max(ymax, c);
+    if (ymax <= 0) return;
+
+    const double step = nice_step(static_cast<double>(ymax), 4);
+    const double ytop = std::ceil(ymax / step) * step;
+    const double W = 1000, H = 260, L = 68, R = 14, T = 14, B = 34;
+    const double pw = W - L - R, ph = H - T - B;
+    auto yof = [&](double v) { return T + ph - (v / ytop) * ph; };
+    // Slice k covers [k/NB, (k+1)/NB) of the window.  The fractions are used
+    // directly rather than round-tripped through a timestamp: span/NB truncates
+    // to 0 s on a short window, which made the first slice zero pixels wide.
+    auto xat = [&](int k) { return L + pw * k / NB; };
+
+    std::cout << "<h2>Errors Over Time</h2>\n<div class=\"sl-chart\">\n";
+    std::cout << "<div class=\"sl-chart-sub\">" << xml_escape(sub) << "</div>\n";
+    std::cout << "<svg viewBox=\"0 0 1000 260\" role=\"img\" aria-label=\"Errors over time, "
+                 "stacked by result code\">\n";
+    if (any_hatch) print_hatch_defs(HATCH_TAG_STACK);
+    print_time_frame(L, T, pw, ph, H, t0, t1, ytop, step, ytop);
+
+    // One filled band per code: the same profile stacked on top of each other,
+    // so the top edge is the total and the colours underneath are the detail.
+    std::vector<long long> base(NB, 0);
+    for (const auto& b : bands) {
+        std::string lower, upper;
+        for (int k = 0; k < NB; ++k) {
+            lower += (k ? " L " : "M ") + num(xat(k + 1), 1) + "," +
+                     num(yof(static_cast<double>(base[static_cast<size_t>(k)])), 1);
+        }
+        for (int k = NB - 1; k >= 0; --k) {
+            upper += " L " + num(xat(k + 1), 1) + "," +
+                     num(yof(static_cast<double>(base[static_cast<size_t>(k)] +
+                                                b.series[static_cast<size_t>(k)])), 1);
+        }
+        std::string band = "M " + num(L, 1) + "," +
+                           num(yof(static_cast<double>(base[0])), 1) + " L " +
+                           lower.substr(2) + upper + " L " + num(L, 1) + "," +
+                           num(yof(static_cast<double>(base[0] + b.series[0])), 1) + " Z";
+        std::cout << "<path class=\"sl-stack\" style=\"fill:" << b.fill << ";fill-opacity:"
+                  << num(b.fill_opacity, 2) << "\" d=\"" << band << "\"/>\n";
+        for (int k = 0; k < NB; ++k) base[static_cast<size_t>(k)] += b.series[static_cast<size_t>(k)];
+    }
+
+    // The total, drawn over the stack so the silhouette stays crisp.
+    std::string line;
+    for (int k = 0; k < NB; ++k) {
+        line += (line.empty() ? "M " : " L ") + num(xat(k + 1), 1) + "," +
+                num(yof(static_cast<double>(total_per[static_cast<size_t>(k)])), 1);
+    }
+    std::cout << "<path class=\"sl-stack-total\" d=\"" << line << "\"/>\n";
+
+    // One hover strip per slice, naming what the stack is made of there.
+    for (int k = 0; k < NB; ++k) {
+        const long long ta = t0 + static_cast<long long>(span * k / NB);
+        std::string det = num(static_cast<double>(total_per[static_cast<size_t>(k)]), 0) + " error(s)";
+        int shown = 0, hidden = 0;
+        for (const auto& b : bands) {
+            const long long v = b.series[static_cast<size_t>(k)];
+            if (v <= 0) continue;
+            if (shown >= 3) { hidden++; continue; }
+            det += shown ? ", " : " — ";
+            det += num(static_cast<double>(v), 0) + " \xc2\xb7 " + b.label;
+            shown++;
+        }
+        if (hidden > 0) det += " (+" + std::to_string(hidden) + " more code(s))";
+        std::cout << "<rect class=\"sl-hit\" x=\"" << num(xat(k), 1) << "\" y=\"" << num(T, 0)
+                  << "\" width=\"" << num(xat(k + 1) - xat(k), 1) << "\" height=\"" << num(ph, 0)
+                  << "\" data-x=\"" << xml_escape(format_epoch_seconds(ta))
+                  << "\" data-y=\"" << xml_escape(det) << "\"/>\n";
+    }
+
+    std::cout << "</svg>\n<div class=\"sl-tip\" hidden></div>\n";
+    // Legend in HTML rather than in the drawing: it wraps, and the bands are
+    // read by name here (the colours alone would not say which code is which).
+    std::cout << "<div class=\"sl-stack-legend\">";
+    for (const auto& b : bands) {
+        const std::string kind =
+            b.code ? std::string("result class: ") + ldap_code_class_name(ldap_code_class(b.code))
+                   : std::string("smaller codes, folded together");
+        // b.fill is an SVG paint reference for the dual class, which means
+        // nothing in HTML; the swatch draws the same hatch as a CSS gradient.
+        const std::string bg = b.hatched ? hatch_background_css() : b.fill;
+        std::cout << "<span class=\"sl-stack-key\" title=\"" << xml_escape(kind)
+                  << "\"><i style=\"background:" << bg << ";opacity:" << num(b.fill_opacity, 2)
+                  << "\"></i>" << xml_escape(b.label) << " — " << num(static_cast<double>(b.total), 0)
+                  << " (" << share_text(100.0 * static_cast<double>(b.total) /
+                                        static_cast<double>(grand)) << ")</span>";
+    }
+    std::cout << "</div>\n";
+    std::cout << "</div>\n";
+}
+
+// ---- donuts ---------------------------------------------------------------
+
+std::string metric(double v, bool seconds) {
+    return seconds ? num(v, 1) + " s" : num(v, 0);
+}
+
+// A share is only readable at the scale it is read at.  Four significant digits
+// do that uniformly: 63.4 %, 3.571 %, 99.98 % for the big ones, 0.008333 % and
+// 0.0002097 % for a code seen three times in 1.4 M results — where "%.1f" would
+// have said "0.0 %", and "%.1f" on 99.98 % would have claimed a whole 100 %.
+std::string share_text(double pct) {
+    char buf[32];
+    std::snprintf(buf, sizeof(buf), "%.4g%%", pct);
+    return buf;
+}
+
+// One donut slice: the label, the value the slice is sized by, an optional
+// secondary line shown in the legend and the tooltip (e.g. operation count and
+// average time per operation), an optional explicit paint — the result codes use
+// their class colour so a slice matches its row in the table, or `url(#tag)` for
+// the dual class, which is hatched — and the opacity of that paint, for the
+// charts that shade a code by rank inside its class.
+struct Slice {
+    std::string label;
+    double value = 0.0;
+    std::string detail;
+    std::string fill;
+    double opacity = 1.0;
+};
+
+// Keep the largest `keep` entries, folding the rest into a single slice.
+std::vector<Slice> keep_top(std::vector<Slice> rows, size_t keep, const char* other) {
+    std::sort(rows.begin(), rows.end(), [](const Slice& a, const Slice& b) {
+        if (a.value != b.value) return a.value > b.value;
+        return a.label < b.label;                 // deterministic tie-break
+    });
+    if (rows.size() > keep) {
+        double rest = 0.0;
+        for (size_t i = keep; i < rows.size(); ++i) rest += rows[i].value;
+        rows.resize(keep);
+        if (rest > 0.0) rows.push_back({other, rest, "", ""});
+    }
+    return rows;
+}
+
+// The colour of one slice: its own when it carries one, a palette colour by
+// position otherwise.  A slice with an opacity — the result-code breakdown shades
+// each code by its rank inside its class — is emitted with fill-opacity beside it.
+// An explicit value may be a paint reference (`url(#…)`), used for the hatched
+// dual class; the pattern it names is emitted by whichever chart built the rows.
+const char* slice_fill(const std::vector<Slice>& rows, size_t i) {
     static const char* PALETTE[] = {"#3498db", "#e67e22", "#27ae60", "#9b59b6",
-                                    "#e74c3c", "#16a085", "#f1c40f", "#7f8c8d",
-                                    "#34495e"};
+                                    "#e74c3c", "#16a085", "#f1c40f", "#7f8c8d", "#34495e"};
+    return rows[i].fill.empty() ? PALETTE[i % 9] : rows[i].fill.c_str();
+}
 
-    const double cx = 190, cy = 170, r = 130;
-    std::cout << "<h2>Resource Consumers by Bind Account</h2>\n";
-    std::cout << "<div class=\"sl-chart\">\n";
-    std::cout << "<div class=\"sl-chart-sub\">share of "
-              << (by_etime ? "cumulative operation time (etime)" : "operations")
-              << " over " << rows.size() << " account(s)</div>\n";
-    std::cout << "<svg viewBox=\"0 0 1000 340\" role=\"img\" "
-                 "aria-label=\"Resource consumers by bind account\">\n";
+std::string slice_style(const std::vector<Slice>& rows, size_t i) {
+    std::string style = "fill:";
+    style += slice_fill(rows, i);
+    if (rows[i].opacity < 1.0) style += ";fill-opacity:" + num(rows[i].opacity, 2);
+    return style;
+}
 
-    // slices, starting at 12 o'clock and going clockwise
+// The wedges of one pie, drawn into the svg the caller has already opened.
+// Split out of print_donut because a chart that already lists its codes — the
+// result-code breakdown puts the pie beside its bars — wants the shape without a
+// second legend.  Slices start at twelve o'clock and run clockwise, so they follow
+// the rows of a list drawn top to bottom.
+void print_pie_slices(const std::vector<Slice>& rows, double total,
+                      double cx, double cy, double r, bool seconds) {
     double angle = -M_PI / 2;
     for (size_t i = 0; i < rows.size(); ++i) {
-        const double frac = rows[i].second / total;
-        const double sweep = frac * 2.0 * M_PI;
-        const double a2 = angle + sweep;
-        const std::string what = by_etime ? num(rows[i].second, 1) + " s" : num(rows[i].second, 0) + " ops";
-        const std::string pct = num(frac * 100.0, 1) + "%";
-
+        const double frac = rows[i].value / total;
+        const double a2 = angle + frac * 2.0 * M_PI;
+        std::string what = metric(rows[i].value, seconds) + "  (" + share_text(frac * 100.0) + ")";
+        if (!rows[i].detail.empty()) what += " — " + rows[i].detail;
+        const std::string style = slice_style(rows, i);
         if (rows.size() == 1) {
             std::cout << "<circle class=\"sl-slice\" cx=\"" << num(cx, 0) << "\" cy=\"" << num(cy, 0)
-                      << "\" r=\"" << num(r, 0) << "\" fill=\"" << PALETTE[0] << "\""
-                      << " data-x=\"" << xml_escape(rows[i].first)
-                      << "\" data-y=\"" << xml_escape(what + " (" + pct + ")") << "\"/>\n";
+                      << "\" r=\"" << num(r, 0) << "\" style=\"" << style << "\" data-x=\""
+                      << xml_escape(rows[i].label) << "\" data-y=\"" << xml_escape(what) << "\"/>\n";
         } else {
             const double x1 = cx + r * std::cos(angle), y1 = cy + r * std::sin(angle);
             const double x2 = cx + r * std::cos(a2),    y2 = cy + r * std::sin(a2);
-            const int large = sweep > M_PI ? 1 : 0;
-            std::cout << "<path class=\"sl-slice\" fill=\"" << PALETTE[i % 9] << "\" d=\"M "
+            std::cout << "<path class=\"sl-slice\" style=\"" << style << "\" d=\"M "
                       << num(cx, 0) << "," << num(cy, 0) << " L " << num(x1, 1) << "," << num(y1, 1)
-                      << " A " << num(r, 0) << "," << num(r, 0) << " 0 " << large << " 1 "
-                      << num(x2, 1) << "," << num(y2, 1) << " Z\""
-                      << " data-x=\"" << xml_escape(rows[i].first)
-                      << "\" data-y=\"" << xml_escape(what + " (" + pct + ")") << "\"/>\n";
+                      << " A " << num(r, 0) << "," << num(r, 0) << " 0 " << (frac > 0.5 ? 1 : 0)
+                      << " 1 " << num(x2, 1) << "," << num(y2, 1) << " Z\" data-x=\""
+                      << xml_escape(rows[i].label) << "\" data-y=\"" << xml_escape(what) << "\"/>\n";
         }
         angle = a2;
     }
+}
 
-    // legend
-    const double lx = 400;
-    double ly = 34;
-    for (size_t i = 0; i < rows.size(); ++i) {
-        const double frac = rows[i].second / total;
-        const std::string what = by_etime ? num(rows[i].second, 1) + " s" : num(rows[i].second, 0) + " ops";
-        std::cout << "<rect x=\"" << num(lx, 0) << "\" y=\"" << num(ly - 9, 0)
-                  << "\" width=\"12\" height=\"12\" rx=\"2\" fill=\"" << PALETTE[i % 9] << "\"/>\n";
-        std::string name = rows[i].first;
-        if (name.size() > 46) name = name.substr(0, 43) + "...";
-        std::cout << "<text class=\"sl-legend-name\" x=\"" << num(lx + 20, 0) << "\" y=\""
-                  << num(ly, 0) << "\">" << xml_escape(name) << "</text>\n";
-        std::cout << "<text class=\"sl-legend-val\" x=\"" << num(980, 0) << "\" y=\"" << num(ly, 0)
-                  << "\" text-anchor=\"end\">" << xml_escape(what + "  ("
-                  + num(frac * 100.0, 1) + "%)") << "</text>\n";
-        ly += 26;
+void print_donut(const std::string& title, const std::string& sub,
+                 std::vector<Slice> rows, bool seconds,
+                 const std::string& footnote = "") {
+    double total = 0.0;
+    for (const auto& r : rows) total += r.value;
+    if (total <= 0.0 || rows.empty()) return;
+    rows = keep_top(std::move(rows), 8, "other");
+
+    const double cx = 190, cy = 150, r = 115, lx = 400;
+    const double H = 300 + std::max(0.0, (static_cast<double>(rows.size()) - 8) * 24);
+
+    std::cout << "<h2>" << xml_escape(title) << "</h2>\n<div class=\"sl-chart\">\n";
+    std::cout << "<div class=\"sl-chart-sub\">" << xml_escape(sub) << "</div>\n";
+    std::cout << "<svg viewBox=\"0 0 1000 " << num(H, 0) << "\" role=\"img\" aria-label=\""
+              << xml_escape(title) << "\">\n";
+
+    // A dual-class slice is painted with an SVG pattern, which must be defined in
+    // this same svg.  The tag is read back from the fill the caller set, so the
+    // defs are emitted exactly when — and only when — a slice actually needs them
+    // (the folded "other" slice carries a plain colour and never a reference).
+    for (const auto& r : rows) {
+        if (r.fill.rfind("url(#", 0) != 0) continue;
+        const std::string tag = r.fill.substr(5, r.fill.size() - 6);   // url(#tag) -> tag
+        print_hatch_defs(tag.c_str());
+        break;
     }
 
-    std::cout << "</svg>\n<div class=\"sl-tip\" hidden></div>\n</div>\n";
+    print_pie_slices(rows, total, cx, cy, r, seconds);
+
+    double ly = 30;
+    for (size_t i = 0; i < rows.size(); ++i) {
+        const double frac = rows[i].value / total;
+        std::cout << "<rect x=\"" << num(lx, 0) << "\" y=\"" << num(ly - 9, 0)
+                  << "\" width=\"12\" height=\"12\" rx=\"2\" style=\"" << slice_style(rows, i)
+                  << "\"/>\n";
+        std::string name = rows[i].label;
+        if (name.size() > 40) name = name.substr(0, 37) + "...";
+        std::cout << "<text class=\"sl-legend-name\" x=\"" << num(lx + 20, 0) << "\" y=\"" << num(ly, 0)
+                  << "\">" << xml_escape(name) << "</text>\n";
+        if (!rows[i].detail.empty()) {
+            std::cout << "<text class=\"sl-legend-det\" x=\"800\" y=\"" << num(ly, 0)
+                      << "\" text-anchor=\"end\">" << xml_escape(rows[i].detail) << "</text>\n";
+        }
+        std::cout << "<text class=\"sl-legend-val\" x=\"980\" y=\"" << num(ly, 0)
+                  << "\" text-anchor=\"end\">"
+                  << xml_escape(metric(rows[i].value, seconds) + "  (" + share_text(frac * 100.0) + ")")
+                  << "</text>\n";
+        ly += 24;
+    }
+    std::cout << "</svg>\n<div class=\"sl-tip\" hidden></div>";
+    // A line under the legend, for what the donut deliberately does not show.
+    if (!footnote.empty())
+        std::cout << "\n<div class=\"sl-chart-note\">" << xml_escape(footnote) << "</div>";
+    std::cout << "\n</div>\n";
+}
+
+// ---- the individual charts ------------------------------------------------
+
+void print_account_chart(const Aggregator& agg) {
+    // "Resource" means cumulative operation time (etime, in seconds); if the log
+    // carries no timing at all, fall back to the operation count so the chart
+    // still says something useful.  The detail line exposes the other
+    // dimension: an account can top the chart through volume (many short
+    // operations) or through weight (a few very long ones).
+    double total_etime = 0.0;
+    for (const auto& [name, ui] : agg.user_stats) total_etime += ui.etime_total;
+    const bool by_etime = total_etime > 0.0;
+
+    std::vector<Slice> rows;
+    rows.reserve(agg.user_stats.size());
+    for (const auto& [name, ui] : agg.user_stats) {
+        const double v = by_etime ? ui.etime_total : static_cast<double>(ui.count);
+        if (v <= 0.0) continue;
+        std::string detail = num(static_cast<double>(ui.count), 0) + " ops";
+        if (ui.count > 0 && ui.etime_total > 0.0) {
+            const double avg_ms = ui.etime_total * 1000.0 / static_cast<double>(ui.count);
+            detail += avg_ms >= 1000.0 ? " · " + num(avg_ms / 1000.0, 2) + " s/op"
+                                       : " · " + num(avg_ms, 0) + " ms/op";
+        }
+        rows.push_back({name, v, detail, ""});
+    }
+    print_donut("Resource Consumers by Bind Account",
+                by_etime ? "share of the cumulative operation time (etime)"
+                         : "share of the operations",
+                std::move(rows), by_etime);
+}
+
+void print_optype_chart(const Aggregator& agg) {
+    std::vector<Slice> rows;
+    for (const auto& [op, count] : agg.operation_count) {
+        if (count > 0) rows.push_back({op, static_cast<double>(count), "", ""});
+    }
+    if (rows.empty()) return;
+    print_donut("Operation Types", "share of each operation type", std::move(rows), false);
+}
+
+// The donut answers "of what failed, what failed how?", so it holds the failing
+// codes only.  The informational ones (success, both Compare answers, a
+// referral, saslBindInProgress) are counted and named in the footnote instead:
+// on the real 1 GiB log the Compare answers alone were 48 % of the slices, so
+// the donut read as if the directory failed twice as often as it did.
+void print_error_chart(const Aggregator& agg) {
+    std::vector<Slice> rows;
+    long long normal = 0;                    // informational results left out
+    std::string normal_what;                 // …and which codes they were
+    for (const auto& [code, count] : agg.error_count) {
+        if (count <= 0) continue;
+        const LdapCodeClass cls = ldap_code_class(code);
+        if (cls == LdapCodeClass::Info) {
+            normal += count;
+            if (!normal_what.empty()) normal_what += ", ";
+            normal_what += std::to_string(code) + " " + ldap_error_name(code);
+            continue;
+        }
+        // Every failing slice carries its class paint, so the donut reads like
+        // the table above it: amber = what the client asked, violet = what the
+        // configuration refuses, amber-over-violet hatch = a refusal the log
+        // cannot attribute, red = what slapd failed to do.
+        rows.push_back({std::to_string(code) + " " + ldap_error_name(code),
+                        static_cast<double>(count), ldap_code_class_name(cls),
+                        class_fill(cls, HATCH_TAG_DONUT)});
+    }
+    if (rows.empty()) return;
+    std::string footnote;
+    if (normal > 0) {
+        footnote = std::to_string(normal) +
+                   " further result(s) are not failures and are left out here: " +
+                   normal_what + ".";
+    }
+    print_donut("Failing Result Codes", "share of each result code other than information",
+                std::move(rows), false, footnote);
+}
+
+// Response time distribution: one bar per etime bucket, each labelled with its
+// exact count and share.  A cumulative curve used to run down the right-hand side
+// with its own 0-100 % axis; it was removed because the bars beside it already say
+// everything the curve divided by itself, and a reader could not tell what the
+// percentages referred to (every row past the second reads 100 % — the buckets are
+// ordered, so the sum saturates immediately).  The bars now have the width the
+// curve and its label column used to take.
+void print_latency_chart(const Aggregator& agg) {
+    static const char* LABELS[OP_ETIME_BUCKETS] = {
+        "0 ms", "<= 1 ms", "1-5 ms", "5-10 ms", "10-50 ms", "50-100 ms",
+        "100-500 ms", "0.5-1 s", "1-2 s", "2-5 s", "> 5 s"};
+
+    std::vector<std::pair<std::string, double>> rows;
+    double total = 0.0;
+    for (int i = 0; i < OP_ETIME_BUCKETS; ++i) {
+        total += static_cast<double>(agg.op_etime_hist[i]);
+        if (agg.op_etime_hist[i] > 0) {
+            rows.emplace_back(LABELS[i], static_cast<double>(agg.op_etime_hist[i]));
+        }
+    }
+    if (rows.empty() || total <= 0.0) return;
+    double maxv = 0.0;
+    for (const auto& r : rows) maxv = std::max(maxv, r.second);
+
+    const double rowH = 26, top = 36, bot = 12;
+    const double LAB_R = 118;                    // labels, right-aligned here
+    const double BX0 = 130, BX1 = 780;           // bar area, the freed width included
+    const double H = top + static_cast<double>(rows.size()) * rowH + bot;
+
+    std::cout << "<h2>Response Time Distribution</h2>\n<div class=\"sl-chart\">\n";
+    std::cout << "<div class=\"sl-chart-sub\">" << num(total, 0)
+              << " completed operation(s) — bars: operations per etime bucket, "
+                 "each with its share of the total</div>\n";
+    std::cout << "<svg viewBox=\"0 0 1000 " << num(H, 0) << "\" role=\"img\" "
+                 "aria-label=\"Response time distribution\">\n";
+
+    // The bars, each with its exact count and share written after it: between them
+    // they answer the question the removed curve was there for ("how many finish
+    // under X") without a second reading axis to misread.
+    for (size_t i = 0; i < rows.size(); ++i) {
+        const double y = top + static_cast<double>(i) * rowH;
+        const double cy = y + rowH / 2.0;
+        const double w = (rows[i].second / maxv) * (BX1 - BX0);
+        const double share = rows[i].second / total;
+
+        std::cout << "<text class=\"sl-tick\" x=\"" << num(LAB_R, 0) << "\" y=\"" << num(cy + 4, 1)
+                  << "\" text-anchor=\"end\">" << xml_escape(rows[i].first) << "</text>\n";
+        std::cout << "<rect class=\"sl-bar\" x=\"" << num(BX0, 0) << "\" y=\"" << num(y + 6, 0)
+                  << "\" width=\"" << num(w, 1) << "\" height=\"14\" rx=\"2\"/>\n";
+        std::cout << "<text class=\"sl-legend-val\" x=\"" << num(BX0 + w + 8, 0) << "\" y=\""
+                  << num(cy + 4, 1) << "\">"
+                  << xml_escape(num(rows[i].second, 0) + "  (" + share_text(share * 100.0) + ")")
+                  << "</text>\n";
+
+        // One hover target per row, over the whole width: there is no second
+        // reading to tell apart any more.
+        std::cout << "<rect class=\"sl-hit\" x=\"0\" y=\"" << num(y, 0) << "\" width=\"1000\""
+                  << " height=\"" << num(rowH, 0) << "\" data-x=\""
+                  << xml_escape(rows[i].first) << "\" data-y=\""
+                  << xml_escape(num(rows[i].second, 0) + " ops (" + share_text(share * 100.0) + ")")
+                  << "\"/>\n";
+    }
+
+    std::cout << "</svg>\n<div class=\"sl-tip\" hidden></div>\n";
+    std::cout << "</div>\n";
+}
+
+// Axis label of a decade of the logarithmic time axis: 10^-3 ms is 1 us, 10^3 ms
+// is 1 s, and so on.
+std::string etime_axis_label(int decade) {
+    char buf[24];
+    if (decade < 0)       std::snprintf(buf, sizeof(buf), "%g \xc2\xb5s", std::pow(10.0, decade + 3));
+    else if (decade == 0) std::snprintf(buf, sizeof(buf), "1 ms");
+    else if (decade < 3)  std::snprintf(buf, sizeof(buf), "%g ms", std::pow(10.0, decade));
+    else                  std::snprintf(buf, sizeof(buf), "%g s", std::pow(10.0, decade - 3));
+    return buf;
+}
+
+// The *shape* of the operation-time distribution, which the histogram above
+// cannot show.  On a real 1 GiB access log 99.9992 % of the operations finish
+// under 1 ms, so that chart is one tall bar and one sliver: a reader can tell
+// neither a tight latency from a spread-out one, nor see a second hump.  Here
+// the bins are equal on a logarithmic scale and the window follows the data, so
+// the shape appears at the scale where the traffic actually is.
+//
+// It is also the only axis on which a "bell" has ever been legitimate: a
+// log-normal latency — the usual model — is a bell *in log space* and looks
+// nothing like one on a linear axis.  The curve drawn is the real density and
+// not a fitted normal: if the traffic were log-normal it would look like a bell
+// here, and where it shows two humps, that is the finding, not a defect.
+void print_latency_density_chart(const Aggregator& agg) {
+    int first = -1, last = -1;
+    long long total = 0, maxc = 0;
+    for (int i = 0; i < ETIME_LOG_BINS; ++i) {
+        const long long c = agg.op_etime_log_hist[i];
+        total += c;
+        if (c > 0) {
+            if (first < 0) first = i;
+            last = i;
+            if (c > maxc) maxc = c;
+        }
+    }
+    if (first < 0 || total <= 0 || maxc <= 0) return;
+
+    const double step = 1.0 / ETIME_LOG_BINS_PER_DECADE;
+    const double logmin = std::log10(ETIME_LOG_MIN_MS);
+    // Half a decade of margin on each side, so the profile comes back down to
+    // the baseline instead of being cut by the frame.
+    const double xlo = logmin + (first - 0.5) * step;
+    const double xhi = logmin + (last + 1.5) * step;
+    const double L = 84, R = 962, T = 34, B = 254;
+    auto X = [&](double logms) { return L + (logms - xlo) / (xhi - xlo) * (R - L); };
+    auto Y = [&](double c) { return B - (c / static_cast<double>(maxc)) * (B - T); };
+    auto lower = [&](int bin) { return logmin + bin * step; };
+
+    std::cout << "<h2>Response Time Density</h2>\n<div class=\"sl-chart\">\n";
+    std::cout << "<div class=\"sl-chart-sub\">" << num(static_cast<double>(total), 0)
+              << " operation(s) &middot; one point per bin, each bin "
+              << num(std::pow(10.0, step), 2) << "&times; wider in time than the one before "
+                 "&middot; logarithmic x axis</div>\n";
+    std::cout << "<svg viewBox=\"0 0 1000 300\" role=\"img\" "
+                 "aria-label=\"Operation time distribution on a logarithmic scale\">\n";
+
+    // Horizontal grid: the baseline, the middle, and the tallest bin.
+    for (int g = 0; g <= 2; ++g) {
+        const double c = static_cast<double>(maxc) * g / 2.0;
+        std::cout << "<line class=\"sl-grid\" x1=\"" << num(L, 0) << "\" y1=\"" << num(Y(c), 1)
+                  << "\" x2=\"" << num(R, 0) << "\" y2=\"" << num(Y(c), 1) << "\"/>\n";
+        std::cout << "<text class=\"sl-tick\" x=\"" << num(L - 8, 0) << "\" y=\""
+                  << num(Y(c) + 4, 1) << "\" text-anchor=\"end\">" << num(c, 0) << "</text>\n";
+    }
+    std::cout << "<line class=\"sl-axis\" x1=\"" << num(L, 0) << "\" y1=\"" << num(B, 0)
+              << "\" x2=\"" << num(R, 0) << "\" y2=\"" << num(B, 0) << "\"/>\n";
+
+    // A tick per decade present in the window.
+    for (int d = -3; d <= 4; ++d) {
+        if (d < xlo || d > xhi) continue;
+        const double x = X(d);
+        std::cout << "<line class=\"sl-axis\" x1=\"" << num(x, 1) << "\" y1=\"" << num(B, 0)
+                  << "\" x2=\"" << num(x, 1) << "\" y2=\"" << num(B + 5, 0) << "\"/>\n";
+        std::cout << "<text class=\"sl-tick\" x=\"" << num(x, 1) << "\" y=\"" << num(B + 20, 0)
+                  << "\" text-anchor=\"middle\">" << etime_axis_label(d) << "</text>\n";
+    }
+
+    // The profile: one point per bin that holds something, at its centre, and an
+    // area closed down to the baseline at both edges of the window.  The bins
+    // outside [first, last] are empty by definition, and mapping them would push
+    // their points past the plot box (the window is only 0.5 decade wider than
+    // the data), so they are simply not walked.
+    std::string line;
+    for (int i = first; i <= last; ++i) {
+        const double xc = X(lower(i) + step / 2.0);
+        const double y = Y(static_cast<double>(agg.op_etime_log_hist[i]));
+        line += (i == first ? "M " : " L ") + num(xc, 1) + "," + num(y, 1);
+    }
+    std::cout << "<path class=\"sl-density-area\" d=\"M " << num(L, 1) << "," << num(B, 0)
+              << " L " << num(X(lower(first) + step / 2.0), 1) << "," << num(B, 0) << " L "
+              << line.substr(2) << " L " << num(X(lower(last) + step / 2.0), 1) << "," << num(B, 0)
+              << " L " << num(R, 1) << "," << num(B, 0) << " Z\"/>\n";
+    std::cout << "<path class=\"sl-density-line\" d=\"" << line << "\"/>\n";
+    for (int i = first; i <= last; ++i) {
+        if (agg.op_etime_log_hist[i] <= 0) continue;
+        std::cout << "<circle class=\"sl-density-dot\" cx=\"" << num(X(lower(i) + step / 2.0), 1)
+                  << "\" cy=\"" << num(Y(static_cast<double>(agg.op_etime_log_hist[i])), 1)
+                  << "\" r=\"2.6\"/>\n";
+    }
+
+    // One hover target per bin the plot shows, tooltip included.  The loop starts
+    // at the bottom bin and runs one past the last populated one, because the
+    // window is padded on both sides: clamping to [L, R] then makes the whole
+    // plot hoverable.  The first strip reaches the left edge because everything
+    // under 1 us was binned there, and an empty bin reports zero rather than
+    // nothing — silence is also an answer.
+    const int hover_last = last + 1 < ETIME_LOG_BINS ? last + 1 : last;
+    for (int i = 0; i <= hover_last; ++i) {
+        double x0 = X(lower(i)), x1 = X(lower(i + 1));
+        if (i == 0) x0 = L;                     // nothing exists before that bin
+        if (x0 < L) x0 = L;
+        if (x1 > R) x1 = R;
+        if (x1 <= x0) continue;
+        const long long c = agg.op_etime_log_hist[i];
+        char buf[160];
+        if (i == 0) {
+            // The first bin catches the operations the log itself could not time
+            // (etime=0): saying so is the difference between a readable chart and
+            // a mysterious tower at the left edge.
+            std::snprintf(buf, sizeof(buf), "%lld operation(s) at 0 or under 1 \xc2\xb5s (%s)",
+                          c, share_text(100.0 * static_cast<double>(c) / total).c_str());
+        } else {
+            std::snprintf(buf, sizeof(buf), "%lld operation(s) between %s and %s (%s)", c,
+                          format_etime_log_bin(i).c_str(), format_etime_log_bin(i + 1).c_str(),
+                          share_text(100.0 * static_cast<double>(c) / total).c_str());
+        }
+        std::cout << "<rect class=\"sl-hit\" x=\"" << num(x0, 1) << "\" y=\"" << num(T, 0)
+                  << "\" width=\"" << num(x1 - x0, 1) << "\" height=\""
+                  << num(B - T, 0) << "\" data-x=\"" << etime_axis_label(i / ETIME_LOG_BINS_PER_DECADE)
+                  << " decade\" data-y=\"" << xml_escape(buf) << "\"/>\n";
+    }
+
+    std::cout << "</svg>\n<div class=\"sl-tip\" hidden></div>\n";
+    std::cout << "</div>\n";
+}
+
+// Every result code present in the log, successful ones included.  This is the
+// chart that answers "what did this directory actually answer?" — the donut
+// further down answers the narrower "of what failed, what failed how?".
+//
+// Two deliberate choices:
+//   • bars are on a log scale.  Counts here span five orders of magnitude
+//     (907 111 successes against 3 adminLimitExceeded on the reference log) and
+//     a linear scale would leave every code but the first invisible; each bar
+//     therefore carries its exact count and share, and the scale under the bars
+//     says the axis is logarithmic.
+//   • the pie on the right draws the same codes — same order, same colours — as
+//     areas: one huge slice, then crumbs.  It is the only "distribution" a
+//     categorical variable has, and it says the same thing as the cumulative bars
+//     it replaces (on the reference log the first two codes already cover 81 % of
+//     all results) without an axis, a curve, or a note to explain it.  A bell
+//     curve would need a continuous, symmetric variable; result codes are neither.
+void print_result_code_chart(const Aggregator& agg) {
+    std::vector<Slice> rows;
+    long long total = 0;
+    bool any_hatch = false;
+    for (const auto& [code, count] : agg.error_count) {
+        if (count <= 0) continue;
+        total += count;
+        const LdapCodeClass cls = ldap_code_class(code);
+        any_hatch = any_hatch || cls == LdapCodeClass::PolicyOrClient;
+        rows.push_back({std::to_string(code) + " " + ldap_error_name(code),
+                        static_cast<double>(count), ldap_code_class_name(cls),
+                        class_fill(cls, HATCH_TAG_BREAKDOWN)});
+    }
+    if (rows.empty() || total <= 0) return;
+    // Same order as the table above (most frequent first), so the two read
+    // together without a mental reversal — and the pie starts at twelve o'clock
+    // and turns clockwise, which is that same order.
+    std::sort(rows.begin(), rows.end(), [](const Slice& a, const Slice& b) {
+        if (a.value != b.value) return a.value > b.value;
+        return a.label < b.label;                 // deterministic tie-break
+    });
+
+    // One colour per code, shaded by rank inside its class, so two codes of the
+    // same class stay distinguishable — and so the colour a code shows on its bar
+    // is the colour of its slice.  The label starts with the code, which is how it
+    // was built three lines up.
+    {
+        int rank_by_class[5] = {0, 0, 0, 0, 0};
+        for (auto& r : rows) {
+            const LdapCodeClass row_cls = ldap_code_class(std::stoi(r.label));
+            const int rank = rank_by_class[static_cast<int>(row_cls)]++;
+            r.opacity = CLASS_SHADES[rank < 4 ? rank : 3];
+        }
+    }
+
+    const double rowH = 24, top = 30, bot = 28;   // bot leaves room for the bar axis
+    const double LAB_X = 8;                      // labels, left-aligned here
+    const double BX0 = 215, BX1 = 560;           // bar area (log scale)
+    const double PIE_X = 700;                    // the pie owns everything right of here
+    // Tall enough for a readable pie even when only two codes were ever seen.
+    const double H = std::max(250.0, top + static_cast<double>(rows.size()) * rowH + bot);
+    const double y_end = top + static_cast<double>(rows.size()) * rowH;
+    const double maxv = rows.front().value;
+    const double lmax = std::log10(maxv);
+    const bool use_log = lmax > 1.0;             // below that, log says nothing
+
+    std::cout << "<h2>Result Code Breakdown</h2>\n<div class=\"sl-chart\">\n";
+    std::cout << "<div class=\"sl-chart-sub\">" << num(static_cast<double>(total), 0)
+              << " result(s) &middot; bars: "
+              << (use_log ? "log scale (one step = &times;10, axis labelled under the bars)"
+                          : "share of the busiest code (axis labelled under the bars)")
+              << ", coloured by who is at fault (see the key above) &middot; right: the same codes "
+                 "as one pie, biggest slice first"
+              << "</div>\n";
+    std::cout << "<svg viewBox=\"0 0 1000 " << num(H, 0) << "\" role=\"img\" "
+                 "aria-label=\"Every LDAP result code, by volume\">\n";
+    // The hatch pattern, for the bars and the pie slices of the dual class — and
+    // only for them: emitted here, in this svg, because a paint reference is
+    // resolved per drawing.
+    if (any_hatch) print_hatch_defs(HATCH_TAG_BREAKDOWN);
+
+    // Scale of the bars, without which the drawing cannot be read: a bar's
+    // length is a logarithm, so the steps are decades — one look says "each step
+    // is ten times the one before" — or quarters of the busiest code when the
+    // range is too small for a log to mean anything.  The exact count is written
+    // beside each bar, so the axis only has to give the structure.
+    {
+        auto short_count = [](double v) {
+            const char* suffix = "";
+            if (v >= 1e6)      { v /= 1e6; suffix = "M"; }
+            else if (v >= 1e3) { v /= 1e3; suffix = "k"; }
+            // A decimal only where it carries something: "1.5k", never "1.0k".
+            const bool carries = v < 100.0 && std::fabs(v - std::floor(v)) > 0.05;
+            return num(v, carries ? 1 : 0) + suffix;
+        };
+        // A step is a decade.  The top of the scale is the busiest code, which is
+        // rarely a round power of ten — so the position comes from the bars' own
+        // mapping (log10(v) / log10(max)), never an even spread, which would put
+        // "100k" under a bar of 907k.  When the busiest code is under 10 the whole
+        // axis is a handful of counts, and then each integer gets its own step.
+        std::vector<std::pair<double, std::string>> ticks;   // (fraction, label)
+        if (use_log) {
+            for (int k = 0; k <= static_cast<int>(std::floor(lmax)); ++k)
+                ticks.emplace_back(static_cast<double>(k) / lmax, short_count(std::pow(10.0, k)));
+        } else {
+            for (int k = 0; k <= static_cast<int>(maxv); ++k)
+                ticks.emplace_back(static_cast<double>(k) / maxv, num(k, 0));
+        }
+        for (size_t i = 0; i < ticks.size(); ++i) {
+            const double x = BX0 + ticks[i].first * (BX1 - BX0);
+            std::cout << "<line class=\"sl-grid\" x1=\"" << num(x, 1) << "\" y1=\"" << num(top - 14, 0)
+                      << "\" x2=\"" << num(x, 1) << "\" y2=\"" << num(y_end, 0) << "\"/>\n";
+            std::cout << "<text class=\"sl-tick\" x=\"" << num(x, 1) << "\" y=\"" << num(y_end + 15, 0)
+                      << "\" text-anchor=\"" << (i == 0 ? "start" : "middle") << "\">"
+                      << ticks[i].second << "</text>\n";
+        }
+        std::cout << "<line class=\"sl-axis\" x1=\"" << num(BX0, 0) << "\" y1=\"" << num(y_end, 0)
+                  << "\" x2=\"" << num(BX1, 0) << "\" y2=\"" << num(y_end, 0) << "\"/>\n";
+    }
+
+    for (size_t i = 0; i < rows.size(); ++i) {
+        const double y = top + static_cast<double>(i) * rowH;
+        const double cy = y + rowH / 2.0;
+        const double frac = use_log ? std::log10(rows[i].value) / lmax
+                                    : rows[i].value / maxv;
+        double w = frac * (BX1 - BX0);
+        if (w < 3.0) w = 3.0;                    // a single occurrence stays visible
+        const double share = rows[i].value / static_cast<double>(total);
+
+        // The label is text, and a hatch over text is unreadable: the dual class
+        // keeps its plain class colour (violet) for the label while its bar and
+        // its slice carry the pattern.  The code is the first word of the label,
+        // which is how it was built.
+        const LdapCodeClass row_cls = ldap_code_class(std::stoi(rows[i].label));
+        std::cout << "<text class=\"sl-legend-name\" x=\"" << num(LAB_X, 0) << "\" y=\""
+                  << num(cy + 4, 1) << "\" style=\"fill:" << ldap_code_class_color(row_cls) << "\">"
+                  << xml_escape(rows[i].label) << "</text>\n";
+        std::cout << "<rect class=\"sl-bar\" x=\"" << num(BX0, 0) << "\" y=\"" << num(y + 5, 0)
+                  << "\" width=\"" << num(w, 1) << "\" height=\"14\" rx=\"2\" style=\"fill:"
+                  << rows[i].fill << ";fill-opacity:" << num(rows[i].opacity, 2) << "\"/>\n";
+        std::cout << "<text class=\"sl-legend-val\" x=\"" << num(BX0 + w + 8, 0) << "\" y=\""
+                  << num(cy + 4, 1) << "\">"
+                  << xml_escape(num(rows[i].value, 0) + "  " + share_text(share * 100.0))
+                  << "</text>\n";
+
+        // One hover target per row, over the label and the bar only: the pie
+        // carries its own, slice by slice.
+        std::cout << "<rect class=\"sl-hit\" x=\"0\" y=\"" << num(y, 0) << "\" width=\""
+                  << num(PIE_X - 6, 0) << "\" height=\"" << num(rowH, 0) << "\" data-x=\""
+                  << xml_escape(rows[i].label) << "\" data-y=\""
+                  << xml_escape(num(rows[i].value, 0) + " result(s), " +
+                                share_text(share * 100.0) + " of all — " + rows[i].detail)
+                  << "\"/>\n";
+    }
+
+    // The pie: the same codes, same order, same colours, drawn by area.  One huge
+    // slice and a tail of slivers is the entire reading — that is what a
+    // result-code distribution looks like, and it needs no axis and no note.
+    print_pie_slices(rows, static_cast<double>(total), 830, H / 2.0,
+                     std::min(115.0, H / 2.0 - 16.0), false);
+
+    std::cout << "</svg>\n<div class=\"sl-tip\" hidden></div>\n";
+    std::cout << "</div>\n";
 }
 
 } // namespace
 
-void print_html_charts(const Aggregator& agg) {
-    const bool have_conn = !agg.conn_timeline.empty();
-    const bool have_acct = !agg.user_stats.empty();
-    if (!have_conn && !have_acct) return;
+bool html_charts_available(const Aggregator& agg) {
+    // --no-graph (and any non-HTML output) clears the graph aggregates and must
+    // also silence the charts fed by counts that exist either way (operation
+    // types, result codes), so the flag is tested explicitly rather than relying
+    // on those aggregates happening to be empty.
+    if (!collect_graph_data_enabled()) return false;
+    long long hist = 0;
+    for (int i = 0; i < OP_ETIME_BUCKETS; ++i) hist += agg.op_etime_hist[i];
+    return !agg.conn_timeline.empty() || !agg.user_stats.empty() ||
+           !agg.error_times_by_code.empty() || hist > 0 ||
+           !agg.error_count.empty() || !agg.operation_count.empty();
+}
 
-    print_chart_style();
-    if (have_conn) print_connection_chart(agg);
-    if (have_acct) print_account_chart(agg);
-    print_chart_script();
+void print_html_chart_style() { print_chart_style(); }
+void print_html_chart_script() { print_chart_script(); }
+
+void print_html_chart(const Aggregator& agg, HtmlChart which) {
+    // Nothing to draw at all — this is also what makes --no-graph suppress every
+    // chart, including the two whose aggregates (operation and result-code
+    // counts) exist regardless of the graph flag.
+    if (!html_charts_available(agg)) return;
+
+    switch (which) {
+        case HtmlChart::Connections:
+            print_connection_chart(agg);
+            break;
+
+        case HtmlChart::ErrorsOverTime: {
+            if (agg.error_times_by_code.empty()) break;
+            // Same time window as the connection chart, so the two curves can be
+            // read against each other; falls back to the analysed range when the
+            // timeline is not available.
+            long long t0 = 0, t1 = 0;
+            bool have = false;
+            for (const auto& e : agg.conn_timeline) {
+                t0 = have ? std::min(t0, e.t) : e.t;
+                t1 = have ? std::max(t1, e.t) : e.t;
+                have = true;
+            }
+            if (auto a = ts_epoch_seconds(agg.firsttime)) {
+                t0 = have ? std::min(t0, *a) : *a;
+                t1 = have ? std::max(t1, *a) : *a;
+                have = true;
+            }
+            if (auto b = ts_epoch_seconds(agg.lasttime)) {
+                t0 = have ? std::min(t0, *b) : *b;
+                t1 = have ? std::max(t1, *b) : *b;
+                have = true;
+            }
+            if (!have) break;
+            // The series holds the failing results only (see log_parser.cpp), so
+            // the subtitle says so: this curve must never be read as "everything
+            // that was not a success", which is what it used to show.
+            long long failing = 0;
+            for (const auto& [code, count] : agg.error_count) {
+                if (ldap_code_is_error(code)) failing += count;
+            }
+            print_error_series_chart(
+                agg, t0, t1,
+                std::to_string(failing) +
+                    " failing result(s) \xc2\xb7 stacked by result code \xc2\xb7 the "
+                    "informational ones (success, Compare answers, referral, …) are not plotted");
+            break;
+        }
+
+        case HtmlChart::Latency:
+            print_latency_chart(agg);
+            break;
+
+        case HtmlChart::LatencyDensity:
+            print_latency_density_chart(agg);
+            break;
+
+        case HtmlChart::Accounts:
+            print_account_chart(agg);
+            break;
+
+        case HtmlChart::OperationTypes:
+            print_optype_chart(agg);
+            break;
+
+        case HtmlChart::ResultCodeBreakdown:
+            print_result_code_chart(agg);
+            break;
+
+        case HtmlChart::ResultCodes:
+            print_error_chart(agg);
+            break;
+    }
 }

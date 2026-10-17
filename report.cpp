@@ -387,12 +387,108 @@ namespace {
  *   v > 0.1 s  → cyan           (acceptable)
  *   else       → green          (fast)
  */
+// Session-tracking names are free-form and usually carry a per-session
+// identifier (e.g. "WL CED/EUDS 1.3.6.1.4.1.21008.108.63.1=sessionId-123456"),
+// which makes every row unique.  Trailing whitespace-separated key=value tokens
+// are dropped so that the same client groups together.
+static std::string session_name_key(const std::string& name) {
+    std::string out = name;
+    size_t pos;
+    while ((pos = out.rfind(' ')) != std::string::npos) {
+        if (out.substr(pos + 1).find('=') == std::string::npos) break;
+        out.erase(pos);
+    }
+    return out;
+}
+
+// The recorded ACCEPT address carries the client's source port — and often the
+// listen address in parentheses — so counting the raw strings would just count
+// the sessions again.  Reduce it to the host part to count distinct NAT
+// addresses instead.
+static std::string nat_host_key(const std::string& accept_ip) {
+    std::string s = accept_ip.substr(0, accept_ip.find(' '));   // drop " (IP=…"
+    const size_t colon = s.rfind(':');
+    if (colon != std::string::npos && colon + 1 < s.size() &&
+        s.find_first_not_of("0123456789", colon + 1) == std::string::npos) {
+        s.erase(colon);                                         // drop ":port"
+    }
+    return s.empty() ? accept_ip : s;
+}
+
+// Short human-readable name for an LDAP result code.  Shared by the text and
+// HTML reports (and by the charts), so the table lives in one place.
+std::string ldap_error_name(int code) {
+    auto it = LDAP_ERRORS.find(code);
+    return (it != LDAP_ERRORS.end()) ? it->second : "unknown";
+}
+
+// Presentation of the result-code classes: the classification itself lives in
+// log_parser.cpp, next to the aggregates it filters (see log_parser.hpp).
+const char* ldap_code_class_name(LdapCodeClass c) {
+    switch (c) {
+        case LdapCodeClass::Info:           return "informational";
+        case LdapCodeClass::Client:         return "client-side";
+        case LdapCodeClass::Policy:         return "by configuration";
+        case LdapCodeClass::PolicyOrClient: return "by configuration, or client-side";
+        case LdapCodeClass::Server:         return "server-side";
+    }
+    return "unknown";
+}
+
+const char* ldap_code_class_color(LdapCodeClass c) {
+    switch (c) {
+        case LdapCodeClass::Info:           return "#27ae60";   // green
+        case LdapCodeClass::Client:         return "#e67e22";   // amber
+        // The dual class keeps violet as its base colour (the text, the tooltip,
+        // the label) and adds amber as a hatch — see …_hatch_color().
+        case LdapCodeClass::Policy:         return "#8e44ad";   // violet
+        case LdapCodeClass::PolicyOrClient: return "#8e44ad";   // violet, hatched amber
+        case LdapCodeClass::Server:         return "#cc0000";   // red
+    }
+    return "#7f8c8d";
+}
+
+const char* ldap_code_class_hatch_color(LdapCodeClass c) {
+    return c == LdapCodeClass::PolicyOrClient ? "#e67e22" : nullptr;
+}
+
+// The hatch as an HTML background: an inline `style` is the only way to paint it
+// outside SVG (the charts draw the same two colours as an SVG <pattern>).  Built
+// from the same accessors as every other colour, so it cannot drift from them.
+static std::string hatch_background_css() {
+    return std::string("repeating-linear-gradient(45deg,") +
+           ldap_code_class_color(LdapCodeClass::Policy) + " 0 3px," +
+           ldap_code_class_hatch_color(LdapCodeClass::PolicyOrClient) + " 3px 6px)";
+}
+
+// The same hatch, pale, for a table cell background: the saturated pattern is
+// legible as a 10 px swatch but would fight the code and its name, so the row is
+// marked with a wash of the two colours instead and the text keeps its violet.
+static const char* HATCH_CELL_BG =
+    "repeating-linear-gradient(45deg,#f3e6f7 0 3px,#fdeee0 3px 6px)";
+
 void print_text_report(const Aggregator& agg, double processing_time, bool compact, int color_mode, const std::set<std::string>& sections, const std::string& /*output_date_format*/) {
     set_color_output(color_mode);
     int limit = compact ? 5 : 20;
 
     auto has_section = [&](const std::string& name) {
         return sections.empty() || sections.count("all") || sections.count(name);
+    };
+
+    // Result codes are coloured by class (see ldap_code_class()): green when the
+    // code is information, amber when the client is at fault, violet when the
+    // configuration deliberately refused, red when slapd itself is at fault.  The
+    // dual class shares the violet — ANSI has no hatch — and the text report
+    // names no class, so only the HTML side carries the "either cause" reading.
+    auto code_color = [&](int code) -> std::string {
+        switch (ldap_code_class(code)) {
+            case LdapCodeClass::Info:           return COLOR_GREEN;
+            case LdapCodeClass::Client:         return COLOR_YELLOW;
+            case LdapCodeClass::Policy:         return COLOR_MAGENTA;
+            case LdapCodeClass::PolicyOrClient: return COLOR_MAGENTA;
+            case LdapCodeClass::Server:         return COLOR_RED;
+        }
+        return COLOR_RED;
     };
 
     std::cout << COLOR_BOLD << COLOR_BLUE << "OpenLDAP Log Analysis Report" << COLOR_RESET << "\n";
@@ -410,6 +506,8 @@ void print_text_report(const Aggregator& agg, double processing_time, bool compa
         st_rows.push_back({"Processing speed", fmt_int(static_cast<long long>(speed)) + " lines/s"});
         st_rows.push_back({"Lines processed", fmt_int(agg.stats.lines)});
         st_rows.push_back({"Unknown lines", fmt_int(agg.stats.unknown_lines)});
+        if (!agg.openldap_version.empty())
+            st_rows.push_back({"OpenLDAP version", agg.openldap_version});
         st_rows.push_back({"Connections opened", fmt_int(agg.stats.conn_count)});
         st_rows.push_back({"FD open events", fmt_int(agg.stats.fd_open)});
         st_rows.push_back({"FD close events", fmt_int(agg.stats.fd_close)});
@@ -444,25 +542,38 @@ void print_text_report(const Aggregator& agg, double processing_time, bool compa
         print_table({"Operation", "Count"}, op_rows);
     }
 
-    // Error counts
-    // Shows LDAP result codes with their mnemonic names.
-    // "Success" and other non-error codes (compareTrue, referral, etc.)
-    // are coloured green; all others are red.
+    // LDAP result codes
+    // Lists every LDAP result code with its mnemonic name, coloured by class:
+    // green when the code is information (success, compareFalse / compareTrue,
+    // referral, saslBindInProgress), amber when the request was at fault,
+    // violet when the configuration refused or limited the operation, red when
+    // slapd itself failed.
     if (has_section("errors")) {
-        print_separator("Error Counts");
+        print_separator("LDAP Result Codes");
         auto error_sorted = sort_map_by_value_desc(agg.error_count);
         std::vector<std::vector<std::string>> error_rows;
+        std::string normal;                  // codes that are not failures
         for (const auto& [code, count] : error_sorted) {
-            auto it = LDAP_ERRORS.find(code);
-            std::string name = (it != LDAP_ERRORS.end()) ? it->second : "unknown";
+            std::string name = ldap_error_name(code);
             std::string code_str = fmt_int(code);
+            if (count > 0 && !ldap_code_is_error(code)) {
+                if (!normal.empty()) normal += ", ";
+                normal += code_str + " " + name;
+            }
             if (color_mode >= 1) {
-                bool ok = (code == 0 || code == 5 || code == 6 || code == 10 || code == 14);
-                std::string c = ok ? COLOR_GREEN : COLOR_RED;
+                std::string c = code_color(code);
                 code_str = c + code_str + COLOR_RESET;
                 name = c + name + COLOR_RESET;
             }
             error_rows.push_back({code_str, name, fmt_int(count)});
+        }
+        if (!normal.empty())
+            std::cout << "  Not errors (informational): " << normal << "\n";
+        if (color_mode >= 1) {
+            std::cout << "  " << COLOR_GREEN << "green" << COLOR_RESET << " information   "
+                      << COLOR_YELLOW << "amber" << COLOR_RESET << " requested by the client   "
+                      << COLOR_MAGENTA << "violet" << COLOR_RESET << " refused by configuration   "
+                      << COLOR_RED << "red" << COLOR_RESET << " slapd itself\n";
         }
         print_table({"Code", "Name", "Count"}, error_rows);
     }
@@ -477,12 +588,10 @@ void print_text_report(const Aggregator& agg, double processing_time, bool compa
         for (const auto& [app_name, errs] : agg.error_per_app) {
             auto sorted_errs = sort_map_by_value_desc(errs);
             for (const auto& [code, cnt] : sorted_errs) {
-                auto it = LDAP_ERRORS.find(code);
-                std::string name = (it != LDAP_ERRORS.end()) ? it->second : "unknown";
+                std::string name = ldap_error_name(code);
                 std::string code_str = fmt_int(code);
                 if (color_mode >= 1) {
-                    bool ok = (code == 0 || code == 5 || code == 6 || code == 10 || code == 14);
-                    std::string c = ok ? COLOR_GREEN : COLOR_RED;
+                    std::string c = code_color(code);
                     code_str = c + code_str + COLOR_RESET;
                     name = c + name + COLOR_RESET;
                 }
@@ -673,23 +782,42 @@ void print_text_report(const Aggregator& agg, double processing_time, bool compa
     // via the LDAP session tracking control.
     if (has_section("sessions") && !agg.session_correlations.empty()) {
         print_separator("Session Tracking Correlations");
-        std::set<std::tuple<std::string,std::string,std::string,std::string,std::string>> seen;
-        std::vector<std::vector<std::string>> st_rows;
+        // Group by client rather than by session: the tracking name usually
+        // carries a per-session identifier, so listing the raw correlations
+        // gives one row per session — essentially all unique, and thousands
+        // long on a busy log.  Grouping keeps the interesting part (which
+        // clients, how many sessions, under which identity).
+        struct Group { long long sessions = 0; std::set<std::string> nat_ips; };
+        using Key = std::tuple<std::string, std::string, std::string, std::string>;
+        std::map<Key, Group> grouped;
         for (const auto& [key, corr] : agg.session_correlations) {
-            auto tup = std::make_tuple(corr.accept_ip, corr.real_ip, corr.name,
-                                       corr.username, corr.binddn);
-            if (seen.insert(tup).second) {
-                st_rows.push_back({
-                    corr.accept_ip,
-                    corr.real_ip,
-                    corr.name,
-                    corr.username,
-                    corr.binddn
-                });
-            }
+            auto& g = grouped[std::make_tuple(session_name_key(corr.name), corr.real_ip,
+                                              corr.username, corr.binddn)];
+            g.sessions++;
+            if (!corr.accept_ip.empty()) g.nat_ips.insert(nat_host_key(corr.accept_ip));
         }
+        std::vector<std::pair<long long, std::vector<std::string>>> ordered;
+        ordered.reserve(grouped.size());
+        for (const auto& [k, g] : grouped) {
+            ordered.push_back({g.sessions, {
+                fmt_int(g.sessions),
+                fmt_int(static_cast<long long>(g.nat_ips.size())),
+                std::get<1>(k),   // real IP (the client behind the NAT)
+                std::get<0>(k),   // session name, without the session id
+                std::get<2>(k),   // username
+                std::get<3>(k)}}); // bind DN
+        }
+        // Busiest clients first, then a deterministic order.
+        std::sort(ordered.begin(), ordered.end(), [](const auto& a, const auto& b) {
+            if (a.first != b.first) return a.first > b.first;
+            return a.second < b.second;
+        });
+        std::vector<std::vector<std::string>> st_rows;
+        st_rows.reserve(ordered.size());
+        for (auto& p : ordered) st_rows.push_back(std::move(p.second));
         if (!st_rows.empty()) {
-            print_table({"ACCEPT IP", "Real IP", "Name", "Username", "BIND dn"}, st_rows);
+            print_table({"Sessions", "NAT IPs", "Real IP", "Name", "Username", "BIND dn"},
+                        st_rows);
         }
     }
 
@@ -763,6 +891,9 @@ void print_text_report(const Aggregator& agg, double processing_time, bool compa
  *   else     → #00aa00
  */
 void print_html_report(const Aggregator& agg, double duration, bool /*compact*/, const std::string& /*output_date_format*/) {
+    // Charts are placed under the section whose data they draw; nothing is
+    // emitted (not even the stylesheet) when there is no chart to draw.
+    const bool charts = html_charts_available(agg);
     auto etime_color = [](double v) -> std::string {
         if (v > 5.0) return "color:#ff4444;font-weight:bold";
         if (v > 1.0) return "color:#cc0000";
@@ -771,9 +902,28 @@ void print_html_report(const Aggregator& agg, double duration, bool /*compact*/,
         return "color:#00aa00";
     };
 
+    // A result code is coloured by class (see ldap_code_class()) — the same
+    // colour its bar and its donut slice carry, so a code reads the same
+    // everywhere on the page.  The dual class keeps its violet text (violet is
+    // the class base) and gains a pale hatch behind it: the row is identifiable
+    // at a glance without the saturated pattern hurting the legibility of the
+    // code and its name.
     auto err_color = [](int code) -> std::string {
-        bool ok = (code == 0 || code == 5 || code == 6 || code == 10 || code == 14);
-        return ok ? "color:#00aa00" : "color:#cc0000";
+        const LdapCodeClass cls = ldap_code_class(code);
+        std::string s = std::string("color:") + ldap_code_class_color(cls);
+        if (cls == LdapCodeClass::PolicyOrClient) s += std::string(";background:") + HATCH_CELL_BG;
+        return s;
+    };
+
+    // A colour key entry, built from the same colours so it cannot drift from the
+    // tables and the charts.  The dual class shows the full-strength hatch here,
+    // where a 10 px swatch is read as a colour, not behind text.
+    auto code_swatch = [](LdapCodeClass c, const char* what) {
+        const std::string bg = (c == LdapCodeClass::PolicyOrClient)
+                                   ? hatch_background_css()
+                                   : std::string(ldap_code_class_color(c));
+        return std::string("<span style=\"display:inline-block;width:10px;height:10px;"
+                           "border-radius:2px;background:") + bg + ";margin-right:5px\"></span>" + what;
     };
 
     auto gradient_ratio = [](long long val, long long maxv) -> std::string {
@@ -838,7 +988,16 @@ void print_html_report(const Aggregator& agg, double duration, bool /*compact*/,
     std::cout << "  @media (max-width:768px) { body { padding:10px; } ";
     std::cout << "h1 { font-size:1.2em; padding:15px; } ";
     std::cout << "th,td { padding:6px 8px; font-size:0.75em; } }\n";
+    // "Show more" button that reveals the tail of a long table.
+    std::cout << "  .sl-more { display:block; margin:6px 0 16px; padding:6px 14px; font:inherit; ";
+    std::cout << "font-size:0.85em; color:#34495e; background:#fff; border:1px solid #c8d0da; ";
+    std::cout << "border-radius:5px; cursor:pointer; }\n";
+    std::cout << "  .sl-more:hover { background:#eef2f7; border-color:#3498db; color:#2980b9; }\n";
+    // Explanatory line under a section heading (e.g. result codes that are
+    // informational rather than failures).
+    std::cout << "  .note { color:#7f8c8d; font-size:0.85em; margin:-4px 0 10px; }\n";
     std::cout << "</style>\n";
+    if (charts) print_html_chart_style();
     std::cout << "</head>\n<body>\n";
 
     // Header
@@ -860,6 +1019,10 @@ void print_html_report(const Aggregator& agg, double duration, bool /*compact*/,
     std::cout << "<div class=\"meta-value\">" << agg.stats.conn_count << "</div></div>\n";
     std::cout << "  <div class=\"meta-item\"><div class=\"meta-label\">Peak active</div>";
     std::cout << "<div class=\"meta-value\">" << agg.peak_active_connections << "</div></div>\n";
+    if (!agg.openldap_version.empty()) {
+        std::cout << "  <div class=\"meta-item\"><div class=\"meta-label\">OpenLDAP</div>";
+        std::cout << "<div class=\"meta-value\">" << agg.openldap_version << "</div></div>\n";
+    }
     if (!agg.firsttime.empty()) {
         std::cout << "  <div class=\"meta-item\"><div class=\"meta-label\">First event</div>";
         std::cout << "<div class=\"meta-value\">" << agg.firsttime << "</div></div>\n";
@@ -905,9 +1068,9 @@ void print_html_report(const Aggregator& agg, double duration, bool /*compact*/,
     print_stat("Write operations", fmt_int(agg.read_write_stats.write));
     std::cout << "</table>\n";
 
-    // Charts — placeholder-free: they print nothing unless graph data was
-    // collected (i.e. unless the HTML report was asked for, without --no-graph).
-    print_html_charts(agg);
+    // Each chart is emitted under the section whose data it draws; the first
+    // one therefore sits right after the Statistics table.
+    print_html_chart(agg, HtmlChart::Connections);
 
     // Operation counts
     std::cout << "<h2>Operation Counts</h2>\n";
@@ -916,19 +1079,47 @@ void print_html_report(const Aggregator& agg, double duration, bool /*compact*/,
         if (count > 0) std::cout << "<tr><td>" << op << "</td><td>" << count << "</td></tr>\n";
     }
     std::cout << "</table>\n";
+    print_html_chart(agg, HtmlChart::OperationTypes);
 
-    // Error counts
-    std::cout << "<h2>Error Counts</h2>\n";
-    std::cout << "<table>\n<tr><th>Code</th><th>Name</th><th>Count</th></tr>\n";
+    // LDAP result codes
+    // Every LDAP result code, coloured by class, with the codes that are *not*
+    // failures recalled in a note so a green row is never mistaken for a silent
+    // error, and a colour key so the kinds of refusal read apart: what the client
+    // asked, what the configuration allows, the refusals the log cannot attribute
+    // to either side (drawn hatched, both colours), and what slapd failed to do.
+    std::cout << "<h2>LDAP Result Codes</h2>\n";
     auto error_sorted = sort_map_by_value_desc(agg.error_count);
+    std::string normal;
     for (const auto& [code, count] : error_sorted) {
-        auto it = LDAP_ERRORS.find(code);
-        std::string name = (it != LDAP_ERRORS.end()) ? it->second : "unknown";
+        if (count > 0 && !ldap_code_is_error(code)) {
+            if (!normal.empty()) normal += ", ";
+            normal += fmt_int(code) + " " + ldap_error_name(code);
+        }
+    }
+    if (!normal.empty())
+        std::cout << "<p class=\"note\">Kept as information, not counted as "
+                     "failures: " << normal << ".</p>\n";
+    std::cout << "<p class=\"note\">Colour key: "
+              << code_swatch(LdapCodeClass::Info, "informational")
+              << " &middot; " << code_swatch(LdapCodeClass::Client, "client-side")
+              << " &middot; " << code_swatch(LdapCodeClass::Policy, "refused by configuration")
+              << " &middot; " << code_swatch(LdapCodeClass::PolicyOrClient,
+                                             "refused by configuration &mdash; or a client-side mistake")
+              << " &middot; " << code_swatch(LdapCodeClass::Server, "slapd itself")
+              << ".</p>\n";
+    std::cout << "<table>\n<tr><th>Code</th><th>Name</th><th>Count</th></tr>\n";
+    for (const auto& [code, count] : error_sorted) {
         std::cout << "<tr><td style=\"" << err_color(code) << "\">" << code << "</td>"
-                  << "<td style=\"" << err_color(code) << "\">" << name << "</td>"
+                  << "<td style=\"" << err_color(code) << "\">" << ldap_error_name(code) << "</td>"
                   << "<td>" << count << "</td></tr>\n";
     }
     std::cout << "</table>\n";
+    // Right under the table it belongs to: every code, successful ones included,
+    // as bars with the cumulative share on the right.  Then the donut, which
+    // answers the narrower question — of what actually failed, what failed how?
+    print_html_chart(agg, HtmlChart::ResultCodeBreakdown);
+    print_html_chart(agg, HtmlChart::ResultCodes);
+    print_html_chart(agg, HtmlChart::ErrorsOverTime);
 
     // Errors per application
     if (!agg.error_per_app.empty()) {
@@ -1001,6 +1192,7 @@ void print_html_report(const Aggregator& agg, double duration, bool /*compact*/,
     // Top applications
     print_h_count_table("Top Applications (by count)", "Application", agg.app_stats);
     print_h_double_table("Top Applications (by etime)", "Application", agg.app_stats);
+    print_html_chart(agg, HtmlChart::Accounts);
 
     // Filters per application
     // HTML version of the per-app filter table; count cells are coloured
@@ -1094,19 +1286,37 @@ void print_html_report(const Aggregator& agg, double duration, bool /*compact*/,
         std::cout << "</table>\n";
     }
 
-    // Session tracking correlations
+    // Session tracking correlations, grouped by client (see the text report).
     if (!agg.session_correlations.empty()) {
-        std::set<std::tuple<std::string,std::string,std::string,std::string,std::string>> seen;
-        std::cout << "<h2>Session Tracking Correlations</h2>\n";
-        std::cout << "<table>\n<tr><th>ACCEPT IP</th><th>Real IP</th><th>Name</th><th>Username</th><th>BIND dn</th></tr>\n";
+        struct Group { long long sessions = 0; std::set<std::string> nat_ips; };
+        using Key = std::tuple<std::string, std::string, std::string, std::string>;
+        std::map<Key, Group> grouped;
         for (const auto& [key, corr] : agg.session_correlations) {
-            auto tup = std::make_tuple(corr.accept_ip, corr.real_ip, corr.name,
-                                       corr.username, corr.binddn);
-            if (seen.insert(tup).second) {
-                std::cout << "<tr><td>" << corr.accept_ip << "</td><td>" << corr.real_ip
-                          << "</td><td>" << corr.name << "</td><td>" << corr.username
-                          << "</td><td>" << corr.binddn << "</td></tr>\n";
-            }
+            auto& g = grouped[std::make_tuple(session_name_key(corr.name), corr.real_ip,
+                                              corr.username, corr.binddn)];
+            g.sessions++;
+            if (!corr.accept_ip.empty()) g.nat_ips.insert(nat_host_key(corr.accept_ip));
+        }
+        std::vector<std::pair<long long, std::vector<std::string>>> ordered;
+        ordered.reserve(grouped.size());
+        for (const auto& [k, g] : grouped) {
+            ordered.push_back({g.sessions, {
+                fmt_int(g.sessions),
+                fmt_int(static_cast<long long>(g.nat_ips.size())),
+                std::get<1>(k), std::get<0>(k), std::get<2>(k), std::get<3>(k)}});
+        }
+        std::sort(ordered.begin(), ordered.end(), [](const auto& a, const auto& b) {
+            if (a.first != b.first) return a.first > b.first;
+            return a.second < b.second;
+        });
+
+        std::cout << "<h2>Session Tracking Correlations</h2>\n";
+        std::cout << "<table>\n<tr><th>Sessions</th><th>NAT IPs</th><th>Real IP</th>"
+                     "<th>Name</th><th>Username</th><th>BIND dn</th></tr>\n";
+        for (const auto& [n, cells] : ordered) {
+            std::cout << "<tr>";
+            for (const auto& c : cells) std::cout << "<td>" << c << "</td>";
+            std::cout << "</tr>\n";
         }
         std::cout << "</table>\n";
     }
@@ -1123,6 +1333,9 @@ void print_html_report(const Aggregator& agg, double duration, bool /*compact*/,
     }
     std::cout << "</table>\n";
 
+    print_html_chart(agg, HtmlChart::Latency);
+    print_html_chart(agg, HtmlChart::LatencyDensity);
+
     // Top connections
     // Connections sorted by cumulative elapsed time.
     std::cout << "<h2>Top Connections by Cumulative etime</h2>\n";
@@ -1136,6 +1349,34 @@ void print_html_report(const Aggregator& agg, double duration, bool /*compact*/,
 
     // Footer
     std::cout << "<div class=\"footer\">slaplog v" << SLAPLOG_VERSION << " &mdash; OpenLDAP Log Analysis Report</div>\n";
+    // Long tables are collapsed client-side: the first rows are shown, the tail
+    // is revealed by a button.  Doing it generically here means every section
+    // benefits without the emitters having to know about it.
+    std::cout << R"HTML(<script>
+(function(){
+  var LIMIT = 25;
+  var tables = document.querySelectorAll('table');
+  for (var i = 0; i < tables.length; i++) { (function(t){
+    var rows = [], trs = t.querySelectorAll('tr');
+    for (var j = 0; j < trs.length; j++) if (trs[j].querySelector('td')) rows.push(trs[j]);
+    if (rows.length <= LIMIT) return;
+    var rest = rows.slice(LIMIT);
+    for (var k = 0; k < rest.length; k++) rest[k].style.display = 'none';
+    var b = document.createElement('button');
+    b.className = 'sl-more';
+    b.textContent = 'show ' + rest.length + ' more row(s)';
+    b.onclick = function(){
+      var hidden = rest[0].style.display === 'none';
+      for (var m = 0; m < rest.length; m++) rest[m].style.display = hidden ? '' : 'none';
+      b.textContent = hidden ? ('hide ' + rest.length + ' row(s)')
+                             : ('show ' + rest.length + ' more row(s)');
+    };
+    t.parentNode.insertBefore(b, t.nextSibling);
+  })(tables[i]); }
+})();
+</script>
+)HTML";
+    if (charts) print_html_chart_script();
     std::cout << "</body>\n</html>\n";
 }
 
@@ -1183,6 +1424,7 @@ void print_json_report(const Aggregator& agg, double duration, bool /*compact*/,
     report["processing_time"] = duration;
     report["lines"] = agg.stats.lines;
     report["unknown_lines"] = agg.stats.unknown_lines;
+    if (!agg.openldap_version.empty()) report["openldap_version"] = agg.openldap_version;
     report["connections_opened"] = agg.stats.conn_count;
     report["peak_active_connections"] = agg.peak_active_connections;
     report["first_timestamp"] = agg.firsttime;

@@ -42,6 +42,7 @@
 #include "log_parser.hpp"
 #include "regex_patterns.hpp"
 #include "utils.hpp"
+#include <cmath>
 #include <map>
 #include <regex>
 #include <string>
@@ -82,6 +83,148 @@ static bool g_collect_graph_data = false;
 
 void set_collect_graph_data(bool on) { g_collect_graph_data = on; }
 bool collect_graph_data_enabled() { return g_collect_graph_data; }
+
+// Every code of the LDAP_ERRORS table in report.cpp is classified here, and the
+// classes add up to that table exactly; a code outside it (never seen in
+// production, per the table's own note) is reported as Server, so that an
+// unclassified code stands out instead of being silently filed as harmless.
+LdapCodeClass ldap_code_class(int code) {
+    switch (code) {
+        // ---- information: the operation did what was asked -----------------
+        case 0:  // success
+        case 5:  // compareFalse — assertion is false: a normal Compare outcome
+        case 6:  // compareTrue  — assertion is true:  a normal Compare outcome
+        case 10: // referral — done here, the client retries elsewhere
+        case 14: // saslBindInProgress — the SASL exchange continues
+            return LdapCodeClass::Info;
+
+        // ---- the configuration deliberately said "no" ----------------------
+        // Numeric limits the server was told to enforce.  Refusing is the
+        // configured behaviour: nothing is broken, which is exactly why these
+        // must not be read as slapd failures.  They are also limits the client
+        // is told about in advance, so a request that meets one is the client's
+        // own doing — it was handed a number and could have paged or split.
+        case 3:  // timeLimitExceeded   — the configured time limit was reached
+        case 4:  // sizeLimitExceeded   — the requested/configured size limit
+        case 11: // adminLimitExceeded   — an administrative limit was reached
+            return LdapCodeClass::Policy;
+
+        // ---- "no", and the log cannot say whose fault it is -----------------
+        // The very same code answers two situations the log cannot tell apart:
+        // a legitimate request that meets a refusal the configuration should not
+        // have made (the configuration's fault), and a request the client had no
+        // right to make and that is refused for good reason (the client's).  The
+        // code reads identically either way, so these are reported as a fifth,
+        // hatched class rather than guessed into one side.
+        case 8:  // strongerAuthRequired — a stronger mechanism is required here
+        case 13: // confidentialityRequired — this operation requires TLS
+        case 50: // insufficientAccessRights — an ACL decision, not a breakage
+        case 53: // unwillingToPerform   — refused by policy (referral, TLS, …)
+            return LdapCodeClass::PolicyOrClient;
+
+        // ---- slapd itself -------------------------------------------------
+        case 1:  // operationsError
+        case 12: // unavailableCriticalExtension
+        case 33: // aliasProblem
+        case 36: // aliasDereferencingProblem
+        case 51: // busy
+        case 52: // unavailable
+        case 54: // loopDetect
+        case 71: // affectsMultipleDSAs
+        case 80: // other
+            return LdapCodeClass::Server;
+
+        // ---- the request, the identity or the data ------------------------
+        case 2:  // protocolError — the request was malformed or out of sequence
+        case 7:  // authMethodNotSupported
+        case 16: // noSuchAttribute
+        case 17: // undefinedAttributeType
+        case 18: // inappropriateMatching
+        case 19: // constraintViolation
+        case 20: // attributeOrValueExists
+        case 21: // invalidAttributeSyntax
+        case 32: // noSuchObject
+        case 34: // invalidDNSyntax
+        case 48: // inappropriateAuthentication
+        case 49: // invalidCredentials
+        case 64: // namingViolation
+        case 65: // objectClassViolation
+        case 66: // notAllowedOnNonLeaf
+        case 67: // notAllowedOnRDN
+        case 68: // entryAlreadyExists
+        case 69: // objectClassModsProhibited
+            return LdapCodeClass::Client;
+
+        // A code outside the table is not guessed at: it is reported as a
+        // server-side result so that it stands out (as "unknown") instead of
+        // being filed as harmless.
+        default:
+            return LdapCodeClass::Server;
+    }
+}
+
+bool ldap_code_is_error(int code) {
+    return ldap_code_class(code) != LdapCodeClass::Info;
+}
+
+// Map an operation time (milliseconds) to its latency-histogram bucket.
+static int etime_bucket_index(double ms) {
+    for (int i = 0; i < OP_ETIME_BUCKETS - 1; ++i) {
+        if (ms <= OP_ETIME_BOUNDS[i]) return i;
+    }
+    return OP_ETIME_BUCKETS - 1;
+}
+
+// Map an operation time (milliseconds) to its bin in the logarithmic histogram.
+// The first bin is "1 us or less" — everything faster than the resolution a log
+// can carry — and the last one is open-ended above 10 s, so a pathological
+// latency lands somewhere rather than being dropped.
+int etime_log_bin(double ms) {
+    if (!(ms > 0.0)) return 0;                       // 0, and any NaN, as fastest
+    if (ms <= ETIME_LOG_MIN_MS) return 0;
+    const double step = 1.0 / ETIME_LOG_BINS_PER_DECADE;
+    const double k = (std::log10(ms) - std::log10(ETIME_LOG_MIN_MS)) / step;
+    const int bin = static_cast<int>(k);
+    if (bin >= ETIME_LOG_BINS) return ETIME_LOG_BINS - 1;
+    return bin < 0 ? 0 : bin;
+}
+
+// The lower edge of a logarithmic bin, written the way it is read (microseconds
+// below a millisecond, milliseconds below a second, seconds above), for the
+// chart's tooltips.
+std::string format_etime_log_bin(int bin) {
+    const double step = 1.0 / ETIME_LOG_BINS_PER_DECADE;
+    const double ms = ETIME_LOG_MIN_MS * std::pow(10.0, bin * step);
+    char buf[32];
+    if (ms < 1.0)        std::snprintf(buf, sizeof(buf), "%.3g \xc2\xb5s", ms * 1000.0);
+    else if (ms < 1000.0) std::snprintf(buf, sizeof(buf), "%.3g ms", ms);
+    else                 std::snprintf(buf, sizeof(buf), "%.3g s", ms / 1000.0);
+    return buf;
+}
+
+// Extract the OpenLDAP version from a startup banner, e.g.
+//   @(#) $OpenLDAP: slapd 2.6.7 (Jan  1 2026 00:00:00) $
+//   slapd 2.6.7 (Jan  1 2026 00:00:00)
+// Only these two unambiguous forms are accepted; a version-looking string
+// inside an operation (a base DN, a filter, a banner relayed in a search
+// result…) never matches because a whitespace or line start must precede
+// "slapd" and a "(" must follow the number.
+static std::optional<std::string> parse_openldap_version(const std::string& line) {
+    static const std::regex banner(R"(@\(#\)\s*\$OpenLDAP:\s*slapd\s+(\d+\.\d+(?:\.\d+)?))");
+    static const std::regex plain(R"((?:^|\s)slapd\s+(\d+\.\d+(?:\.\d+)?)\s*\()");
+    std::smatch m;
+    if (std::regex_search(line, m, banner)) return m[1].str();
+    if (std::regex_search(line, m, plain)) return m[1].str();
+    return std::nullopt;
+}
+
+// Label recorded for a "slapd starting" event.  The version is only appended
+// when the log actually carried a banner, so a restart sequence reports the
+// version that started (which may change on an upgrade) and nothing otherwise.
+static std::string start_event_label(const Aggregator& agg) {
+    if (agg.openldap_version.empty()) return "slapd starting";
+    return "slapd starting — OpenLDAP " + agg.openldap_version;
+}
 
 void set_log_format(LogFormat fmt) {
     g_log_format = fmt;
@@ -845,6 +988,14 @@ std::string format_epoch_seconds(long long t) {
             u.count += 1;
             u.etime_total += row.etime;
         }
+        // Latency histograms, for the HTML report's distribution charts: the
+        // coarse one (fixed, uneven buckets) and the logarithmic one, which is
+        // the only one able to show the shape of a distribution that fits in a
+        // single coarse bucket.
+        if (g_collect_graph_data) {
+            agg.op_etime_hist[etime_bucket_index(row.etime)]++;
+            agg.op_etime_log_hist[etime_log_bin(row.etime)]++;
+        }
         agg.top_ops.push_back(row);
         write_replay_row(row);
         if (agg.top_ops.size() > 100) {
@@ -1453,6 +1604,19 @@ void update_aggregator(Aggregator& agg, const Event& ev,
                        std::ostream* unknown_out, std::mutex* unknown_mtx) {
 
     // ------------------------------------------------------------------
+    // OpenLDAP version banner
+    // ------------------------------------------------------------------
+    // Recognised before anything else so that it sets the reported version
+    // instead of being counted as an unknown line.
+    if (agg.openldap_version.empty()) {
+        if (auto v = parse_openldap_version(ev.raw)) {
+            agg.openldap_version = *v;
+            agg.stats.lines++;
+            return;
+        }
+    }
+
+    // ------------------------------------------------------------------
     // Unknown Line Handling
     // ------------------------------------------------------------------
     // Lines that parse_line() could not classify increment the unknown
@@ -1638,7 +1802,7 @@ void update_aggregator(Aggregator& agg, const Event& ev,
     if (ev.kind == "SLAPD_STARTING") {
         agg.server_events.start_count++;
         agg.restart_count++;
-        agg.server_event_list.emplace_back(ev.ts, "slapd starting");
+        agg.server_event_list.emplace_back(ev.ts, start_event_label(agg));
         return;
     }
     if (ev.kind == "SLAPD_STOPPED") {
@@ -1875,6 +2039,18 @@ void update_aggregator(Aggregator& agg, const Event& ev,
             op.err = ev.err;
             agg.error_count[*ev.err]++;
             agg.error_per_app[who][*ev.err]++;
+            // Only the *failing* codes feed the "errors over time" chart: a
+            // Compare answers compareFalse / compareTrue as its normal result, a
+            // referral is a success and saslBindInProgress is an exchange still
+            // under way, so counting them drew a curve that read as failures
+            // (they were 48 % of it on the reference log).
+            if (ldap_code_is_error(*ev.err) && g_collect_graph_data &&
+                agg.error_time_total < MAX_ERROR_TIMES) {
+                if (auto t = ts_epoch_seconds(ev.ts)) {
+                    agg.error_times_by_code[*ev.err].push_back(*t);
+                    agg.error_time_total++;
+                }
+            }
         }
         if (ev.etime.has_value()) {
             op.etime = ev.etime;
@@ -1938,6 +2114,18 @@ void update_aggregator(Aggregator& agg, const Event& ev,
             op.err = ev.err;
             agg.error_count[*ev.err]++;
             agg.error_per_app[who][*ev.err]++;
+            // Only the *failing* codes feed the "errors over time" chart: a
+            // Compare answers compareFalse / compareTrue as its normal result, a
+            // referral is a success and saslBindInProgress is an exchange still
+            // under way, so counting them drew a curve that read as failures
+            // (they were 48 % of it on the reference log).
+            if (ldap_code_is_error(*ev.err) && g_collect_graph_data &&
+                agg.error_time_total < MAX_ERROR_TIMES) {
+                if (auto t = ts_epoch_seconds(ev.ts)) {
+                    agg.error_times_by_code[*ev.err].push_back(*t);
+                    agg.error_time_total++;
+                }
+            }
         }
         if (ev.etime.has_value()) {
             op.etime = ev.etime;
@@ -2181,7 +2369,7 @@ void update_aggregator(Aggregator& agg, const Event& ev,
     }
     if (ev.kind == "SLAPD_STARTING") {
         agg.server_events.start_count++;
-        agg.server_event_list.emplace_back(ev.ts, "slapd starting");
+        agg.server_event_list.emplace_back(ev.ts, start_event_label(agg));
         return;
     }
     if (ev.kind == "SLAPD_STOPPED") {
@@ -2366,11 +2554,27 @@ void merge_aggregators(Aggregator& dest, const Aggregator& src) {
         dest.conn_timeline.insert(dest.conn_timeline.end(),
                                   src.conn_timeline.begin(), src.conn_timeline.end());
     }
+    for (int i = 0; i < OP_ETIME_BUCKETS; ++i) {
+        dest.op_etime_hist[i] += src.op_etime_hist[i];
+    }
+    for (int i = 0; i < ETIME_LOG_BINS; ++i) {
+        dest.op_etime_log_hist[i] += src.op_etime_log_hist[i];
+    }
+    for (const auto& [code, times] : src.error_times_by_code) {
+        auto& d = dest.error_times_by_code[code];
+        for (long long t : times) {
+            if (dest.error_time_total >= MAX_ERROR_TIMES) break;
+            d.push_back(t);
+            dest.error_time_total++;
+        }
+        if (dest.error_time_total >= MAX_ERROR_TIMES) break;
+    }
     for (const auto& [name, ui] : src.user_stats) {
         auto& d = dest.user_stats[name];
         d.count += ui.count;
         d.etime_total += ui.etime_total;
     }
+    if (dest.openldap_version.empty()) dest.openldap_version = src.openldap_version;
 
     // --- Active / peak connections (take the higher of the two) ---
     if (src.active_connections > dest.active_connections)
