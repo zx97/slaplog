@@ -62,6 +62,23 @@ The form mirrors the CLI options. Two details worth knowing:
   mutually exclusive with the individual sections.
 - The input log format is always auto-detected, line by line.
 
+## Deploy
+
+`wasm/deploy.sh` rebuilds and publishes the page in a single command:
+
+```bash
+./wasm/deploy.sh                  # make wasm + wrangler pages deploy
+SKIP_BUILD=1 ./wasm/deploy.sh     # publish the artefacts already built
+PROJECT=other ./wasm/deploy.sh    # target another Cloudflare Pages project
+BRANCH=preview ./wasm/deploy.sh   # deploy a preview branch
+```
+
+It requires a logged-in `wrangler` (`npx wrangler login`) with access to the
+Pages project. Creating the project is a one-off step that must use the legacy
+flow — `npx wrangler pages project create <name> --production-branch main
+--force`; without `--force` the command is delegated to Cloudflare Workers and
+fails. The script itself never needs `--force`.
+
 ## How it is wired
 
 | Piece | Role |
