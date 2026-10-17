@@ -21,17 +21,10 @@
 
 
 //
-// Inline SVG charts for the HTML report.
-//
-//   • print_html_charts - emits two sections: simultaneous connections over the
-//     analysed time range (filled line chart, with a marker on every server
-//     start/stop event), and the share of the total operation time (etime)
-//     consumed by each bind account (pie chart with a legend).
-//
-// Both are plain SVG (no external dependency) and both are interactive: an
-// invisible hit area per point carries the value in data-* attributes, which a
-// small inline script turns into a tooltip that follows the mouse.  The style
-// and the script are emitted once, by the single entry point below.
+// Inline SVG charts for the HTML report.  See html_chart.cpp for what each one
+// draws.  They are emitted one at a time so the report can place every chart
+// under the section whose data it visualises, and the stylesheet/script are
+// emitted separately (once, in the head and at the end of the page).
 //
 // The data these charts draw is only collected when set_collect_graph_data()
 // was enabled before parsing (the CLI/WASM entries do that for the HTML output
@@ -42,6 +35,24 @@
 
 #include "log_parser.hpp"
 
-void print_html_charts(const Aggregator& agg);
+enum class HtmlChart {
+    Connections,          // simultaneous connections over time  (after Statistics)
+    OperationTypes,       // operation mix                      (after Operation Counts)
+    ResultCodeBreakdown,  // every result code, successful ones included
+                          //                                    (right after the table)
+    ResultCodes,          // failing result codes only          (after LDAP Result Codes)
+    ErrorsOverTime,       // errors over time                   (after LDAP Result Codes)
+    Latency,              // etime distribution                 (after Top Long Operations)
+    LatencyDensity,       // the shape of that distribution, on a log scale
+    Accounts,             // resource consumers per bind DN     (after Top Applications)
+};
+
+// True when at least one chart will be drawn, so the report can skip the chart
+// stylesheet and script entirely when there is nothing to display.
+bool html_charts_available(const Aggregator& agg);
+
+void print_html_chart_style();                  // once, inside <head>
+void print_html_chart_script();                 // once, at the end of <body>
+void print_html_chart(const Aggregator& agg, HtmlChart which);
 
 #endif // HTML_CHART_HPP

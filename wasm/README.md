@@ -61,9 +61,16 @@ The form mirrors the CLI options. Two details worth knowing:
   `html`, `json` and `replay` reports always contain every section. `all` is
   mutually exclusive with the individual sections.
 - The input log format is always auto-detected, line by line.
-- The html report includes two SVG charts (simultaneous connections over time,
-  and resource consumers per bind account). They are drawn by default; the
-  **No charts** checkbox turns them off, mirroring `--no-graph`.
+- The html report includes eight SVG charts (simultaneous connections over time
+  with downtime bands and restart markers, errors over time — failing results
+  only, stacked by result code —, response-time distribution, its density
+  profile on a log scale, resource consumers per bind account, operation types,
+  every result code on a log scale with the same codes drawn as a pie on the
+  right, and the
+  failing ones by class), and no *how to read it* note anywhere — a chart that
+  needs a word says it in its subtitle. They
+  are drawn by default; the **No charts** checkbox turns them off, mirroring
+  `--no-graph`.
 
 ## Deploy
 
@@ -141,6 +148,22 @@ input. Sources of divergence that were fixed:
 
 ## Limitations
 
-- The module is wasm32: the whole log (plus the aggregator) must fit in the
-  tab's memory (a few GB at most). For multi-gigabyte archives prefer the
-  native binary.
+- **The module is wasm32: its memory is capped at 4 GiB.**  The ceiling applies
+  to the *aggregate*, which grows with everything analysed — not with the largest
+  file — so a multi-gigabyte batch runs out however it is split.  Measured on a
+  1 GiB production log, the heap peaks at **1.12× the input with the charts and
+  1.02× without**: the charts are a 10 % lever, much smaller than the parser's
+  own aggregate.  From those ratios the page derives a safe ceiling (about
+  **2.75 GiB** of input with the charts, **3.0 GiB** without, including a margin
+  for fragmentation and for logs denser than the one measured) and, above it,
+  **proposes concrete ways out** instead of a dead end: remove a file with its
+  trash button, keep only the leading files that fit, analyse without charts, or
+  use the command-line build — which has no such limit.  If a run does abort, the
+  page reports it with an actionable message rather than a raw `RuntimeError`
+  (the module cannot be reused after an abort, so it asks for a reload).
+- **wasm64 is not used.**  The `memory64` proposal is standardised and shipped in
+  Chrome/Edge 133+ and Firefox 134+, but **not in Safari**, `table64` is still
+  work in progress, the browser caps the heap at 16 GB, 64-bit pointers make the
+  aggregate *bigger* (×1.3–2), and zlib, bzip2 and liblzma would all have to be
+  rebuilt for the wasm64 target.  It would lift the ceiling; it would not remove
+  the need for the native build.

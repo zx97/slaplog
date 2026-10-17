@@ -43,9 +43,20 @@ make
 - **Session tracking**: correlates NAT'd IPs to real clients via `[IP=... NAME=... USERNAME=...]`
 - **Section filtering**: `-s all` (default) or select specific sections
 - **Top-N analysis**: 100 slowest ops, busiest connections, most-used filters
-- **HTML charts**: inline SVG graphs — simultaneous connections over time
-  (with server start/stop markers) and resource consumers by bind account —
-  with mouse-following tooltips; disable them with `--no-graph`
+- **HTML charts**: eight inline SVG graphs — simultaneous connections over time
+  (with downtime bands and server start/stop/abrupt-restart markers), errors
+  over time (failing results only, stacked by result code), response-time
+  distribution and its density profile on a log scale, resource consumers by
+  bind account, operation types, every result code (successes included, on a log
+  scale, with the same codes drawn as a pie on the right) and the failing ones by
+  class — all with mouse-following tooltips, each placed under the section it
+  summarises, no note anywhere (a chart that needs a word says it in its subtitle),
+  and result codes coloured
+  by who is at fault (information / client-side / refused by configuration /
+  refused by configuration *or* client-side, drawn as an amber-over-violet hatch
+  / slapd itself); disable them with `--no-graph`
+- **OpenLDAP version**: reported when the startup banner is present in the log
+  (Statistics table, html meta bar, JSON)
 - **Server events**: start/stop/shutdown detection
 - **Restart-aware**: handles slapd connection-ID counter resets
 - **Multi-format support**: parses debug, syslog-utc, syslog-localtime, rfc3339-utc formats with auto-detection

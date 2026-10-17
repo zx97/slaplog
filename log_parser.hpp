@@ -113,6 +113,48 @@ std::string format_epoch_seconds(long long t);
 void set_collect_graph_data(bool on);
 bool collect_graph_data_enabled();
 
+// ---------------------------------------------------------------------------
+// LDAP result codes: what a code says about *who* has a problem.
+// ---------------------------------------------------------------------------
+// A plain "error or not" split is not enough to read a directory's health: on a
+// real log three very different situations share the same red, and only the
+// last one is slapd's fault.
+//
+//   Info     the operation did what was asked, or the protocol is progressing.
+//            Information whatever the number: success, either branch of a
+//            Compare, a referral, saslBindInProgress.
+//   Client   the request, the identity or the data sent were at fault; slapd
+//            answered correctly (noSuchObject, invalidCredentials, bad filter,
+//            invalid syntax, entryAlreadyExists, …).
+//   Policy   the server answered "no" *by configuration*: a limit it was told
+//            to enforce, or a requirement it was told to impose
+//            (sizeLimitExceeded, adminLimitExceeded, timeLimitExceeded).
+//            Refusing is the intended behaviour, so it is not a malfunction.
+//   PolicyOrClient
+//            the same "no", but the log cannot say which side should have known
+//            better.  A client asking for what it has no right to see is the
+//            client's fault; a client asking for what it legitimately expects and
+//            being refused is the configuration's — and the result code reads
+//            identically either way (insufficientAccessRights,
+//            unwillingToPerform, strongerAuthRequired, confidentialityRequired).
+//            Reported as *hatched* with both colours: the class says "look at the
+//            request", not "someone is guilty".
+//   Server   slapd itself is in trouble: internal error, overloaded, an
+//            unavailable backend, a broken alias, an impossible protocol state.
+//
+// The classification lives here, next to the aggregates it filters — the parser
+// needs it as much as the reports do, and duplicating the code lists is what
+// lets them drift apart.  ldap_error_name(), ldap_code_class_name(),
+// ldap_code_class_color() and ldap_code_class_hatch_color() (report.hpp) cover the
+// presentation side.
+enum class LdapCodeClass { Info, Client, Policy, PolicyOrClient, Server };
+
+LdapCodeClass ldap_code_class(int code);
+
+// True when an LDAP result code denotes a *failed* operation (anything but
+// Info).  Informational codes stay in the reports, but as information.
+bool ldap_code_is_error(int code);
+
 // Timestamps are held with nanosecond resolution regardless of the platform's
 // system_clock resolution — nanoseconds under libstdc++ (GCC), microseconds
 // under libc++ (clang/Emscripten).  Pinning nanoseconds preserves the
@@ -348,6 +390,43 @@ inline bool top_conn_before(const TopConnRow& a, const TopConnRow& b) {
     return a.reason < b.reason;
 }
 
+// ---- graph aggregates ------------------------------------------------------
+
+// Buckets of the operation-time distribution, in milliseconds.  A value falls
+// into bucket i when it is <= OP_ETIME_BOUNDS[i]; the last bucket is open-ended
+// ("greater than the largest bound").
+constexpr int OP_ETIME_BUCKETS = 11;
+constexpr double OP_ETIME_BOUNDS[OP_ETIME_BUCKETS - 1] =
+    {0.0, 1.0, 5.0, 10.0, 50.0, 100.0, 500.0, 1000.0, 2000.0, 5000.0};
+
+// A second latency histogram, logarithmically spaced, for the density chart.
+// The eleven buckets above have fixed, uneven widths and their last one is
+// open-ended, so they cannot show the *shape* of a distribution whose whole mass
+// sits inside the first bucket — on a real 1 GiB access log 99.9992 % of the
+// operations finish under 1 ms, which is one bar and says nothing about whether
+// that latency is tight, spread out, or two humps.  These bins are equal on a
+// logarithmic scale, ETIME_LOG_BINS_PER_DECADE per decade (a factor 1.58 between
+// neighbours), over 1 us .. 10 s: a distribution that has a shape at all shows
+// it here, and one that does not shows that too.
+constexpr double ETIME_LOG_MIN_MS = 1e-3;                 // 1 us, in milliseconds
+constexpr double ETIME_LOG_DECADES = 7.0;                 // 1 us .. 10 s
+constexpr int ETIME_LOG_BINS_PER_DECADE = 5;
+constexpr int ETIME_LOG_BINS =
+    static_cast<int>(ETIME_LOG_DECADES * ETIME_LOG_BINS_PER_DECADE);   // 35
+
+// Map an operation time (milliseconds) to its bin in that histogram.  The last
+// bin is open-ended (10 s and above), so a pathological latency lands somewhere
+// instead of being dropped.
+int etime_log_bin(double ms);
+
+// The lower edge of a logarithmic bin, written the way it is read ("12.6 us",
+// "3.16 ms", "1.58 s"), for the chart's tooltips.
+std::string format_etime_log_bin(int bin);
+
+// Upper bound on the number of error timestamps kept for the "errors over time"
+// chart, so a badly broken server cannot make the collector grow without limit.
+constexpr size_t MAX_ERROR_TIMES = 2000000;
+
 // ---- ConnEvent ----
 // A single connection open/close event, used to rebuild the number of
 // simultaneous connections over time.  Only recorded when timeline collection
@@ -514,6 +593,12 @@ struct Aggregator {
     } server_events;
     std::vector<std::pair<std::string, std::string>> server_event_list; // (timestamp, event_type) pairs.
 
+    // -- OpenLDAP version --
+    // Filled from the startup banner when the log carries one.  main() writes
+    // that banner to stderr *before* switching to syslog, so many installations
+    // never log it; the field then stays empty and no version is invented.
+    std::string openldap_version;
+
     // -- Per-bind-account resource totals (opt-in, see set_collect_graph_data) --
     // Keyed by the identity returned by app_for_conn(): the bind DN when the
     // connection authenticated, otherwise the authcid / session-tracking
@@ -526,6 +611,29 @@ struct Aggregator {
     // report's "simultaneous connections" chart.  Kept empty unless timeline
     // collection is enabled, so no other output format pays for it.
     std::vector<ConnEvent> conn_timeline;
+
+    // -- Operation-time distribution (opt-in) --
+    // Number of completed operations per etime bucket; feeds the HTML report's
+    // latency histogram.  Fixed size, so it costs nothing to keep.
+    long long op_etime_hist[OP_ETIME_BUCKETS] = {};
+
+    // The same operations, binned logarithmically (see ETIME_LOG_BINS), which is
+    // what the density chart reads: the coarse bucketing above cannot show the
+    // shape of a distribution that fits in its first bucket.
+    long long op_etime_log_hist[ETIME_LOG_BINS] = {};
+
+    // -- Error timestamps (opt-in) --
+    // Timestamp of every failing result, grouped by its result code.  Keeping
+    // the code is what lets the "errors over time" chart stack the codes on top
+    // of each other instead of drawing one anonymous total: same silhouette, but
+    // the detail of what failed shows through.  The whole set is capped at
+    // MAX_ERROR_TIMES (see error_time_total) to bound memory on a badly broken
+    // server.
+    std::map<int, std::vector<long long>> error_times_by_code;
+
+    // Number of timestamps currently held in error_times_by_code, against that
+    // cap.  Counted on insertion so the hot path never has to walk the map.
+    size_t error_time_total = 0;
 };
 
 // ---- Function declarations ----

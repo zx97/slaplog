@@ -41,4 +41,29 @@ void print_json_report(const Aggregator& agg, double duration, bool compact = fa
 
 void print_replay_report(const Aggregator& agg, double duration, const std::string& output_date_format = "rfc3339", const std::string& separator = "|");
 
+// Short human-readable name for an LDAP result code ("invalidCredentials",
+// "noSuchObject", …), or "unknown" when the code is not in the table.
+std::string ldap_error_name(int code);
+
+// A result code is not just "error or not": it accuses a different party
+// depending on the code, and only one of the five classes says anything about
+// slapd's health.  The classification (LdapCodeClass, ldap_code_class(),
+// ldap_code_is_error()) lives in log_parser.hpp, next to the aggregates it also
+// filters; what is declared here is how it is presented.
+//
+// Short human-readable name for a class ("informational", "client-side", …).
+const char* ldap_code_class_name(LdapCodeClass c);
+
+// HTML colour for a class, shared by the report tables and the charts so a
+// result code keeps the same colour everywhere on the page.
+const char* ldap_code_class_color(LdapCodeClass c);
+
+// The second colour of a class that is drawn hatched rather than in one flat
+// colour — the colour the class's own colour cannot carry.  Only
+// LdapCodeClass::PolicyOrClient ("either cause") is hatched, amber over violet,
+// so this returns amber for it and nullptr for every other class.  HTML has no
+// paint server outside SVG: the report's inline backgrounds and legends draw the
+// hatch as a CSS `repeating-linear-gradient` built from the same two colours.
+const char* ldap_code_class_hatch_color(LdapCodeClass c);
+
 #endif
