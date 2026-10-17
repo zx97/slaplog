@@ -23,7 +23,7 @@ ifneq ($(shell [ "$(GCC_MAJOR)" -lt 9 ] && echo old),)
 endif
 
 # Source files
-SRCS := main.cpp log_parser.cpp report.cpp
+SRCS := main.cpp log_parser.cpp report.cpp html_chart.cpp
 OBJS := $(SRCS:.cpp=.o)
 TARGET := slaplog
 
@@ -84,7 +84,8 @@ WASM_OUT  := $(WASM_DIR)/web/slaplog.js
 
 WASM_SRCS := $(WASM_DIR)/wasm_main.cpp \
              $(ROOT_DIR)log_parser.cpp \
-             $(ROOT_DIR)report.cpp
+             $(ROOT_DIR)report.cpp \
+             $(ROOT_DIR)html_chart.cpp
 
 WASM_FLAGS := -std=c++17 -O2 -Wall -Wextra \
               -I$(ROOT_DIR) -I$(WASM_INC) \

@@ -7,6 +7,23 @@ adheres to [Semantic Versioning](https://semver.org/).
 The project is distributed under the **GNU Affero General Public License
 v3.0 (AGPL-3.0)** — see the [LICENSE](LICENSE) file for the full text.
 
+## [3.8.0] - 2026-10-17
+
+### Added
+
+- **Charts in the HTML report**: two inline SVG graphs, drawn by default and
+  disabled with the new `--no-graph` option (the WASM page has a matching
+  "No charts" checkbox, unchecked by default):
+  - *Simultaneous Connections* over the analysed time range, with a marker on
+    every server start/stop event;
+  - *Resource Consumers by Bind Account*, showing each bind DN's share of the
+    cumulative operation time (falling back to the operation count when the
+    log carries no timings).
+
+  Both are interactive: a tooltip follows the mouse and reads the value from
+  the element under the cursor. The data they need is collected only when it
+  will be used, so the text, JSON and replay outputs are unchanged.
+
 ## [3.7.0] - 2026-10-17
 
 ### Added
@@ -100,6 +117,7 @@ v3.0 (AGPL-3.0)** — see the [LICENSE](LICENSE) file for the full text.
 - Initial release: OpenLDAP slapd access-log analyzer with text/HTML/JSON
   reports, parallel processing, compressed-log support, and session tracking.
 
+[3.8.0]: https://github.com/zx97/slaplog/releases/tag/v3.8.0
 [3.7.0]: https://github.com/zx97/slaplog/releases/tag/v3.7.0
 [3.6.2]: https://github.com/zx97/slaplog/releases/tag/v3.6.2
 [3.6.1]: https://github.com/zx97/slaplog/releases/tag/v3.6.1

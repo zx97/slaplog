@@ -86,6 +86,33 @@ inline LogFormat parse_log_format(const std::string& s) {
 
 std::string convert_to_rfc3339_utc(const std::string& timestamp, LogFormat fmt);
 
+/**
+ * ts_epoch_seconds - Convert a log timestamp to a monotonically increasing
+ * number of seconds, so timestamps of different textual formats can be placed
+ * on a common time axis.  Year-less syslog timestamps are mapped with a zero
+ * year, which keeps them ordered relative to each other (and is only ever used
+ * for charting, never for display of an absolute date).
+ *
+ * @param ts  A timestamp string in any supported format.
+ * @return    Seconds, or std::nullopt when the timestamp cannot be understood.
+ */
+std::optional<long long> ts_epoch_seconds(const std::string& ts);
+
+/**
+ * format_epoch_seconds - Format a value produced by ts_epoch_seconds() for
+ * display, e.g. "2026-05-27 14:49" — or "Aug 05 14:23" when the log carries
+ * no year (syslog format).
+ */
+std::string format_epoch_seconds(long long t);
+
+// Graph-data collection.  When enabled, two extra aggregates are recorded for
+// the HTML report's charts: a connection timeline (one entry per ACCEPT/CLOSED
+// event) and the per-bind-account resource totals (operation count and
+// cumulative etime).  It is opt-in because it costs memory — a few tens of
+// bytes per connection event — and only the HTML report consumes it.
+void set_collect_graph_data(bool on);
+bool collect_graph_data_enabled();
+
 // Timestamps are held with nanosecond resolution regardless of the platform's
 // system_clock resolution — nanoseconds under libstdc++ (GCC), microseconds
 // under libc++ (clang/Emscripten).  Pinning nanoseconds preserves the
@@ -321,6 +348,15 @@ inline bool top_conn_before(const TopConnRow& a, const TopConnRow& b) {
     return a.reason < b.reason;
 }
 
+// ---- ConnEvent ----
+// A single connection open/close event, used to rebuild the number of
+// simultaneous connections over time.  Only recorded when timeline collection
+// is enabled (see set_collect_timeline).
+struct ConnEvent {
+    long long t = 0;   // Timestamp expressed in seconds (see ts_epoch_seconds).
+    int delta = 0;     // +1 on ACCEPT, -1 on CLOSED.
+};
+
 // ---- Stats ----
 // Simple aggregate counters collected across the entire log set.
 struct Stats {
@@ -477,6 +513,19 @@ struct Aggregator {
         long long daemon_shutdown_count = 0; // Number of daemon shutdown events.
     } server_events;
     std::vector<std::pair<std::string, std::string>> server_event_list; // (timestamp, event_type) pairs.
+
+    // -- Per-bind-account resource totals (opt-in, see set_collect_graph_data) --
+    // Keyed by the identity returned by app_for_conn(): the bind DN when the
+    // connection authenticated, otherwise the authcid / session-tracking
+    // username.  Feeds the HTML report's "resource consumers" pie chart.
+    struct UserInfo { long long count = 0; double etime_total = 0.0; };
+    std::map<std::string, UserInfo> user_stats;
+
+    // -- Connection timeline (opt-in, see set_collect_graph_data) --
+    // One entry per ACCEPT (+1) or CLOSED (-1) event, used by the HTML
+    // report's "simultaneous connections" chart.  Kept empty unless timeline
+    // collection is enabled, so no other output format pays for it.
+    std::vector<ConnEvent> conn_timeline;
 };
 
 // ---- Function declarations ----

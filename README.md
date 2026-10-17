@@ -3,7 +3,7 @@
 
 **SPDX-License-Identifier:** AGPL-3.0-or-later  
 **License:** GNU Affero General Public License v3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)  
-**Version:** 3.7.0  
+**Version:** 3.8.0  
 **Author:** Manuel FLURY  
 **Copyright:** © 2026 Manuel FLURY. All rights reserved.
 
@@ -43,6 +43,9 @@ make
 - **Session tracking**: correlates NAT'd IPs to real clients via `[IP=... NAME=... USERNAME=...]`
 - **Section filtering**: `-s all` (default) or select specific sections
 - **Top-N analysis**: 100 slowest ops, busiest connections, most-used filters
+- **HTML charts**: inline SVG graphs — simultaneous connections over time
+  (with server start/stop markers) and resource consumers by bind account —
+  with mouse-following tooltips; disable them with `--no-graph`
 - **Server events**: start/stop/shutdown detection
 - **Restart-aware**: handles slapd connection-ID counter resets
 - **Multi-format support**: parses debug, syslog-utc, syslog-localtime, rfc3339-utc formats with auto-detection
