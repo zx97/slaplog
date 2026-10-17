@@ -153,9 +153,13 @@ make clean && make
 
 ## WebAssembly build (browser)
 
-slaplog can also be compiled to WebAssembly so that a log file can be analysed
-**entirely inside a browser tab** — drag & drop, no upload. This is an
-additional, fully separate build target; the native build is unchanged.
+slaplog can also be compiled to WebAssembly and run **entirely inside a browser
+tab** — drop one or more log files and read the report, without anything
+leaving the machine. Several files are analysed sequentially and aggregated
+into a single report, with a progress indicator. This is an additional, fully
+separate build target; the native build is unchanged.
+
+**Live build:** <https://slaplog.pages.dev/>
 
 ```bash
 make wasm                                   # -> wasm/web/slaplog.js + slaplog.wasm
@@ -164,9 +168,7 @@ python3 -m http.server -d wasm/web 8000     # then open http://localhost:8000/
 
 It needs the Emscripten SDK (`em++`); zlib and bzip2 come from Emscripten's
 ports and liblzma is cross-built automatically. See
-[`wasm/README.md`](wasm/README.md) for details, the architecture, and the two
-known display differences (sub-microsecond timestamps, tie ordering in the
-replay report).
+[`wasm/README.md`](wasm/README.md) for the architecture and the details.
 
 ## License
 
