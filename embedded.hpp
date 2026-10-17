@@ -840,6 +840,8 @@ slaplog can also be compiled to WebAssembly, so a log file can be analysed
 files can be dropped at once: they are analysed sequentially and aggregated
 into a single report, with a progress indicator.
 
+**Live build:** <https://slaplog.pages.dev/>
+
 ```bash
 make wasm                                   # -> wasm/web/slaplog.js + slaplog.wasm
 python3 -m http.server -d wasm/web 8000     # then open http://localhost:8000/

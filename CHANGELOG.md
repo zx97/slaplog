@@ -19,6 +19,7 @@ v3.0 (AGPL-3.0)** — see the [LICENSE](LICENSE) file for the full text.
   (`wasm/wasm_main.cpp`) and reuses `log_parser.cpp` / `report.cpp` as-is.
   Plain, gzip, bzip2 and xz inputs are all supported. liblzma is cross-built
   once by `wasm/build_liblzma.sh`; zlib and bzip2 come from Emscripten's ports.
+  A live build is available at <https://slaplog.pages.dev/>.
 
 ### Fixed
 

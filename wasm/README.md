@@ -4,6 +4,8 @@ Run **slaplog** entirely inside the browser. Drag an OpenLDAP `slapd` access
 log onto the page and the report is produced locally by a WebAssembly module —
 **the file never leaves your machine**.
 
+**Live build:** <https://slaplog.pages.dev/>
+
 ```mermaid
 flowchart LR
     subgraph Browser["Browser sandbox — no upload"]
