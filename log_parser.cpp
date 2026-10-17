@@ -55,6 +55,7 @@
 #include <bzlib.h>
 #include <lzma.h>
 #include <cctype>
+#include <cstdio>      // std::snprintf
 #include <cstdlib>     // std::strtod (portable float parsing; from_chars<double> needs GCC 11+)
 #include <algorithm>
 #include <set>
@@ -72,6 +73,15 @@ static std::string g_replay_path;
 static long long g_replay_ops_written = 0;
 static long long g_replay_ops_limit = 1000000;
 static long long g_replay_ops_dropped = 0;
+
+// Opt-in collection of the data the HTML report's charts need (connection
+// timeline + per-bind-account resource totals).  Off by default so that the
+// text, JSON and replay outputs — and every run that does not ask for the
+// graphs — pay nothing for it.
+static bool g_collect_graph_data = false;
+
+void set_collect_graph_data(bool on) { g_collect_graph_data = on; }
+bool collect_graph_data_enabled() { return g_collect_graph_data; }
 
 void set_log_format(LogFormat fmt) {
     g_log_format = fmt;
@@ -318,10 +328,80 @@ void update_time_bounds(Aggregator& agg, const std::string& ts) {
         }
     }
 
+// ---------------------------------------------------------------------------
+// Civil-date helpers (Howard Hinnant's algorithms), used to turn a
+// YYYYMMDDHHMMSS key into a linear count of seconds.  That lets timestamps of
+// different textual formats share a single time axis in the HTML charts.
+// ---------------------------------------------------------------------------
+static long long days_from_civil(long long y, long long m, long long d) {
+    y -= (m <= 2);
+    const long long era = (y >= 0 ? y : y - 399) / 400;
+    const long long yoe = y - era * 400;                                     // [0, 399]
+    const long long doy = (153 * (m + (m > 2 ? -3 : 9)) + 2) / 5 + d - 1;    // [0, 365]
+    const long long doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;             // [0, 146096]
+    return era * 146097 + doe - 719468;
+}
+
+static void civil_from_days(long long z, long long& y, long long& m, long long& d) {
+    z += 719468;
+    const long long era = (z >= 0 ? z : z - 146096) / 146097;
+    const long long doe = z - era * 146097;                                  // [0, 146096]
+    const long long yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365; // [0, 399]
+    y = yoe + era * 400;
+    const long long doy = doe - (365 * yoe + yoe / 4 - yoe / 100);           // [0, 365]
+    const long long mp = (5 * doy + 2) / 153;                                // [0, 11]
+    d = doy - (153 * mp + 2) / 5 + 1;                                        // [1, 31]
+    m = mp + (mp < 10 ? 3 : -9);                                             // [1, 12]
+    y += (m <= 2);
+}
+
+std::optional<long long> ts_epoch_seconds(const std::string& ts) {
+    const std::string key = ts_sort_key(ts);
+    if (key.size() != 14) return std::nullopt;   // unrecognised format
+
+    static const int widths[6] = {4, 2, 2, 2, 2, 2};   // YYYY MM DD HH MM SS
+    long long v[6] = {0, 0, 0, 0, 0, 0};
+    size_t off = 0;
+    for (int i = 0; i < 6; ++i) {
+        for (int j = 0; j < widths[i]; ++j) {
+            const char c = key[off + static_cast<size_t>(j)];
+            if (c < '0' || c > '9') return std::nullopt;
+            v[i] = v[i] * 10 + (c - '0');
+        }
+        off += static_cast<size_t>(widths[i]);
+    }
+    if (v[1] < 1 || v[1] > 12 || v[2] < 1 || v[2] > 31) return std::nullopt;
+    if (v[3] > 23 || v[4] > 59 || v[5] > 60) return std::nullopt;
+    return days_from_civil(v[0], v[1], v[2]) * 86400 + v[3] * 3600 + v[4] * 60 + v[5];
+}
+
+std::string format_epoch_seconds(long long t) {
+    long long days = t / 86400;
+    long long rem = t % 86400;
+    if (rem < 0) { rem += 86400; --days; }
+    long long y = 0, m = 0, d = 0;
+    civil_from_days(days, y, m, d);
+    const long long hh = rem / 3600, mi = (rem % 3600) / 60;
+
+    static const char* MONTHS[12] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                                     "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
+    char buf[128];
+    if (y >= 1000 && y <= 9999)
+        std::snprintf(buf, sizeof(buf), "%04d-%02d-%02d %02d:%02d",
+                      static_cast<int>(y), static_cast<int>(m), static_cast<int>(d),
+                      static_cast<int>(hh), static_cast<int>(mi));
+    else
+        // Year-less syslog timestamps use year 0 as a placeholder: show the
+        // month/day/time only, which is what the log itself displays.
+        std::snprintf(buf, sizeof(buf), "%s %02d %02d:%02d",
+                      MONTHS[(m >= 1 ? m - 1 : 0) % 12],
+                      static_cast<int>(d), static_cast<int>(hh), static_cast<int>(mi));
+    return buf;
+}
+
     // =========================================================================
     // Log Format Conversion Functions
     // =========================================================================
-
     // Month name to number mapping for syslog format
     static const std::map<std::string, int> MONTH_MAP = {
         {"Jan", 1}, {"Feb", 2}, {"Mar", 3}, {"Apr", 4},
@@ -759,6 +839,12 @@ void update_time_bounds(Aggregator& agg, const std::string& ts) {
     }
 
     void add_top_op(Aggregator& agg, const ::TopOpRow& row) {
+        // Per-bind-account resource totals, for the HTML report's pie chart.
+        if (g_collect_graph_data && !row.who.empty()) {
+            auto& u = agg.user_stats[row.who];
+            u.count += 1;
+            u.etime_total += row.etime;
+        }
         agg.top_ops.push_back(row);
         write_replay_row(row);
         if (agg.top_ops.size() > 100) {
@@ -1407,6 +1493,9 @@ void update_aggregator(Aggregator& agg, const Event& ev,
         agg.stats.fd_open++;
         agg.stats.conn_count++;
         agg.active_connections++;
+        if (g_collect_graph_data) {
+            if (auto t = ts_epoch_seconds(ev.ts)) agg.conn_timeline.push_back({*t, +1});
+        }
         if (agg.active_connections > agg.peak_active_connections) {
             agg.peak_active_connections = agg.active_connections;
         }
@@ -1431,6 +1520,9 @@ void update_aggregator(Aggregator& agg, const Event& ev,
     // (e.g. "connection lost") is passed through to finalize_connection().
     if (ev.kind == "CLOSED") {
         agg.stats.fd_close++;
+        if (g_collect_graph_data) {
+            if (auto t = ts_epoch_seconds(ev.ts)) agg.conn_timeline.push_back({*t, -1});
+        }
         if (agg.active_connections > 0) agg.active_connections--;
         if (cid >= 0) finalize_connection(agg, cid, ev.reason);
         return;
@@ -2267,6 +2359,17 @@ void merge_aggregators(Aggregator& dest, const Aggregator& src) {
         std::partial_sort(dest.top_conns.begin(), dest.top_conns.begin() + 100, dest.top_conns.end(),
             top_conn_before);
         dest.top_conns.resize(100);
+    }
+
+    // --- Chart data (opt-in; empty unless graphs were requested) ---
+    if (!src.conn_timeline.empty()) {
+        dest.conn_timeline.insert(dest.conn_timeline.end(),
+                                  src.conn_timeline.begin(), src.conn_timeline.end());
+    }
+    for (const auto& [name, ui] : src.user_stats) {
+        auto& d = dest.user_stats[name];
+        d.count += ui.count;
+        d.etime_total += ui.etime_total;
     }
 
     // --- Active / peak connections (take the higher of the two) ---

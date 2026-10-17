@@ -304,6 +304,7 @@ static void usage(const char* prog) {
     std::cerr << "  --replay-limit N           Max ops stored for replay (default: 1000000, 0=unlimited)\n";
     std::cerr << "  --unknown-lines FILE       Write unknown lines to FILE\n";
     std::cerr << "  --unknown-lines-only FILE  Like --unknown-lines, no final report\n";
+    std::cerr << "  --no-graph                 Omit the charts from the html report\n";
     std::cerr << "  -D, --documentation        Print documentation to stdout\n";
     std::cerr << "  -l, --licence              Print license to stdout\n";
     std::cerr << "  -d, --debug                Enable debug mode with verbose traces\n";
@@ -357,6 +358,7 @@ int main(int argc, char* argv[]) {
     bool show_licence = false;
     bool debug = false;
     bool quiet = false;
+    bool no_graph = false;
     int max_files = 0;
     int mtime_days = 0;
     int jobs = 0;
@@ -387,6 +389,8 @@ int main(int argc, char* argv[]) {
             recursive = true;
         } else if (arg == "-q" || arg == "--quiet") {
             quiet = true;
+        } else if (arg == "--no-graph") {
+            no_graph = true;
         } else if ((arg == "-n" || arg == "--max-files") && i + 1 < argc) {
             // Keep only the N most recently modified files in a directory scan.
             try {
@@ -484,6 +488,11 @@ int main(int argc, char* argv[]) {
     if (output_format == "replay") {
         color_mode = 0;
     }
+
+    // The HTML report's charts need extra data collected while parsing (a
+    // connection timeline and per-bind-account totals).  Skip that work
+    // entirely unless the charts will actually be drawn.
+    set_collect_graph_data(output_format == "html" && !no_graph);
 
     // ------------------------------------------------------------------
     // Generation-only flags: --documentation / --licence.

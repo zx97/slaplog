@@ -61,6 +61,9 @@ The form mirrors the CLI options. Two details worth knowing:
   `html`, `json` and `replay` reports always contain every section. `all` is
   mutually exclusive with the individual sections.
 - The input log format is always auto-detected, line by line.
+- The html report includes two SVG charts (simultaneous connections over time,
+  and resource consumers per bind account). They are drawn by default; the
+  **No charts** checkbox turns them off, mirroring `--no-graph`.
 
 ## Deploy
 

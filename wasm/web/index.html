@@ -192,6 +192,11 @@
       Input log format is always auto-detected, per line — debug, syslog-utc,
       syslog-localtime, rfc3339-utc, ol26, rfc3339 and syslog, mixed freely.
     </div>
+    <div class="checks" style="margin-top:12px">
+      <label class="check" title="Only affects the html report">
+        <input type="checkbox" id="nograph"> No charts (html report)
+      </label>
+    </div>
   </fieldset>
 
   <!-- Sections only affect the text report, so this panel is hidden for other formats. -->
@@ -470,6 +475,7 @@
       const secs = selectedSections();
       if (!(secs.length === 1 && secs[0] === "all")) args.push("-s", secs.join(","));
     }
+    if (out === "html" && $("nograph").checked) args.push("--no-graph");
     if (out === "replay") {
       args.push("--replay-separator", $("sep").value);
       const lim = parseInt($("limit").value, 10);
@@ -616,7 +622,9 @@
 
     if (fmt === "html") {
       const frame = document.createElement("iframe");
-      frame.setAttribute("sandbox", "allow-same-origin");
+      // allow-scripts only: the report's inline tooltip script needs to run,
+      // but it must not be able to reach the page that embeds it.
+      frame.setAttribute("sandbox", "allow-scripts");
       frame.srcdoc = text;
       panelEl.appendChild(frame);
       addDownload(base + ".html", text, "text/html");

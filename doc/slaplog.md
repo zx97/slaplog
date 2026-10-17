@@ -2,7 +2,7 @@
 
 **SPDX-License-Identifier:** AGPL-3.0-or-later  
 **License:** GNU Affero General Public License v3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)  
-**Version:** 3.7.0  
+**Version:** 3.8.0  
 **Author:** Manuel FLURY  
 **Copyright:** © 2026 Manuel FLURY. All rights reserved.
 
@@ -218,6 +218,7 @@ slaplog --unknown-lines unknown.txt /var/log/slapd/access.log
 | `--replay-limit N` | Max operations written to the replay temp file (default: `1000000`, `0` = unlimited). Acts as a safety cap; a warning is printed when ops are dropped. |
 | `--unknown-lines FILE` | Write unrecognised lines to FILE, then generate the full report |
 | `--unknown-lines-only FILE` | Like `--unknown-lines` but skip the report |
+| `--no-graph` | Omit the charts from the `html` report (they are drawn by default) |
 | `-d, --debug` | Print debug information (file count, parsing details, per-file traces) |
 | `-D, --documentation` | Print full documentation to stdout |
 | `-h, --help` | Show help message |
@@ -334,6 +335,13 @@ Standalone HTML page with embedded CSS featuring:
 - Server events with green (start) / red (stop) left border indicators
 - Color-coded etime values
 - Responsive layout (`@media` query for mobile)
+- **Inline SVG charts** — drawn by default, disable with `--no-graph`:
+  - *Simultaneous Connections*: how many connections were open across the
+    analysed time range, with a marker on every server start/stop event;
+  - *Resource Consumers by Bind Account*: share of the cumulative operation
+    time (etime) per bind DN.
+  Both are interactive — a tooltip follows the mouse and shows the exact value
+  under the cursor.
 
 ### JSON (`-o json`)
 

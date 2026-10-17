@@ -30,6 +30,7 @@
 //   4. print_json_report   – structured JSON with the nlohmann library.
 
 #include "report.hpp"
+#include "html_chart.hpp"
 #include "log_parser.hpp"
 #include "utils.hpp"
 #include <iostream>
@@ -903,6 +904,10 @@ void print_html_report(const Aggregator& agg, double duration, bool /*compact*/,
     print_stat("Read operations", fmt_int(agg.read_write_stats.read));
     print_stat("Write operations", fmt_int(agg.read_write_stats.write));
     std::cout << "</table>\n";
+
+    // Charts — placeholder-free: they print nothing unless graph data was
+    // collected (i.e. unless the HTML report was asked for, without --no-graph).
+    print_html_charts(agg);
 
     // Operation counts
     std::cout << "<h2>Operation Counts</h2>\n";
