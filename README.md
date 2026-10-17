@@ -3,7 +3,7 @@
 
 **SPDX-License-Identifier:** AGPL-3.0-or-later  
 **License:** GNU Affero General Public License v3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)  
-**Version:** 3.6.2  
+**Version:** 3.7.0  
 **Author:** Manuel FLURY  
 **Copyright:** © 2026 Manuel FLURY. All rights reserved.
 
@@ -150,6 +150,23 @@ Then build:
 ```bash
 make clean && make
 ```
+
+## WebAssembly build (browser)
+
+slaplog can also be compiled to WebAssembly so that a log file can be analysed
+**entirely inside a browser tab** — drag & drop, no upload. This is an
+additional, fully separate build target; the native build is unchanged.
+
+```bash
+make wasm                                   # -> wasm/web/slaplog.js + slaplog.wasm
+python3 -m http.server -d wasm/web 8000     # then open http://localhost:8000/
+```
+
+It needs the Emscripten SDK (`em++`); zlib and bzip2 come from Emscripten's
+ports and liblzma is cross-built automatically. See
+[`wasm/README.md`](wasm/README.md) for details, the architecture, and the two
+known display differences (sub-microsecond timestamps, tie ordering in the
+replay report).
 
 ## License
 

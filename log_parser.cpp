@@ -331,7 +331,7 @@ void update_time_bounds(Aggregator& agg, const std::string& ts) {
 
     // Parse syslog timestamp (e.g., "Aug  5 14:23:01") to time_t
     // Assumes current year if not specified
-    static std::chrono::system_clock::time_point parse_syslog_timestamp(const std::string& ts, bool is_utc) {
+    static SystemTimePoint parse_syslog_timestamp(const std::string& ts, bool is_utc) {
         std::tm tm = {};
         char mon[4] = {};
         int day = 0, hour = 0, min = 0, sec = 0;
@@ -368,7 +368,7 @@ void update_time_bounds(Aggregator& agg, const std::string& ts) {
     }
 
     // Parse debug format hex timestamp (e.g., "411d2b6a.1f4b2c3a")
-    static std::chrono::system_clock::time_point parse_debug_timestamp(const std::string& ts) {
+    static SystemTimePoint parse_debug_timestamp(const std::string& ts) {
         size_t dot_pos = ts.find('.');
         if (dot_pos == std::string::npos) return {};
 
@@ -397,14 +397,16 @@ void update_time_bounds(Aggregator& agg, const std::string& ts) {
             nsec = static_cast<long long>(frac) * 1000;
         }
 
-        auto tp = std::chrono::system_clock::from_time_t(static_cast<std::time_t>(sec));
+        SystemTimePoint tp =
+            std::chrono::system_clock::from_time_t(static_cast<std::time_t>(sec));
         tp += std::chrono::nanoseconds(nsec);
         return tp;
     }
 
     // Convert time_point to RFC3339 UTC string
-    static std::string format_rfc3339_utc(std::chrono::system_clock::time_point tp) {
-        std::time_t t = std::chrono::system_clock::to_time_t(tp);
+    static std::string format_rfc3339_utc(SystemTimePoint tp) {
+        std::time_t t = std::chrono::system_clock::to_time_t(
+            std::chrono::time_point_cast<std::chrono::system_clock::duration>(tp));
         std::tm* tm = std::gmtime(&t);
 
         // Get fractional seconds
@@ -423,7 +425,7 @@ void update_time_bounds(Aggregator& agg, const std::string& ts) {
     }
 
     std::string convert_to_rfc3339_utc(const std::string& timestamp, LogFormat fmt) {
-        std::chrono::system_clock::time_point tp;
+        SystemTimePoint tp;
 
         switch (fmt) {
             case LogFormat::DEBUG: {
@@ -479,11 +481,11 @@ void update_time_bounds(Aggregator& agg, const std::string& ts) {
                 return "";
         }
 
-        if (tp == std::chrono::system_clock::time_point{}) return "";
+        if (tp == SystemTimePoint{}) return "";
         return format_rfc3339_utc(tp);
     }
 
-    std::chrono::system_clock::time_point parse_any_timestamp(const std::string& timestamp) {
+    SystemTimePoint parse_any_timestamp(const std::string& timestamp) {
         if (timestamp.empty()) return {};
 
         // Try RFC3339 format first (most specific)
@@ -513,20 +515,22 @@ void update_time_bounds(Aggregator& agg, const std::string& ts) {
         return {};
     }
 
-    std::string format_timestamp(std::chrono::system_clock::time_point tp, const std::string& format) {
-        if (tp == std::chrono::system_clock::time_point{}) return "";
+    std::string format_timestamp(SystemTimePoint tp, const std::string& format) {
+        if (tp == SystemTimePoint{}) return "";
 
         if (format == "epoch") {
             auto epoch = std::chrono::duration_cast<std::chrono::seconds>(tp.time_since_epoch()).count();
             return std::to_string(epoch);
         } else if (format == "iso8601") {
-            auto in_time_t = std::chrono::system_clock::to_time_t(tp);
+            auto in_time_t = std::chrono::system_clock::to_time_t(
+                std::chrono::time_point_cast<std::chrono::system_clock::duration>(tp));
             std::tm* tm = std::localtime(&in_time_t);
             char buf[32];
             std::strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%S", tm);
             return buf;
         } else if (format == "syslog") {
-            auto in_time_t = std::chrono::system_clock::to_time_t(tp);
+            auto in_time_t = std::chrono::system_clock::to_time_t(
+                std::chrono::time_point_cast<std::chrono::system_clock::duration>(tp));
             std::tm* tm = std::localtime(&in_time_t);
             char buf[32];
             std::strftime(buf, sizeof(buf), "%b %d %H:%M:%S", tm);
@@ -758,8 +762,7 @@ void update_time_bounds(Aggregator& agg, const std::string& ts) {
         agg.top_ops.push_back(row);
         write_replay_row(row);
         if (agg.top_ops.size() > 100) {
-            std::sort(agg.top_ops.begin(), agg.top_ops.end(),
-                    [](const ::TopOpRow& a, const ::TopOpRow& b) { return a.etime > b.etime; });
+            std::sort(agg.top_ops.begin(), agg.top_ops.end(), top_op_before);
             agg.top_ops.resize(100);
         }
     }
@@ -799,8 +802,7 @@ void update_time_bounds(Aggregator& agg, const std::string& ts) {
         long long ops_cnt = conn.completed_ops + conn.ops.size();
         agg.top_conns.push_back({conn.total_etime, cid, who, conn.src, ops_cnt, conn.binddn, reason});
         if (agg.top_conns.size() > 100) {
-            std::sort(agg.top_conns.begin(), agg.top_conns.end(),
-                    [](const auto& a, const auto& b) { return a.total_etime > b.total_etime; });
+            std::sort(agg.top_conns.begin(), agg.top_conns.end(), top_conn_before);
             agg.top_conns.resize(100);
         }
 
@@ -2254,7 +2256,7 @@ void merge_aggregators(Aggregator& dest, const Aggregator& src) {
     dest.top_ops.insert(dest.top_ops.end(), src.top_ops.begin(), src.top_ops.end());
     if (dest.top_ops.size() > 100) {
         std::partial_sort(dest.top_ops.begin(), dest.top_ops.begin() + 100, dest.top_ops.end(),
-            [](const TopOpRow& a, const TopOpRow& b) { return a.etime > b.etime; });
+            top_op_before);
         dest.top_ops.resize(100);
     }
 
@@ -2263,7 +2265,7 @@ void merge_aggregators(Aggregator& dest, const Aggregator& src) {
     dest.top_conns.insert(dest.top_conns.end(), src.top_conns.begin(), src.top_conns.end());
     if (dest.top_conns.size() > 100) {
         std::partial_sort(dest.top_conns.begin(), dest.top_conns.begin() + 100, dest.top_conns.end(),
-            [](const TopConnRow& a, const TopConnRow& b) { return a.total_etime > b.total_etime; });
+            top_conn_before);
         dest.top_conns.resize(100);
     }
 

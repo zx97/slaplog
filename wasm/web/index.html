@@ -1,0 +1,658 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>slaplog — OpenLDAP Log Analyzer (WebAssembly)</title>
+<style>
+  :root {
+    --bg: #0f1419;
+    --panel: #161b22;
+    --panel-2: #1c2430;
+    --border: #2d3748;
+    --fg: #d7dde5;
+    --muted: #8b98a8;
+    --accent: #4aa3df;
+    --accent-2: #2f81f7;
+    --ok: #3fb950;
+    --warn: #d29922;
+    --err: #f85149;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg);
+    font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  header {
+    padding: 20px 2vw; border-bottom: 1px solid var(--border);
+    background: linear-gradient(180deg, #12171e, #0f1419);
+  }
+  header .titleline { display: flex; flex-wrap: wrap; align-items: baseline; gap: 14px; }
+  header h1 { margin: 0; font-size: 20px; letter-spacing: .2px; }
+  header h1 span { color: var(--accent); }
+  .badge {
+    font-size: 12px; padding: 3px 9px; border-radius: 999px;
+    border: 1px solid #1f6f3f; background: #0d2818; color: var(--ok);
+  }
+  header .tagline { color: var(--muted); font-size: 13px; margin-top: 5px; }
+  header .tagline code { color: var(--accent); }
+
+  /* Width is a percentage of the window, not a fixed cap. */
+  main { width: 96%; margin: 0 auto; padding: 24px 0 80px; }
+
+  #drop {
+    border: 2px dashed var(--border); border-radius: 14px;
+    padding: 40px 22px; text-align: center; cursor: pointer;
+    background: var(--panel); transition: .15s; margin-bottom: 20px;
+  }
+  #drop:hover, #drop.hover { border-color: var(--accent); background: #17202b; }
+  #drop.done { border-color: var(--ok); border-style: solid; }
+  #drop .big { font-size: 17px; font-weight: 600; margin-bottom: 6px; }
+  #drop .hint { color: var(--muted); font-size: 13px; }
+  #filelist { margin-top: 12px; display: flex; flex-direction: column; gap: 3px; }
+  #filelist .f {
+    font-family: var(--mono); font-size: 12.5px; color: var(--accent);
+    display: flex; justify-content: space-between; gap: 16px; text-align: left;
+  }
+  #filelist .f .sz { color: var(--muted); }
+  #filelist .f.tot { color: var(--fg); border-top: 1px dashed var(--border); padding-top: 5px; margin-top: 4px; font-weight: 600; }
+
+  fieldset {
+    border: 1px solid var(--border); border-radius: 12px; background: var(--panel);
+    padding: 16px 18px 18px; margin: 0 0 18px;
+  }
+  legend { padding: 0 8px; color: var(--accent); font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: .8px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(215px, 1fr)); gap: 14px; }
+  .field { display: flex; flex-direction: column; gap: 5px; max-width: 420px; }
+  .field label { font-size: 12.5px; color: var(--muted); }
+  select, input[type=number] {
+    background: var(--panel-2); color: var(--fg); border: 1px solid var(--border);
+    border-radius: 8px; padding: 8px 10px; font: inherit; font-size: 13.5px; width: 100%;
+  }
+  select:focus, input:focus { outline: none; border-color: var(--accent-2); }
+  .auto-note { color: var(--muted); font-size: 12px; margin-top: 6px; }
+  .checks { display: flex; flex-wrap: wrap; gap: 18px; align-items: center; }
+  .check { display: flex; align-items: center; gap: 7px; font-size: 13.5px; cursor: pointer; }
+  .check input { accent-color: var(--accent-2); width: 16px; height: 16px; }
+  .preset { background: transparent; border: 1px solid var(--border); color: var(--muted);
+            border-radius: 7px; padding: 4px 10px; cursor: pointer; font-size: 12px; }
+  .preset:hover { border-color: var(--accent); color: var(--accent); }
+
+  #section-boxes {
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
+    gap: 8px 18px; margin-top: 6px;
+  }
+  #section-boxes .check { font-size: 13px; }
+  #section-boxes .check.all { color: var(--accent); font-weight: 600; grid-column: 1 / -1; }
+  #section-boxes.all-active .check:not(.all) { opacity: .45; }
+  .sections-hint { color: var(--muted); font-size: 12px; margin-top: 8px; }
+
+  /* Action bar: the run button and the report download share one table row. */
+  table.actions { border-collapse: separate; border-spacing: 12px 0; margin: 4px 0 14px; }
+  table.actions td { vertical-align: middle; padding: 0; }
+  button.run {
+    background: var(--accent-2); color: #fff; border: 0; border-radius: 9px;
+    padding: 11px 22px; font: inherit; font-weight: 600; cursor: pointer; white-space: nowrap;
+  }
+  button.run:disabled { background: #253041; color: var(--muted); cursor: not-allowed; }
+  #download a {
+    display: inline-block; background: var(--panel-2); border: 1px solid var(--border);
+    color: var(--accent); text-decoration: none; border-radius: 9px; padding: 10px 18px;
+    font-size: 13.5px; font-weight: 600; white-space: nowrap;
+  }
+  #download a:hover { border-color: var(--accent); }
+  .status { color: var(--muted); font-size: 13.5px; }
+  .status.err { color: var(--err); }
+  .status.ok { color: var(--ok); }
+
+  #progress { display: none; margin: 0 0 20px; }
+  #progress.shown { display: block; }
+  #progress .bar {
+    height: 14px; background: var(--panel-2); border: 1px solid var(--border);
+    border-radius: 999px; overflow: hidden;
+  }
+  #progress .fill {
+    height: 100%; width: 0%; border-radius: 999px;
+    background: linear-gradient(90deg, var(--accent-2), var(--accent));
+    transition: width .15s linear;
+  }
+  #progress .ptext {
+    display: flex; justify-content: space-between; gap: 16px;
+    font-size: 12.5px; color: var(--muted); margin-top: 6px;
+  }
+  #progress .ptext .name {
+    font-family: var(--mono); color: var(--fg);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  #progress .ptext .stats { white-space: nowrap; }
+
+  #result { display: none; }
+  #result h2 { font-size: 15px; margin: 0 0 10px; }
+  .panel { border: 1px solid var(--border); border-radius: 12px; overflow: hidden; background: var(--panel); }
+  pre {
+    margin: 0; padding: 16px; overflow: auto; max-height: 74vh;
+    font-family: var(--mono); font-size: 12.5px; line-height: 1.45; white-space: pre;
+  }
+  iframe { width: 100%; height: 78vh; border: 0; background: #fff; display: block; }
+  .log { font-family: var(--mono); font-size: 12px; color: var(--warn); white-space: pre-wrap; margin-top: 12px; }
+  footer { color: var(--muted); font-size: 12px; text-align: center; padding: 20px; border-top: 1px solid var(--border); }
+  footer a { color: var(--accent); }
+  .privacy { color: var(--muted); font-size: 12.5px; margin-top: 10px; }
+</style>
+</head>
+<body>
+<header>
+  <div class="titleline">
+    <h1>slaplog <span>WebAssembly</span></h1>
+    <span class="badge">100% local — nothing uploaded</span>
+  </div>
+  <div class="tagline">
+    OpenLDAP <code>slapd</code> access-log analyzer — parses, aggregates and reports
+    BIND / SRCH / write operations, results and errors, search bases, filters,
+    attributes, sessions, replication CSN events and operation timings.
+    One or more log files, in text (ANSI), HTML, JSON or jMeter/LoadRunner replay form.
+  </div>
+</header>
+
+<main>
+  <div id="drop" tabindex="0" role="button" aria-label="Drop one or more log files here">
+    <div class="big">Drop OpenLDAP <code>slapd</code> access logs here</div>
+    <div class="hint">
+      or click to choose files — several files are allowed and analysed
+      sequentially into a single report. Plain, .gz, .bz2 and .xz are all supported.
+    </div>
+    <div id="filelist"></div>
+  </div>
+
+  <fieldset>
+    <legend>Output</legend>
+    <div class="grid">
+      <div class="field">
+        <label for="output">Format</label>
+        <select id="output">
+          <option value="html" selected>html — standalone report</option>
+          <option value="text">text — plain</option>
+          <option value="json">json — machine readable</option>
+          <option value="replay">replay — jMeter / LoadRunner</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="dateformat">Output date format</label>
+        <select id="dateformat">
+          <option value="rfc3339" selected>rfc3339</option>
+          <option value="iso8601">iso8601</option>
+          <option value="syslog">syslog</option>
+          <option value="epoch">epoch</option>
+          <option value="preserve">preserve</option>
+        </select>
+      </div>
+    </div>
+    <div class="auto-note">
+      Input log format is always auto-detected, per line — debug, syslog-utc,
+      syslog-localtime, rfc3339-utc, ol26, rfc3339 and syslog, mixed freely.
+    </div>
+  </fieldset>
+
+  <!-- Sections only affect the text report, so this panel is hidden for other formats. -->
+  <fieldset id="sections-fields">
+    <legend>Sections &amp; detail</legend>
+    <div class="checks" style="margin-bottom:12px">
+      <label class="check"><input type="checkbox" id="compact"> Compact (top 5)</label>
+      <button class="preset" type="button" data-preset="all">all</button>
+      <button class="preset" type="button" data-preset="core">stats + ops + errors</button>
+      <button class="preset" type="button" data-preset="perf">performance</button>
+      <button class="preset" type="button" data-preset="diag">diagnostics</button>
+    </div>
+    <div id="section-boxes"></div>
+    <div class="sections-hint">
+      <strong>all</strong> includes everything — selecting any individual section removes <strong>all</strong>.
+    </div>
+  </fieldset>
+
+  <!-- Shown only when the output format is "replay". -->
+  <fieldset id="replay-fields" style="display:none">
+    <legend>Replay options</legend>
+    <div class="grid">
+      <div class="field">
+        <label for="sep">Separator</label>
+        <select id="sep">
+          <option value="|" selected>| (pipe)</option>
+          <option value="tab">tab</option>
+          <option value="comma">, (CSV)</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="limit">Max ops stored (0 = unlimited)</label>
+        <input type="number" id="limit" value="1000000" min="0" step="1000">
+      </div>
+    </div>
+  </fieldset>
+
+  <table class="actions">
+    <tr>
+      <td><button class="run" id="run" disabled>Analyze locally</button></td>
+      <td><button class="preset" id="clear" type="button" style="display:none">clear file list</button></td>
+      <td id="download"></td>
+      <td><span class="status" id="status">Loading WebAssembly module…</span></td>
+    </tr>
+  </table>
+
+  <div id="progress">
+    <div class="bar"><div class="fill" id="progress-fill"></div></div>
+    <div class="ptext">
+      <span class="name" id="progress-name"></span>
+      <span class="stats" id="progress-stats"></span>
+    </div>
+  </div>
+
+  <div class="privacy">
+    🔒 Your log files are read by your browser into memory and analyzed by the WebAssembly
+    module on this machine. Nothing is sent to any server.
+  </div>
+
+  <section id="result">
+    <h2 id="result-title">Result</h2>
+    <div class="panel" id="panel"></div>
+  </section>
+</main>
+
+<footer>
+  slaplog — OpenLDAP Log Analysis Tool · AGPL-3.0-or-later · © 2026 Manuel FLURY ·
+  <a href="https://github.com/zx97/slaplog" target="_blank" rel="noopener">source</a>
+</footer>
+
+<script src="slaplog.js"></script>
+<script>
+(function () {
+  "use strict";
+
+  const $ = (id) => document.getElementById(id);
+  const dropEl = $("drop"), filelistEl = $("filelist"), runBtn = $("run"),
+        clearBtn = $("clear"), statusEl = $("status"), resultEl = $("result"),
+        panelEl = $("panel"), titleEl = $("result-title"), dlEl = $("download"),
+        sectionBoxes = $("section-boxes"), outputEl = $("output"),
+        progressEl = $("progress"), fillEl = $("progress-fill"),
+        pnameEl = $("progress-name"), pstatsEl = $("progress-stats");
+
+  let module = null;         // the Emscripten module instance
+  let files = [];            // the user's selected File objects
+  let captured = [];         // stdout lines captured during a run
+
+  // Plain logs are fed to the parser in chunks of this size so the progress
+  // indicator can advance and the tab stays responsive.  Compressed logs are
+  // handed over whole (they must be decompressed first).
+  const CHUNK = 4 * 1024 * 1024;
+
+  // Report sections that print_text_report() actually honours.
+  const SECTIONS = [
+    ["stats",          "Statistics"],
+    ["ops",            "Operation counts"],
+    ["errors",         "Errors"],
+    ["errors_per_app", "Errors per application"],
+    ["bases",          "Search bases"],
+    ["filters",        "Filters"],
+    ["filters_per_app","Filters per application"],
+    ["attrs",          "Attributes"],
+    ["apps",           "Applications"],
+    ["extops",         "Extended operations"],
+    ["qmark",          "“?” (unindexed) filters"],
+    ["csn",            "CSN events"],
+    ["index",          "Indexing diagnostics"],
+    ["sessions",       "Sessions"],
+    ["topops",         "Top operations"],
+    ["topconns",       "Top connections"],
+  ];
+
+  const PRESETS = {
+    all:  ["all"],
+    core: ["stats", "ops", "errors"],
+    perf: ["topops", "topconns", "bases", "filters"],
+    diag: ["sessions", "index", "qmark", "errors_per_app"],
+  };
+
+  // ------------------------------------------------------------------
+  // Section checkboxes: "all" is mutually exclusive with every other box.
+  // ------------------------------------------------------------------
+  function buildSectionBoxes() {
+    const allLabel = document.createElement("label");
+    allLabel.className = "check all";
+    allLabel.innerHTML = '<input type="checkbox" id="sec-all" checked> all';
+    sectionBoxes.appendChild(allLabel);
+    for (const [key, label] of SECTIONS) {
+      const l = document.createElement("label");
+      l.className = "check";
+      l.innerHTML = `<input type="checkbox" data-section="${key}"> ${label}`;
+      sectionBoxes.appendChild(l);
+    }
+  }
+  const allBox = () => $("sec-all");
+  const otherBoxes = () => Array.from(sectionBoxes.querySelectorAll('input[data-section]'));
+  const syncAllClass = () =>
+    sectionBoxes.classList.toggle("all-active", allBox().checked);
+
+  function onSectionChange(ev) {
+    const t = ev.target;
+    if (t.id === "sec-all" && t.checked) {
+      otherBoxes().forEach((b) => { b.checked = false; });
+    } else if (t.dataset && t.dataset.section && t.checked) {
+      allBox().checked = false;
+    }
+    if (!allBox().checked && !otherBoxes().some((b) => b.checked)) allBox().checked = true;
+    syncAllClass();
+  }
+  function setSections(list) {
+    const set = new Set(list);
+    allBox().checked = set.has("all");
+    otherBoxes().forEach((b) => { b.checked = set.has(b.dataset.section); });
+    if (!allBox().checked && !otherBoxes().some((b) => b.checked)) allBox().checked = true;
+    syncAllClass();
+  }
+  buildSectionBoxes();
+  sectionBoxes.addEventListener("change", onSectionChange);
+  document.querySelectorAll(".preset[data-preset]").forEach((btn) => {
+    btn.addEventListener("click", () => setSections(PRESETS[btn.dataset.preset] || ["all"]));
+  });
+  syncAllClass();
+
+  // ------------------------------------------------------------------
+  // Format-dependent panels:
+  //   - replay options appear only for the replay format;
+  //   - sections & compact appear only for the text format (the html, json
+  //     and replay reports always contain every section).
+  // ------------------------------------------------------------------
+  function syncFormatPanels() {
+    const fmt = outputEl.value;
+    $("replay-fields").style.display = (fmt === "replay") ? "" : "none";
+    $("sections-fields").style.display = (fmt === "text") ? "" : "none";
+  }
+  outputEl.addEventListener("change", syncFormatPanels);
+  syncFormatPanels();
+
+  // ------------------------------------------------------------------
+  // Module bootstrap.  print/printErr feed our capture buffer so the report
+  // the C++ code writes to stdout can be displayed in the page.
+  // ------------------------------------------------------------------
+  if (typeof createSlaplog === "function") {
+    createSlaplog({
+      print:    (line) => captured.push(line),
+      printErr: (line) => captured.push(line),
+      locateFile: (path) => path,
+    }).then((m) => {
+      module = m;
+      runBtn.disabled = files.length === 0;
+      statusEl.textContent = files.length ? "Ready. Click “Analyze locally”."
+                                          : "Ready. Drop one or more log files to begin.";
+      statusEl.className = "status";
+      try { if (!m.FS.analyzePath("/work").exists) m.FS.mkdir("/work"); } catch (e) { /* exists */ }
+    }).catch((err) => {
+      statusEl.textContent = "Failed to load slaplog.wasm: " + err;
+      statusEl.className = "status err";
+    });
+  } else {
+    statusEl.textContent = "slaplog.js not found — run “make wasm” first.";
+    statusEl.className = "status err";
+  }
+
+  // ------------------------------------------------------------------
+  // File selection (drag & drop, or picker).  Files are sorted by name so the
+  // processing order — and therefore any order-dependent metric — is stable
+  // and matches the native tool.
+  // ------------------------------------------------------------------
+  function setFiles(list) {
+    files = list.slice().sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+    renderFileList();
+    if (module) runBtn.disabled = files.length === 0;
+    statusEl.textContent = files.length
+      ? `${files.length} file(s) ready. Click “Analyze locally”.`
+      : "Ready. Drop one or more log files to begin.";
+    statusEl.className = "status";
+  }
+
+  function renderFileList() {
+    filelistEl.innerHTML = "";
+    if (!files.length) { dropEl.classList.remove("done"); clearBtn.style.display = "none"; return; }
+    dropEl.classList.add("done");
+    clearBtn.style.display = "";
+    const total = files.reduce((a, f) => a + f.size, 0);
+    for (const f of files) {
+      const d = document.createElement("div");
+      d.className = "f";
+      d.innerHTML = `<span>${escapeHtml(f.name)}</span><span class="sz">${fmtSize(f.size)}</span>`;
+      filelistEl.appendChild(d);
+    }
+    if (files.length > 1) {
+      const t = document.createElement("div");
+      t.className = "f tot";
+      t.innerHTML = `<span>${files.length} files</span><span class="sz">${fmtSize(total)}</span>`;
+      filelistEl.appendChild(t);
+    }
+  }
+
+  setFiles([]);
+  clearBtn.addEventListener("click", (e) => { e.stopPropagation(); setFiles([]); });
+
+  dropEl.addEventListener("click", () => {
+    const inp = document.createElement("input");
+    inp.type = "file";
+    inp.multiple = true;
+    inp.onchange = () => setFiles(Array.from(inp.files));
+    inp.click();
+  });
+  dropEl.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" || e.key === " ") { e.preventDefault(); dropEl.click(); }
+  });
+  ["dragenter", "dragover"].forEach((ev) =>
+    dropEl.addEventListener(ev, (e) => { e.preventDefault(); dropEl.classList.add("hover"); }));
+  ["dragleave", "drop"].forEach((ev) =>
+    dropEl.addEventListener(ev, (e) => { e.preventDefault(); dropEl.classList.remove("hover"); }));
+  dropEl.addEventListener("drop", (e) => {
+    const dropped = e.dataTransfer && e.dataTransfer.files;
+    if (dropped && dropped.length) setFiles(files.concat(Array.from(dropped)));
+  });
+
+  // ------------------------------------------------------------------
+  // Argument string handed to slaplog_begin().  No positional input: files
+  // are added through the session API so progress can be reported.
+  // ------------------------------------------------------------------
+  function selectedSections() {
+    if (allBox().checked) return ["all"];
+    return otherBoxes().filter((b) => b.checked).map((b) => b.dataset.section);
+  }
+
+  function buildArgs() {
+    const out = outputEl.value;
+    const args = ["-o", out, "-q"];
+    const df = $("dateformat").value;
+    if (df && df !== "rfc3339") args.push("--output-date-format", df);
+    if (out === "text") {
+      if ($("compact").checked) args.push("-c");
+      const secs = selectedSections();
+      if (!(secs.length === 1 && secs[0] === "all")) args.push("-s", secs.join(","));
+    }
+    if (out === "replay") {
+      args.push("--replay-separator", $("sep").value);
+      const lim = parseInt($("limit").value, 10);
+      if (!isNaN(lim)) args.push("--replay-limit", String(lim));
+    }
+    return args.join(" ");
+  }
+
+  // ------------------------------------------------------------------
+  // Helpers
+  // ------------------------------------------------------------------
+  // Compression is detected from the magic bytes, exactly like the C++
+  // process_file() does (zlib / bzip2 / liblzma are linked into the module).
+  function compressionOf(b) {
+    if (b.length >= 2 && b[0] === 0x1f && b[1] === 0x8b) return "gz";
+    if (b.length >= 4 && b[0] === 0x42 && b[1] === 0x5a && b[2] === 0x68 &&
+        b[3] >= 0x31 && b[3] <= 0x39) return "bz2";
+    if (b.length >= 6 && b[0] === 0xfd && b[1] === 0x37 && b[2] === 0x7a &&
+        b[3] === 0x58 && b[4] === 0x5a && b[5] === 0x00) return "xz";
+    return null;
+  }
+
+  // Split at line boundaries only, so no log line is ever cut in two.
+  function* chunksByLine(bytes, target) {
+    let from = 0;
+    while (from < bytes.length) {
+      let to = Math.min(from + target, bytes.length);
+      if (to < bytes.length) {
+        let i = to;
+        while (i < bytes.length && bytes[i] !== 0x0a) i++;
+        to = Math.min(i + 1, bytes.length);
+      }
+      yield bytes.subarray(from, to);
+      from = to;
+    }
+  }
+
+  const yieldToUI = () => new Promise((r) => setTimeout(r, 0));
+
+  function setProgress(done, total, idx, count, name, t0) {
+    const pct = total > 0 ? Math.min(100, (done / total) * 100) : 100;
+    fillEl.style.width = pct.toFixed(1) + "%";
+    pnameEl.textContent = count > 1 ? `${idx}/${count} · ${name}` : name;
+    const secs = ((performance.now() - t0) / 1000).toFixed(1);
+    pstatsEl.textContent = `${pct.toFixed(0)} % · ${fmtSize(done)} / ${fmtSize(total)} · ${secs} s`;
+  }
+
+  // ------------------------------------------------------------------
+  // Run
+  // ------------------------------------------------------------------
+  runBtn.addEventListener("click", async () => {
+    if (!module || !files.length) return;
+    runBtn.disabled = true;
+    clearBtn.disabled = true;
+    captured = [];
+    dlEl.innerHTML = "";
+    statusEl.textContent = "Analyzing…";
+    statusEl.className = "status";
+    progressEl.classList.add("shown");
+
+    const total = files.reduce((a, f) => a + f.size, 0);
+    const t0 = performance.now();
+    let done = 0;
+    let bufPtr = 0, bufCap = 0;
+    const ensureBuf = (n) => {
+      if (n > bufCap) {
+        if (bufPtr) module._free(bufPtr);
+        bufCap = Math.max(n, 1 << 20);
+        bufPtr = module._malloc(bufCap);
+      }
+    };
+    const last = files.length - 1;
+
+    try {
+      module.ccall("slaplog_begin", "number", ["string"], [buildArgs()]);
+
+      for (let i = 0; i < files.length; i++) {
+        const f = files[i];
+        setProgress(done, total, i + 1, files.length, f.name, t0);
+        await yieldToUI();
+
+        const bytes = new Uint8Array(await f.arrayBuffer());
+        const kind = compressionOf(bytes);
+
+        if (kind) {
+          // Compressed input: the C++ decompressor handles the whole file.
+          const vpath = "/work/input." + kind;
+          module.FS.writeFile(vpath, bytes);
+          module.ccall("slaplog_add_file", "number", ["string"], [vpath]);
+          done += f.size;
+        } else {
+          // Plain text: one input, fed as line-aligned chunks so the bar moves.
+          module.ccall("slaplog_input_begin", "number", [], []);
+          for (const chunk of chunksByLine(bytes, CHUNK)) {
+            ensureBuf(chunk.length);
+            module.HEAPU8.set(chunk, bufPtr);
+            module.ccall("slaplog_add_text", "number", ["number", "number"],
+                         [bufPtr, chunk.length]);
+            done += chunk.length;
+            setProgress(done, total, i + 1, files.length, f.name, t0);
+            await yieldToUI();
+          }
+          module.ccall("slaplog_input_end", "number", [], []);
+        }
+
+        setProgress(done, total, i + 1, files.length, f.name, t0);
+        if (i < last) await yieldToUI();
+      }
+
+      const rc = module.ccall("slaplog_end", "number", [], []);
+      const ms = (performance.now() - t0).toFixed(0);
+      setProgress(total, total, files.length, files.length, files[last].name, t0);
+
+      const text = captured.join("\n") + (captured.length ? "\n" : "");
+      const diag = captured.filter((l) => /^slaplog\(wasm\)/.test(l)).join("\n");
+      showResult(text, ms, rc, diag);
+      statusEl.textContent = (rc === 0)
+        ? `Done in ${ms} ms (${files.length} file(s)).`
+        : `Finished with errors (exit ${rc}).`;
+      statusEl.className = (rc === 0) ? "status ok" : "status err";
+    } catch (err) {
+      statusEl.textContent = "Error: " + err;
+      statusEl.className = "status err";
+      try { module.ccall("slaplog_end", "number", [], []); } catch (e) { /* ignore */ }
+    } finally {
+      if (bufPtr) { module._free(bufPtr); bufPtr = 0; bufCap = 0; }
+      runBtn.disabled = files.length === 0;
+      clearBtn.disabled = false;
+    }
+  });
+
+  // ------------------------------------------------------------------
+  // Rendering
+  // ------------------------------------------------------------------
+  function showResult(text, ms, rc, diag) {
+    const label = files.length === 1 ? files[0].name : `${files.length} files`;
+    titleEl.textContent = `Result — ${label} (${ms} ms)`;
+    panelEl.innerHTML = "";
+
+    const fmt = outputEl.value;
+    const base = files.length === 1
+      ? (files[0].name.replace(/\.[A-Za-z0-9]+$/, "") || "report")
+      : "slaplog-report";
+
+    if (fmt === "html") {
+      const frame = document.createElement("iframe");
+      frame.setAttribute("sandbox", "allow-same-origin");
+      frame.srcdoc = text;
+      panelEl.appendChild(frame);
+      addDownload(base + ".html", text, "text/html");
+    } else {
+      const pre = document.createElement("pre");
+      pre.textContent = text.length ? text : "(no output)";
+      panelEl.appendChild(pre);
+      if (fmt === "json") addDownload(base + ".json", text, "application/json");
+      else if (fmt === "replay") addDownload(base + ".replay.txt", text, "text/plain");
+      else addDownload(base + ".txt", text, "text/plain");
+    }
+    if (diag) {
+      const d = document.createElement("div");
+      d.className = "log"; d.textContent = diag;
+      panelEl.appendChild(d);
+    }
+    resultEl.style.display = "block";
+  }
+
+  function addDownload(name, content, mime) {
+    const url = URL.createObjectURL(new Blob([content], { type: mime }));
+    const a = document.createElement("a");
+    a.href = url; a.download = name; a.textContent = "⬇ Download report (" + name + ")";
+    dlEl.appendChild(a);
+  }
+
+  const escapeHtml = (s) => s.replace(/[&<>"']/g,
+    (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+  function fmtSize(n) {
+    if (n < 1024) return n + " B";
+    if (n < 1024 * 1024) return (n / 1024).toFixed(1) + " KiB";
+    if (n < 1024 * 1024 * 1024) return (n / 1048576).toFixed(1) + " MiB";
+    return (n / 1073741824).toFixed(2) + " GiB";
+  }
+})();
+</script>
+</body>
+</html>
