@@ -1035,9 +1035,8 @@ void print_html_report(const Aggregator& agg, double duration, bool /*compact*/,
     // Explanatory line under a section heading (e.g. result codes that are
     // informational rather than failures).
     std::cout << "  .note { color:#7f8c8d; font-size:0.85em; margin:-4px 0 10px; }\n";
-    // Statistics: the same table as before, but two label/value pairs per row,
-    // which halves the height of a section that holds little data.
-    std::cout << "  table.stats { max-width:960px; }\n";
+    // Statistics: two label/value pairs per row, which halves the height of a
+    // section that holds little data.  Full width, like every other section.
     std::cout << "  table.stats td.sl-stat-l { font-weight:600; color:#34495e; width:240px; }\n";
     // Floating section index, fixed in the top-right corner.  Built by script
     // from the h2[id] elements, so it never lists a section the report did not
@@ -1052,6 +1051,7 @@ void print_html_report(const Aggregator& agg, double duration, bool /*compact*/,
     std::cout << "  .sl-index-list a { display:block; padding:3px 12px; color:#2980b9; "
                  "text-decoration:none; }\n";
     std::cout << "  .sl-index-list a:hover { background:#eef2f7; }\n";
+    std::cout << "  .sl-index-list a.active { background:#34495e; color:#fff; }\n";
     std::cout << "  @media (max-width:768px) { .sl-index { max-width:45vw; } }\n";
     std::cout << "</style>\n";
     if (charts) print_html_chart_style();
@@ -1241,11 +1241,14 @@ void print_html_report(const Aggregator& agg, double duration, bool /*compact*/,
     // the identity that issued the search.
     if (agg.paged_search_count > 0 || !agg.paged_search_by_app.empty()) {
         std::cout << "<h2 id=\"sec-paged\">Paged Searches</h2>\n";
-        std::cout << "<p class=\"note\">Searches that carried the pagedResultsControl"
-                     " (1.2.840.113556.1.4.319). Detected from the trace-level"
-                     " <code>=&gt; get_ctrls</code> lines, so it needs loglevel"
-                     " <code>trace</code>; at <code>stats</code> level slapd does not"
-                     " log the control and this section stays empty.</p>\n";
+        std::cout << "<p class=\"note\">Searches that used the pagedResultsControl"
+                     " (1.2.840.113556.1.4.319), counted two ways: by shape — one"
+                     " connection repeating the same request, every page returning"
+                     " the same count until a smaller last page — and, at loglevel"
+                     " <code>trace</code>, from the explicit"
+                     " <code>=&gt; get_ctrls</code> line. The shape is a match, not"
+                     " a proof: an application that repeats one search and then"
+                     " stops looks the same.</p>\n";
         std::cout << "<table>\n<tr><th>Who</th><th>Paged searches</th></tr>\n";
         auto paged_sorted = sort_map_by_value_desc(agg.paged_search_by_app);
         for (const auto& [who, n] : paged_sorted)
@@ -1529,6 +1532,24 @@ void print_html_report(const Aggregator& agg, double duration, bool /*compact*/,
     box.appendChild(head);
     box.appendChild(list);
     document.body.appendChild(box);
+
+    // Highlight the section the reader is in — the last heading whose top has
+    // passed the offset — so the index doubles as a position indicator.
+    var links = {};
+    for (var i = 0; i < hs.length; i++) links[hs[i].id] = list.childNodes[i];
+    var updateActive = function() {
+      var current = null;
+      for (var i = 0; i < hs.length; i++)
+        if (hs[i].getBoundingClientRect().top <= 100) current = hs[i].id;
+      for (var id in links) links[id].classList.toggle('active', id === current);
+    };
+    var ticking = false;
+    window.addEventListener('scroll', function() {
+      if (ticking) return;
+      ticking = true;
+      window.requestAnimationFrame(function() { updateActive(); ticking = false; });
+    });
+    updateActive();
   }
 })();
 </script>

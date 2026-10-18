@@ -311,6 +311,20 @@ struct ConnState {
     std::string session_name;
     std::string session_username;
     bool session_tracked = false; // True once valid session-tracking data is seen.
+
+    // -- Paged-results heuristic (RFC 2696) --
+    // A paged search repeats the same request on one connection, every page
+    // returning the same number of entries until the last, which is smaller —
+    // the end of the result set.  That shape is the only way to recognise a
+    // paged search without loglevel trace (where slapd does log the control).
+    // The run is kept per connection and closed when the parameters change, a
+    // non-search operation completes, or the connection ends.
+    struct SearchRun {
+        std::string sig;          // base | scope | deref | filter | attrs
+        std::string who;          // identity that issued the searches
+        std::vector<int> counts;  // nentries of each search in the run
+    };
+    std::optional<SearchRun> search_run;
 };
 
 // ---- TopOpRow ----

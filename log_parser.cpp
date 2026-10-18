@@ -921,6 +921,56 @@ std::string format_epoch_seconds(long long t) {
         return "unknown";
     }
 
+    // ------------------------------------------------------------------------
+    // Paged-results heuristic (RFC 2696)
+    // ------------------------------------------------------------------------
+    // Without loglevel trace, slapd never logs the pagedResultsControl, so a
+    // paged search can only be recognised by its shape: on one connection, the
+    // same request repeated, every page returning the same number of entries
+    // until the last, which is smaller — the end of the result set.  A single
+    // search, or a run whose counts are all equal (no end marker), is not
+    // paged.  This is a shape match, not a proof: an application that repeats
+    // one search and then stops has the same shape.
+    bool run_is_paged(const ConnState::SearchRun& run) {
+        if (run.counts.size() < 2) return false;
+        const int page = run.counts.front();
+        for (size_t i = 0; i + 1 < run.counts.size(); ++i)
+            if (run.counts[i] != page) return false;
+        return run.counts.back() < page;
+    }
+
+    // Close the current run: count it as a paged search when it has the shape,
+    // then drop it.  `count` is false when the run was broken by something
+    // other than a parameter change (another operation, a connection end).
+    void close_search_run(Aggregator& agg, ConnState& conn, bool count) {
+        if (!conn.search_run) return;
+        if (count && run_is_paged(*conn.search_run)) {
+            const long long pages = static_cast<long long>(conn.search_run->counts.size());
+            agg.paged_search_count += pages;
+            agg.paged_search_by_app[conn.search_run->who] += pages;
+        }
+        conn.search_run.reset();
+    }
+
+    // Fold one completed search into the run: same parameters extend it, a
+    // different signature closes the previous one and starts a new run.
+    void track_search_run(Aggregator& agg, ConnState& conn, const OpState& op,
+                          const std::string& who) {
+        if (op.type != "SRCH" || !op.nentries.has_value()) return;
+        std::string sig = op.base;
+        sig += '\x1f'; sig += std::to_string(op.scope.value_or(-1));
+        sig += '\x1f'; sig += std::to_string(op.deref.value_or(-1));
+        sig += '\x1f'; sig += op.filter;
+        sig += '\x1f'; sig += op.attrs;
+        if (!conn.search_run || conn.search_run->sig != sig) {
+            close_search_run(agg, conn, true);
+            conn.search_run = ConnState::SearchRun{sig, who, {*op.nentries}};
+        } else {
+            conn.search_run->counts.push_back(*op.nentries);
+            if (conn.search_run->who.empty()) conn.search_run->who = who;
+        }
+    }
+
 /**
  * track_qmark_filter: Search a filter string for "(?attr)" patterns that
  * indicate unindexed attribute lookups (commonly flagged by slapd's
@@ -1034,6 +1084,10 @@ std::string format_epoch_seconds(long long t) {
         auto it = agg.conn_state.find(cid);
         if (it == agg.conn_state.end()) return;
         auto& conn = it->second;
+
+        // The connection ends: a run of consecutive searches cannot continue,
+        // so close it (and count it if it had the paged shape).
+        close_search_run(agg, conn, true);
 
         std::string who = app_for_conn(agg, cid);
         long long ops_cnt = conn.completed_ops + conn.ops.size();
@@ -1869,6 +1923,13 @@ void update_aggregator(Aggregator& agg, const Event& ev,
     auto& op = ensure_op(agg, cid, opid);
     std::string who = app_for_conn(agg, cid);
 
+    // A non-search operation breaks a run of consecutive searches: the paged
+    // heuristic needs the pages back to back.  Search completions arrive as
+    // SEARCH_RESULT, or as RESULT when op.type is SRCH, and are handled there.
+    if (ev.kind != "SRCH" && ev.kind != "SRCH_ATTR" && ev.kind != "SEARCH_RESULT" &&
+        ev.kind != "RESULT")
+        close_search_run(agg, conn, false);
+
     // Record the first timestamp seen for this operation so that ops with no
     // RESULT line (ABANDON, UNBIND, or an abandoned in-flight op) still carry
     // a usable timestamp when flushed to the replay output.
@@ -2135,6 +2196,7 @@ void update_aggregator(Aggregator& agg, const Event& ev,
                                   op.authzid, op.nentries, op.err, op.qtime, op.text,
                                   op.timestamp});
         conn.completed_ops++;
+        track_search_run(agg, conn, op, who);
         conn.ops.erase(opid);
         return;
     }
@@ -2212,6 +2274,10 @@ void update_aggregator(Aggregator& agg, const Event& ev,
                                   op.authzid, op.nentries, op.err, op.qtime, op.text,
                                   op.timestamp});
         conn.completed_ops++;
+        // A search extends the run (or starts one); any other completion breaks
+        // it, because the pages must be back to back.
+        if (is_search) track_search_run(agg, conn, op, who);
+        else close_search_run(agg, conn, false);
         conn.ops.erase(opid);
         return;
     }

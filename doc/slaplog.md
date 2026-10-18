@@ -305,18 +305,27 @@ the refusal.
 ### Paged Searches
 
 Searches that carried the **pagedResultsControl** (`1.2.840.113556.1.4.319`),
-with the count broken down by the identity that issued them.  slapd logs the
-control only at `loglevel trace`, as
+with the count broken down by the identity that issued them.  Two independent
+ways are used, and either may find one:
+
+1. **By shape** — a paged search repeats the same request on one connection, and
+   every page returns the same number of entries until the last, which is
+   smaller: that is the end of the result set.  On the reference log this is the
+   only way, because the log was taken at `loglevel stats`.
+2. **By the control line** — at `loglevel trace`, slapd logs every control a
+   request carries:
 
 ```
 => get_ctrls: oid="1.2.840.113556.1.4.319" (critical)
 ```
 
 That line carries no `conn=`, so the control is attributed to the connection of
-the next line that names one — normally the `SRCH` that asked for it.  At the
-usual `stats` level slapd does not log the control at all, the count stays zero
-and the section is absent; it is not that no client paged, it is that the log
-cannot say.
+the next line that names one — normally the `SRCH` that asked for it.
+
+The shape is a match, not a proof: an application that repeats one search and
+then stops has the same shape, so the count is an upper bound on the real number
+of paged searches.  A run is closed when the parameters change, a non-search
+operation completes, or the connection ends.
 
 ### Search Analysis
 

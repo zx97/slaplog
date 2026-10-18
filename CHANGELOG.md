@@ -24,12 +24,13 @@ v3.0 (AGPL-3.0)** — see the [LICENSE](LICENSE) file for the full text.
 - **Paged searches (RFC 2696).**  Searches that carried the
   `pagedResultsControl` (`1.2.840.113556.1.4.319`), counted and broken down by
   the identity that issued them, in a new *Paged Searches* section (HTML, text
-  and JSON, and `-s paged`).  slapd logs the control only at `loglevel trace`,
-  as `=> get_ctrls: oid="1.2.840.113556.1.4.319" (critical)`; that line carries
-  no `conn=`, so the control is attributed to the connection of the next line
-  that names one — normally the `SRCH` that asked for it.  At the usual `stats`
-  level there is no such line, the count stays zero and the section is absent:
-  it is not that no client paged, it is that the log cannot say.
+  and JSON, and `-s paged`).  Two ways are used: by shape — one connection
+  repeating the same request, every page returning the same count until a
+  smaller last page — and, at `loglevel trace`, from the explicit
+  `=> get_ctrls: oid="1.2.840.113556.1.4.319" (critical)` line (which carries
+  no `conn=`, so it is attributed to the next line that names one).  The shape
+  is a match, not a proof: an application that repeats one search and then stops
+  has the same shape, so the count is an upper bound.
 - **An eighth chart, *Response Time Density***: the same etime distribution as
   *Response Time Distribution*, but with logarithmically spaced bins (×1.58 per
   step) and an x window that follows the data.  The eleven fixed buckets cannot
