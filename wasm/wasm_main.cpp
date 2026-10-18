@@ -57,15 +57,49 @@
 
 namespace {
 
-// Split a string on runs of whitespace.  The page always passes controlled
-// virtual paths (e.g. "/work/input.log") and option values without spaces, so a
-// plain whitespace tokenizer is sufficient and keeps the JS/WASM boundary
-// trivial (one string instead of an argv array).
+// Split a string on runs of whitespace, respecting quoted strings.
+// The page may pass option values with spaces (e.g. --title "Acceptance - Proxy")
+// which are quoted in the JavaScript buildArgs() function.
+// This tokenizer respects double-quoted strings and escapes.
 std::vector<std::string> split_whitespace(const std::string& s) {
     std::vector<std::string> out;
-    std::istringstream iss(s);
     std::string tok;
-    while (iss >> tok) out.push_back(tok);
+    bool in_quote = false;
+    char quote_char = 0;
+    
+    for (size_t i = 0; i < s.size(); ++i) {
+        char c = s[i];
+        if (!in_quote) {
+            if (c == '"' || c == '\'') {
+                in_quote = true;
+                quote_char = c;
+            } else if (std::isspace(static_cast<unsigned char>(c))) {
+                if (!tok.empty()) {
+                    out.push_back(tok);
+                    tok.clear();
+                }
+            } else {
+                tok.push_back(c);
+            }
+        } else {
+            if (c == quote_char) {
+                in_quote = false;
+                quote_char = 0;
+            } else if (c == '\\' && i + 1 < s.size()) {
+                // Handle escaped characters inside quotes
+                char next = s[i + 1];
+                if (next == '"' || next == '\'' || next == '\\') {
+                    tok.push_back(next);
+                    ++i;
+                } else {
+                    tok.push_back(c);
+                }
+            } else {
+                tok.push_back(c);
+            }
+        }
+    }
+    if (!tok.empty()) out.push_back(tok);
     return out;
 }
 
