@@ -355,6 +355,13 @@ namespace slaplog_rx {
     // Matches: slap_global_control: unrecognized control: oid=1.3.6.1.4.1.42.2.27
     inline const std::regex RE_GLOBAL_CONTROL(R"(slap_global_control: unrecognized control: oid=([\d.]+))");
 
+    // [group  1] control OID
+    // [group  2] "non" when the control is non-critical, empty when critical
+    // Matches: => get_ctrls: oid="1.2.840.113556.1.4.319" (critical)
+    // Emitted by slapd at loglevel trace for *every* control a request carries,
+    // with no conn= prefix — the surrounding lines supply the connection.
+    inline const std::regex RE_GET_CTRLS(R"RE(^=>\s+get_ctrls:\s+oid="([^"]+)"\s+\((non)?critical\))RE");
+
     // [group  1] the attribute or filter component that is not indexed
     // Case-insensitive.  Matches lines produced by mdb or bdb backends
     // when a search filter term is not covered by an index.

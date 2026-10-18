@@ -599,6 +599,25 @@ struct Aggregator {
     // never log it; the field then stays empty and no version is invented.
     std::string openldap_version;
 
+    // -- Log source servers --
+    // Distinct hostnames read from the syslog/rfc3339 header prefix.  The
+    // "debug" log format carries no hostname, so this stays empty for it and
+    // the report says nothing rather than inventing a name.  A log analysed
+    // from several servers (a directory of rotated files, a federation) lists
+    // them all, which is the one thing a per-line count cannot show.
+    std::set<std::string> servers;
+
+    // -- Paged searches (RFC 2696 pagedResultsControl) --
+    // OpenLDAP logs the control only at loglevel trace, as
+    //   => get_ctrls: oid="1.2.840.113556.1.4.319" (critical)
+    // and that line carries no conn=, so the control is attributed to the
+    // connection of the next line that names one — the SRCH that asked for it.
+    // On logs taken at the usual "stats" level there is no such line and the
+    // counters stay at zero.
+    long long paged_search_count = 0;
+    std::map<std::string, long long> paged_search_by_app;
+    long long pending_paged = 0;   // controls seen, awaiting the next conn=
+
     // -- Per-bind-account resource totals (opt-in, see set_collect_graph_data) --
     // Keyed by the identity returned by app_for_conn(): the bind DN when the
     // connection authenticated, otherwise the authcid / session-tracking

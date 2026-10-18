@@ -293,7 +293,7 @@ static void usage(const char* prog) {
     std::cerr << "                             bases,filters,wildcards,\n";
     std::cerr << "                             filters_per_app,attrs,apps,extops,\n";
     std::cerr << "                             qmark,csn,server,index,sessions,\n";
-    std::cerr << "                             topops,topconns\n";
+    std::cerr << "                             topops,topconns,paged\n";
     std::cerr << "  --log-format FORMAT        Input log format: auto (default), debug,\n";
     std::cerr << "                             syslog-utc, syslog-localtime, rfc3339-utc,\n";
     std::cerr << "                             ol26, rfc3339, syslog\n";

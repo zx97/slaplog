@@ -11,6 +11,25 @@ v3.0 (AGPL-3.0)** — see the [LICENSE](LICENSE) file for the full text.
 
 ### Added
 
+- **A floating section index in the HTML report**, fixed in the top-right
+  corner.  It lists every section the report actually drew (charts are not
+  sections) and scrolls to one on click; its heading collapses the list.  The
+  links are built from the page's own `<h2 id>` elements, so the index can never
+  offer a section that is not there and never drifts from a renamed heading.
+- **The server(s) the analysed logs come from.**  The hostname is read from the
+  syslog/rfc3339 header prefix of every parsed line, deduplicated, and shown in
+  the meta bar and the *Statistics* table.  The *debug* log format carries no
+  hostname, so for it nothing is shown rather than a name being invented — and a
+  log taken from several servers lists them all.
+- **Paged searches (RFC 2696).**  Searches that carried the
+  `pagedResultsControl` (`1.2.840.113556.1.4.319`), counted and broken down by
+  the identity that issued them, in a new *Paged Searches* section (HTML, text
+  and JSON, and `-s paged`).  slapd logs the control only at `loglevel trace`,
+  as `=> get_ctrls: oid="1.2.840.113556.1.4.319" (critical)`; that line carries
+  no `conn=`, so the control is attributed to the connection of the next line
+  that names one — normally the `SRCH` that asked for it.  At the usual `stats`
+  level there is no such line, the count stays zero and the section is absent:
+  it is not that no client paged, it is that the log cannot say.
 - **An eighth chart, *Response Time Density***: the same etime distribution as
   *Response Time Distribution*, but with logarithmically spaced bins (×1.58 per
   step) and an x window that follows the data.  The eleven fixed buckets cannot
@@ -46,6 +65,10 @@ v3.0 (AGPL-3.0)** — see the [LICENSE](LICENSE) file for the full text.
 
 ### Changed
 
+- **The HTML *Statistics* table is laid out two metrics per row.**  The section
+  carries little data, and a single column made it far taller than it needed to
+  be; it now reads as two label/value pairs side by side.  The metrics are
+  unchanged.
 - **A fifth result-code class, for the refusals the log cannot attribute.**  The
   classification split result codes by who is at fault: green informational, amber
   client-side, violet by configuration, red slapd itself.  Reading a real log showed
