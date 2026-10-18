@@ -1146,6 +1146,19 @@ Event parse_line(const std::string& line) {
     // optimisation that avoids iterating through all regexes for every line.
     char fc = rest.empty() ? '\0' : rest[0];
 
+    // --- Control parsing trace ('=>') ---
+    // slapd logs every control a request carries at loglevel trace:
+    //   => get_ctrls: oid="1.2.840.113556.1.4.319" (critical)
+    // There is no conn= on that line, so the connection is resolved when the
+    // next line that names one is folded in (see update_aggregator).  Only the
+    // OID is kept; the criticality carries nothing for the report.
+    if (rest.compare(0, 2, "=>") == 0 &&
+        std::regex_match(rest, m, slaplog_rx::RE_GET_CTRLS)) {
+        ev.kind = "GET_CTRLS";
+        ev.oid = m[1].str();
+        return ev;
+    }
+
     // --- RESULT (the most frequent category, ~10% of lines) ---
     // Matches generic RESULT lines with tag, err, qtime, etime, and
     // optional text.  Three variants exist:
@@ -1643,6 +1656,30 @@ void update_aggregator(Aggregator& agg, const Event& ev,
 
     int cid = ev.conn.value_or(-1);
     int opid = ev.op.value_or(-1);
+
+    // Every parsed line that names a server contributes it to the source set;
+    // the "debug" format has no hostname, so nothing is invented.
+    if (!ev.host.empty()) agg.servers.insert(ev.host);
+
+    // A paged-results control is logged without a conn=, so it is attributed
+    // to the connection of the next line that names one — normally the SRCH
+    // that asked for the control.  Until that line arrives it waits in
+    // pending_paged.
+    if (cid >= 0 && agg.pending_paged > 0) {
+        const std::string who = app_for_conn(agg, cid);
+        agg.paged_search_count += agg.pending_paged;
+        agg.paged_search_by_app[who] += agg.pending_paged;
+        agg.pending_paged = 0;
+    }
+
+    // --- GET_CTRLS (control parsing trace) ---
+    // Only the paged results control is tracked; the trace logs every control
+    // a request carries, and the rest carry nothing the report needs.  The
+    // connection is resolved on the next line, not here.
+    if (ev.kind == "GET_CTRLS") {
+        if (ev.oid == "1.2.840.113556.1.4.319") agg.pending_paged++;
+        return;
+    }
 
     // ==================================================================
     // Connection-Level Events
@@ -2575,6 +2612,9 @@ void merge_aggregators(Aggregator& dest, const Aggregator& src) {
         d.etime_total += ui.etime_total;
     }
     if (dest.openldap_version.empty()) dest.openldap_version = src.openldap_version;
+    for (const auto& s : src.servers) dest.servers.insert(s);
+    dest.paged_search_count += src.paged_search_count;
+    for (const auto& [app, n] : src.paged_search_by_app) dest.paged_search_by_app[app] += n;
 
     // --- Active / peak connections (take the higher of the two) ---
     if (src.active_connections > dest.active_connections)

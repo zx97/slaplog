@@ -37,6 +37,7 @@
 #include <iomanip>
 #include <vector>
 #include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <sstream>
 #include <fstream>
@@ -508,6 +509,14 @@ void print_text_report(const Aggregator& agg, double processing_time, bool compa
         st_rows.push_back({"Unknown lines", fmt_int(agg.stats.unknown_lines)});
         if (!agg.openldap_version.empty())
             st_rows.push_back({"OpenLDAP version", agg.openldap_version});
+        if (!agg.servers.empty()) {
+            std::string sv;
+            for (const auto& s : agg.servers) {
+                if (!sv.empty()) sv += ", ";
+                sv += s;
+            }
+            st_rows.push_back({"Server(s)", sv});
+        }
         st_rows.push_back({"Connections opened", fmt_int(agg.stats.conn_count)});
         st_rows.push_back({"FD open events", fmt_int(agg.stats.fd_open)});
         st_rows.push_back({"FD close events", fmt_int(agg.stats.fd_close)});
@@ -599,6 +608,19 @@ void print_text_report(const Aggregator& agg, double processing_time, bool compa
             }
         }
         print_table({"App", "Code", "Name", "Count"}, err_rows);
+    }
+
+    // Paged searches
+    // Searches that carried the pagedResultsControl.  slapd logs the control
+    // only at loglevel trace, so this section is usually empty on logs taken
+    // at the usual "stats" level.
+    if (has_section("paged") && (agg.paged_search_count > 0 || !agg.paged_search_by_app.empty())) {
+        print_separator("Paged Searches");
+        auto paged_sorted = sort_map_by_value_desc(agg.paged_search_by_app);
+        std::vector<std::vector<std::string>> paged_rows;
+        for (const auto& [who, n] : paged_sorted)
+            paged_rows.push_back({who, fmt_int(n)});
+        print_table({"Who", "Paged searches"}, paged_rows);
     }
 
     // Top search bases
@@ -935,6 +957,23 @@ void print_html_report(const Aggregator& agg, double duration, bool /*compact*/,
         return "color:#00aa00";
     };
 
+    // Minimal HTML escaping for values that reach the page verbatim (host
+    // names, bind DNs, application identities).
+    auto html_escape = [](const std::string& s) {
+        std::string o;
+        o.reserve(s.size());
+        for (char c : s) {
+            switch (c) {
+                case '&':  o += "&amp;";  break;
+                case '<':  o += "&lt;";   break;
+                case '>':  o += "&gt;";   break;
+                case '"':  o += "&quot;"; break;
+                default:   o += c;
+            }
+        }
+        return o;
+    };
+
     std::cout << "<!DOCTYPE html>\n";
     std::cout << "<html lang=\"en\">\n";
     std::cout << "<head>\n";
@@ -996,6 +1035,24 @@ void print_html_report(const Aggregator& agg, double duration, bool /*compact*/,
     // Explanatory line under a section heading (e.g. result codes that are
     // informational rather than failures).
     std::cout << "  .note { color:#7f8c8d; font-size:0.85em; margin:-4px 0 10px; }\n";
+    // Statistics: the same table as before, but two label/value pairs per row,
+    // which halves the height of a section that holds little data.
+    std::cout << "  table.stats { max-width:960px; }\n";
+    std::cout << "  table.stats td.sl-stat-l { font-weight:600; color:#34495e; width:240px; }\n";
+    // Floating section index, fixed in the top-right corner.  Built by script
+    // from the h2[id] elements, so it never lists a section the report did not
+    // draw and never drifts from the headings themselves.
+    std::cout << "  .sl-index { position:fixed; top:12px; right:12px; z-index:1000; max-width:260px; "
+                 "max-height:80vh; overflow:auto; background:#fff; border:1px solid #c8d0da; "
+                 "border-radius:6px; box-shadow:0 2px 10px rgba(0,0,0,0.12); font-size:0.8em; }\n";
+    std::cout << "  .sl-index-head { padding:6px 12px; background:#34495e; color:#fff; "
+                 "font-weight:600; cursor:pointer; user-select:none; }\n";
+    std::cout << "  .sl-index.collapsed .sl-index-list { display:none; }\n";
+    std::cout << "  .sl-index-list { padding:6px 0; }\n";
+    std::cout << "  .sl-index-list a { display:block; padding:3px 12px; color:#2980b9; "
+                 "text-decoration:none; }\n";
+    std::cout << "  .sl-index-list a:hover { background:#eef2f7; }\n";
+    std::cout << "  @media (max-width:768px) { .sl-index { max-width:45vw; } }\n";
     std::cout << "</style>\n";
     if (charts) print_html_chart_style();
     std::cout << "</head>\n<body>\n";
@@ -1023,6 +1080,21 @@ void print_html_report(const Aggregator& agg, double duration, bool /*compact*/,
         std::cout << "  <div class=\"meta-item\"><div class=\"meta-label\">OpenLDAP</div>";
         std::cout << "<div class=\"meta-value\">" << agg.openldap_version << "</div></div>\n";
     }
+    // Which server(s) the analysed log lines name.  Empty for the "debug"
+    // format, which carries no hostname — then the row is simply absent.
+    if (!agg.servers.empty()) {
+        std::string sv;
+        for (const auto& s : agg.servers) {
+            if (!sv.empty()) sv += ", ";
+            sv += html_escape(s);
+        }
+        std::cout << "  <div class=\"meta-item\"><div class=\"meta-label\">"
+                  << (agg.servers.size() == 1 ? "Server" : "Servers") << "</div>";
+        std::cout << "<div class=\"meta-value\" title=\"" << sv << "\">";
+        if (agg.servers.size() == 1) std::cout << html_escape(*agg.servers.begin());
+        else std::cout << agg.servers.size() << " servers";
+        std::cout << "</div></div>\n";
+    }
     if (!agg.firsttime.empty()) {
         std::cout << "  <div class=\"meta-item\"><div class=\"meta-label\">First event</div>";
         std::cout << "<div class=\"meta-value\">" << agg.firsttime << "</div></div>\n";
@@ -1038,34 +1110,55 @@ void print_html_report(const Aggregator& agg, double duration, bool /*compact*/,
     // Statistics table
     // A two-column table (label, value) with the same metrics as the
     // text "stats" section.
-    std::cout << "<h2>Statistics</h2>\n";
-    std::cout << "<table>\n";
-    auto print_stat = [&](const std::string& label, const std::string& val) {
-        std::cout << "<tr><td style=\"font-weight:600;color:#34495e;width:260px\">" << label << "</td><td>" << val << "</td></tr>\n";
+    std::cout << "<h2 id=\"sec-statistics\">Statistics</h2>\n";
+    // The metrics are laid out two per row: the section carries little data, and
+    // a single column would make it three times taller than it needs to be.
+    std::vector<std::pair<std::string, std::string>> stat_rows;
+    auto add_stat = [&](const std::string& label, const std::string& val) {
+        stat_rows.emplace_back(label, val);
     };
-    print_stat("Processing time", fmt_double(duration) + " s");
-    print_stat("Processing speed", fmt_int(static_cast<long long>(speed)) + " lines/s");
-    print_stat("Lines processed", fmt_int(agg.stats.lines));
-    print_stat("Unknown lines", fmt_int(agg.stats.unknown_lines));
-    print_stat("Connections opened", fmt_int(agg.stats.conn_count));
-    print_stat("FD open events", fmt_int(agg.stats.fd_open));
-    print_stat("FD close events", fmt_int(agg.stats.fd_close));
-    print_stat("Replication logs", fmt_int(agg.stats.replication_logs));
-    print_stat("Peak active connections", fmt_int(agg.peak_active_connections));
-    if (!agg.firsttime.empty()) print_stat("First timestamp", agg.firsttime);
-    if (!agg.lasttime.empty()) print_stat("Last timestamp", agg.lasttime);
-    print_stat("Total etime", "<span style=\"" + etime_color(agg.etime_total) + "\">" + fmt_double(agg.etime_total) + "</span>");
-    print_stat("Total qtime", "<span style=\"" + etime_color(agg.qtime_total) + "\">" + fmt_double(agg.qtime_total) + "</span>");
+    add_stat("Processing time", fmt_double(duration) + " s");
+    add_stat("Processing speed", fmt_int(static_cast<long long>(speed)) + " lines/s");
+    add_stat("Lines processed", fmt_int(agg.stats.lines));
+    add_stat("Unknown lines", fmt_int(agg.stats.unknown_lines));
+    add_stat("Connections opened", fmt_int(agg.stats.conn_count));
+    add_stat("FD open events", fmt_int(agg.stats.fd_open));
+    add_stat("FD close events", fmt_int(agg.stats.fd_close));
+    add_stat("Replication logs", fmt_int(agg.stats.replication_logs));
+    add_stat("Peak active connections", fmt_int(agg.peak_active_connections));
+    if (!agg.servers.empty()) {
+        std::string sv;
+        for (const auto& s : agg.servers) {
+            if (!sv.empty()) sv += ", ";
+            sv += html_escape(s);
+        }
+        add_stat("Server(s)", sv);
+    }
+    if (!agg.firsttime.empty()) add_stat("First timestamp", agg.firsttime);
+    if (!agg.lasttime.empty()) add_stat("Last timestamp", agg.lasttime);
+    add_stat("Total etime", "<span style=\"" + etime_color(agg.etime_total) + "\">" + fmt_double(agg.etime_total) + "</span>");
+    add_stat("Total qtime", "<span style=\"" + etime_color(agg.qtime_total) + "\">" + fmt_double(agg.qtime_total) + "</span>");
     if (agg.maxetime.has_value()) {
-        print_stat("Max operation etime", "<span style=\"" + etime_color(*agg.maxetime) + "\">" + fmt_double(*agg.maxetime) + "</span>");
-        print_stat("Max operation user", agg.maxetimeusr);
+        add_stat("Max operation etime", "<span style=\"" + etime_color(*agg.maxetime) + "\">" + fmt_double(*agg.maxetime) + "</span>");
+        add_stat("Max operation user", agg.maxetimeusr);
     }
     if (agg.maxconnetime.has_value()) {
-        print_stat("Max connection etime", "<span style=\"" + etime_color(*agg.maxconnetime) + "\">" + fmt_double(*agg.maxconnetime) + "</span>");
-        print_stat("Max connection user", agg.maxconnetimeusr);
+        add_stat("Max connection etime", "<span style=\"" + etime_color(*agg.maxconnetime) + "\">" + fmt_double(*agg.maxconnetime) + "</span>");
+        add_stat("Max connection user", agg.maxconnetimeusr);
     }
-    print_stat("Read operations", fmt_int(agg.read_write_stats.read));
-    print_stat("Write operations", fmt_int(agg.read_write_stats.write));
+    add_stat("Read operations", fmt_int(agg.read_write_stats.read));
+    add_stat("Write operations", fmt_int(agg.read_write_stats.write));
+    std::cout << "<table class=\"stats\">\n";
+    for (size_t i = 0; i < stat_rows.size(); i += 2) {
+        std::cout << "<tr><td class=\"sl-stat-l\">" << stat_rows[i].first << "</td><td>"
+                  << stat_rows[i].second << "</td>";
+        if (i + 1 < stat_rows.size())
+            std::cout << "<td class=\"sl-stat-l\">" << stat_rows[i + 1].first << "</td><td>"
+                      << stat_rows[i + 1].second << "</td>";
+        else
+            std::cout << "<td colspan=\"2\"></td>";
+        std::cout << "</tr>\n";
+    }
     std::cout << "</table>\n";
 
     // Each chart is emitted under the section whose data it draws; the first
@@ -1073,7 +1166,7 @@ void print_html_report(const Aggregator& agg, double duration, bool /*compact*/,
     print_html_chart(agg, HtmlChart::Connections);
 
     // Operation counts
-    std::cout << "<h2>Operation Counts</h2>\n";
+    std::cout << "<h2 id=\"sec-operations\">Operation Counts</h2>\n";
     std::cout << "<table>\n<tr><th>Operation</th><th>Count</th></tr>\n";
     for (const auto& [op, count] : agg.operation_count) {
         if (count > 0) std::cout << "<tr><td>" << op << "</td><td>" << count << "</td></tr>\n";
@@ -1087,7 +1180,7 @@ void print_html_report(const Aggregator& agg, double duration, bool /*compact*/,
     // error, and a colour key so the kinds of refusal read apart: what the client
     // asked, what the configuration allows, the refusals the log cannot attribute
     // to either side (drawn hatched, both colours), and what slapd failed to do.
-    std::cout << "<h2>LDAP Result Codes</h2>\n";
+    std::cout << "<h2 id=\"sec-result-codes\">LDAP Result Codes</h2>\n";
     auto error_sorted = sort_map_by_value_desc(agg.error_count);
     std::string normal;
     for (const auto& [code, count] : error_sorted) {
@@ -1123,7 +1216,7 @@ void print_html_report(const Aggregator& agg, double duration, bool /*compact*/,
 
     // Errors per application
     if (!agg.error_per_app.empty()) {
-        std::cout << "<h2>Errors per Application</h2>\n";
+        std::cout << "<h2 id=\"sec-errors-app\">Errors per Application</h2>\n";
         std::cout << "<table>\n<tr><th>App</th><th>Code</th><th>Name</th><th>Count</th></tr>\n";
         for (const auto& [app_name, errs] : agg.error_per_app) {
             auto sorted_errs = sort_map_by_value_desc(errs);
@@ -1140,9 +1233,49 @@ void print_html_report(const Aggregator& agg, double duration, bool /*compact*/,
     }
 
     // Top search bases
+    // Paged searches (RFC 2696)
+    // OpenLDAP logs the pagedResultsControl only at loglevel trace, as
+    //   => get_ctrls: oid="1.2.840.113556.1.4.319" (critical)
+    // so this section is absent from a report built from logs taken at the
+    // usual "stats" level.  When it is present, the count is broken down by
+    // the identity that issued the search.
+    if (agg.paged_search_count > 0 || !agg.paged_search_by_app.empty()) {
+        std::cout << "<h2 id=\"sec-paged\">Paged Searches</h2>\n";
+        std::cout << "<p class=\"note\">Searches that carried the pagedResultsControl"
+                     " (1.2.840.113556.1.4.319). Detected from the trace-level"
+                     " <code>=&gt; get_ctrls</code> lines, so it needs loglevel"
+                     " <code>trace</code>; at <code>stats</code> level slapd does not"
+                     " log the control and this section stays empty.</p>\n";
+        std::cout << "<table>\n<tr><th>Who</th><th>Paged searches</th></tr>\n";
+        auto paged_sorted = sort_map_by_value_desc(agg.paged_search_by_app);
+        for (const auto& [who, n] : paged_sorted)
+            std::cout << "<tr><td>" << html_escape(who) << "</td><td>" << n << "</td></tr>\n";
+        std::cout << "</table>\n";
+    }
+
+    // Anchor id for a section heading, so the floating index can link to it.
+    // Derived from the title, which keeps the index in step with the sections
+    // even when a heading is renamed.
+    auto section_id = [](const std::string& title) {
+        std::string id = "sec-";
+        for (char c : title) {
+            const unsigned char u = static_cast<unsigned char>(c);
+            if (std::isalnum(u)) id += static_cast<char>(std::tolower(u));
+            else if (c == ' ' || c == '-' || c == '_' || c == '(' || c == ')') id += '-';
+        }
+        // Collapse the runs of dashes a title like "Top Filters (nentries=1)"
+        // would otherwise produce, and trim the ends.
+        std::string clean;
+        for (char c : id) {
+            if (c == '-' && !clean.empty() && clean.back() == '-') continue;
+            clean += c;
+        }
+        while (!clean.empty() && clean.back() == '-') clean.pop_back();
+        return clean;
+    };
     auto print_h_count_table = [&](const std::string& title, const std::string& col1, const auto& m, int limit = 20) {
         if (m.empty()) return;
-        std::cout << "<h2>" << title << "</h2>\n<table>\n<tr><th>" << col1 << "</th><th>Count</th></tr>\n";
+        std::cout << "<h2 id=\"" << section_id(title) << "\">" << title << "</h2>\n<table>\n<tr><th>" << col1 << "</th><th>Count</th></tr>\n";
         std::vector<std::pair<long long, std::string>> sorted;
         for (const auto& [key, val] : m) {
             if constexpr (std::is_arithmetic_v<std::decay_t<decltype(val)>>)
@@ -1160,7 +1293,7 @@ void print_html_report(const Aggregator& agg, double duration, bool /*compact*/,
     };
     auto print_h_double_table = [&](const std::string& title, const std::string& col1, const auto& m, int limit = 20) {
         if (m.empty()) return;
-        std::cout << "<h2>" << title << "</h2>\n<table>\n<tr><th>" << col1 << "</th><th>Total etime</th></tr>\n";
+        std::cout << "<h2 id=\"" << section_id(title) << "\">" << title << "</h2>\n<table>\n<tr><th>" << col1 << "</th><th>Total etime</th></tr>\n";
         std::vector<std::pair<double, std::string>> sorted;
         for (const auto& [key, val] : m) {
             if constexpr (std::is_same_v<std::decay_t<decltype(val)>, double>)
@@ -1198,7 +1331,7 @@ void print_html_report(const Aggregator& agg, double duration, bool /*compact*/,
     // HTML version of the per-app filter table; count cells are coloured
     // with the same gradient ratio as the text version.
     if (!agg.filter_by_app.empty()) {
-        std::cout << "<h2>Filters per Application</h2>\n<table>\n<tr><th>App</th><th>Filter</th><th>Count</th></tr>\n";
+        std::cout << "<h2 id=\"sec-filters-app\">Filters per Application</h2>\n<table>\n<tr><th>App</th><th>Filter</th><th>Count</th></tr>\n";
         long long max_fa_count = 0;
         for (const auto& [key, cnt] : agg.filter_by_app)
             if (cnt > max_fa_count) max_fa_count = cnt;
@@ -1237,7 +1370,7 @@ void print_html_report(const Aggregator& agg, double duration, bool /*compact*/,
 
     // Extended operations
     if (!agg.ext_oid_count.empty()) {
-        std::cout << "<h2>Extended Operations</h2>\n<table>\n<tr><th>OID</th><th>Name</th><th>Count</th></tr>\n";
+        std::cout << "<h2 id=\"sec-ext\">Extended Operations</h2>\n<table>\n<tr><th>OID</th><th>Name</th><th>Count</th></tr>\n";
         auto ext_sorted = sort_map_by_value_desc(agg.ext_oid_count);
         for (const auto& [oid, count] : ext_sorted) {
             auto it = EXT_OID_NAME.find(oid);
@@ -1249,7 +1382,7 @@ void print_html_report(const Aggregator& agg, double duration, bool /*compact*/,
 
     // Global control warnings
     if (!agg.global_control_oid_count.empty()) {
-        std::cout << "<h2>Global Control Warnings</h2>\n<table>\n<tr><th>OID</th><th>Count</th></tr>\n";
+        std::cout << "<h2 id=\"sec-gc\">Global Control Warnings</h2>\n<table>\n<tr><th>OID</th><th>Count</th></tr>\n";
         auto gc_sorted = sort_map_by_value_desc(agg.global_control_oid_count);
         for (const auto& [oid, count] : gc_sorted) {
             std::cout << "<tr><td>" << oid << "</td><td>" << count << "</td></tr>\n";
@@ -1258,27 +1391,27 @@ void print_html_report(const Aggregator& agg, double duration, bool /*compact*/,
     }
 
     // CSN events
-    std::cout << "<h2>CSN Internal Events</h2>\n<table>\n<tr><th>Event</th><th>Count</th></tr>\n";
+    std::cout << "<h2 id=\"sec-csn\">CSN Internal Events</h2>\n<table>\n<tr><th>Event</th><th>Count</th></tr>\n";
     std::cout << "<tr><td>CSN get</td><td>" << agg.csn_event_count.get << "</td></tr>\n";
     std::cout << "<tr><td>CSN queue</td><td>" << agg.csn_event_count.queue << "</td></tr>\n";
     std::cout << "<tr><td>CSN graduate</td><td>" << agg.csn_event_count.graduate << "</td></tr>\n";
     std::cout << "</table>\n";
 
     // Indexing diagnostics
-    std::cout << "<h2>Indexing Diagnostics</h2>\n<table>\n";
+    std::cout << "<h2 id=\"sec-indexing\">Indexing Diagnostics</h2>\n<table>\n";
     std::cout << "<tr><td style=\"font-weight:600\">Not indexed occurrences</td><td>" << agg.not_indexed_count << "</td></tr>\n";
     std::cout << "</table>\n";
     print_h_count_table("Not indexed attributes", "Attribute", agg.not_indexed_attr);
 
     // Question mark filters
-    std::cout << "<h2>Question-mark Filters</h2>\n<table>\n";
+    std::cout << "<h2 id=\"sec-qmark\">Question-mark Filters</h2>\n<table>\n";
     std::cout << "<tr><td style=\"font-weight:600\">Filters with (?attr=)</td><td>" << agg.qmark_filter_count << "</td></tr>\n";
     std::cout << "</table>\n";
     print_h_count_table("Question-mark filter attributes", "Attribute", agg.qmark_filter_attr_count);
 
     // Server events
     if (!agg.server_event_list.empty()) {
-        std::cout << "<h2>Server Start / Stop Events</h2>\n<table>\n<tr><th>Timestamp</th><th>Event</th></tr>\n";
+        std::cout << "<h2 id=\"sec-server-events\">Server Start / Stop Events</h2>\n<table>\n<tr><th>Timestamp</th><th>Event</th></tr>\n";
         for (const auto& [ts, event_type] : agg.server_event_list) {
             std::string cls = (event_type.find("start") != std::string::npos) ? "server-event-start" : "server-event-stop";
             std::cout << "<tr class=\"" << cls << "\"><td>" << ts << "</td><td>" << event_type << "</td></tr>\n";
@@ -1310,7 +1443,7 @@ void print_html_report(const Aggregator& agg, double duration, bool /*compact*/,
             return a.second < b.second;
         });
 
-        std::cout << "<h2>Session Tracking Correlations</h2>\n";
+        std::cout << "<h2 id=\"sec-session\">Session Tracking Correlations</h2>\n";
         std::cout << "<table>\n<tr><th>Sessions</th><th>NAT IPs</th><th>Real IP</th>"
                      "<th>Name</th><th>Username</th><th>BIND dn</th></tr>\n";
         for (const auto& [n, cells] : ordered) {
@@ -1323,7 +1456,7 @@ void print_html_report(const Aggregator& agg, double duration, bool /*compact*/,
 
     // Top operations
     // The slowest individual operations, with elapsed-time colouring.
-    std::cout << "<h2>Top Long Operations</h2>\n";
+    std::cout << "<h2 id=\"sec-top-ops\">Top Long Operations</h2>\n";
     std::cout << "<table>\n<tr><th>etime</th><th>conn</th><th>op</th><th>type</th><th>who</th><th>base</th><th>filter</th></tr>\n";
     for (const auto& r : agg.top_ops) {
         std::cout << "<tr><td style=\"" << etime_color(r.etime) << "\">" << fmt_double(r.etime) << "</td>"
@@ -1338,7 +1471,7 @@ void print_html_report(const Aggregator& agg, double duration, bool /*compact*/,
 
     // Top connections
     // Connections sorted by cumulative elapsed time.
-    std::cout << "<h2>Top Connections by Cumulative etime</h2>\n";
+    std::cout << "<h2 id=\"sec-top-conns\">Top Connections by Cumulative etime</h2>\n";
     std::cout << "<table>\n<tr><th>total etime</th><th>conn</th><th>who</th><th>src</th><th>ops</th></tr>\n";
     for (const auto& r : agg.top_conns) {
         std::cout << "<tr><td style=\"" << etime_color(r.total_etime) << "\">" << fmt_double(r.total_etime) << "</td>"
@@ -1373,6 +1506,30 @@ void print_html_report(const Aggregator& agg, double duration, bool /*compact*/,
     };
     t.parentNode.insertBefore(b, t.nextSibling);
   })(tables[i]); }
+
+  // Floating section index: built from the h2[id] elements, so it lists exactly
+  // the sections the report drew — charts have no id and stay out of it.  The
+  // heading toggles the list; clicking a link scrolls to that section.
+  var hs = document.querySelectorAll('h2[id]');
+  if (hs.length) {
+    var box = document.createElement('div');
+    box.className = 'sl-index';
+    var head = document.createElement('div');
+    head.className = 'sl-index-head';
+    head.appendChild(document.createTextNode('Index'));
+    head.onclick = function(){ box.classList.toggle('collapsed'); };
+    var list = document.createElement('div');
+    list.className = 'sl-index-list';
+    for (var i = 0; i < hs.length; i++) {
+      var a = document.createElement('a');
+      a.href = '#' + hs[i].id;
+      a.appendChild(document.createTextNode(hs[i].textContent));
+      list.appendChild(a);
+    }
+    box.appendChild(head);
+    box.appendChild(list);
+    document.body.appendChild(box);
+  }
 })();
 </script>
 )HTML";
@@ -1425,6 +1582,12 @@ void print_json_report(const Aggregator& agg, double duration, bool /*compact*/,
     report["lines"] = agg.stats.lines;
     report["unknown_lines"] = agg.stats.unknown_lines;
     if (!agg.openldap_version.empty()) report["openldap_version"] = agg.openldap_version;
+    // The servers the log lines carry (syslog/rfc3339 hostnames); empty when
+    // the "debug" format was used, which names no host.
+    if (!agg.servers.empty())
+        report["servers"] = std::vector<std::string>(agg.servers.begin(), agg.servers.end());
+    report["paged_search_count"] = agg.paged_search_count;
+    if (!agg.paged_search_by_app.empty()) report["paged_search_by_app"] = agg.paged_search_by_app;
     report["connections_opened"] = agg.stats.conn_count;
     report["peak_active_connections"] = agg.peak_active_connections;
     report["first_timestamp"] = agg.firsttime;

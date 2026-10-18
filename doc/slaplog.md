@@ -236,6 +236,7 @@ to select specific sections:
 | `ops` | Per-operation type counts (BIND, SRCH, RESULT, etc.) |
 | `errors` | Error code distribution with LDAP error names |
 | `errors_per_app` | Errors broken down by application identity |
+| `paged` | Searches using the pagedResultsControl (needs loglevel trace) |
 | `bases` | Top search bases by count and cumulative etime |
 | `filters` | Top search filters by count, etime, nentries=1/0, wildcards |
 | `filters_per_app` | Filters broken down by application identity |
@@ -255,7 +256,12 @@ to select specific sections:
 ### Statistics
 
 Shows processing performance, total/unknown lines, connection counts, peak
-active connections, time range, total etime/qtime, and read/write balance.
+active connections, time range, total etime/qtime, and read/write balance.  The
+**server(s)** the log lines name are listed too — read from the syslog/rfc3339
+header prefix, so a log taken with the *debug* format (which names no host)
+carries none and the row is simply absent.  The HTML report lays these metrics
+out **two per row**, because the section holds little data and a single column
+would make it far taller than it needs to be.
 
 ### Operation Counts
 
@@ -295,6 +301,22 @@ insufficientAccessRights` is the same question asked of an ACL: a genuine
 *look at the request*, not *someone is guilty* — and unlike the numeric limits
 (`3`, `4`, `11`), nothing in the result tells the client it could have avoided
 the refusal.
+
+### Paged Searches
+
+Searches that carried the **pagedResultsControl** (`1.2.840.113556.1.4.319`),
+with the count broken down by the identity that issued them.  slapd logs the
+control only at `loglevel trace`, as
+
+```
+=> get_ctrls: oid="1.2.840.113556.1.4.319" (critical)
+```
+
+That line carries no `conn=`, so the control is attributed to the connection of
+the next line that names one — normally the `SRCH` that asked for it.  At the
+usual `stats` level slapd does not log the control at all, the count stays zero
+and the section is absent; it is not that no client paged, it is that the log
+cannot say.
 
 ### Search Analysis
 
@@ -373,6 +395,10 @@ Standalone HTML page with embedded CSS featuring:
 - Server events with green (start) / red (stop) left border indicators
 - Color-coded etime values
 - Responsive layout (`@media` query for mobile)
+- **A floating section index**, fixed in the top-right corner: it lists every
+  section the report actually drew (charts are not sections) and scrolls to it
+  on click.  Its heading collapses the list.  The links are built from the page
+  itself, so the index can never offer a section that is not there.
 - **Eight inline SVG charts**, each placed under the section it summarises —
   drawn by default, disable with `--no-graph`.  None of them carries a
   *"How to read it"* note.  A note under a drawing that needs no explaining (a
