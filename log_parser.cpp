@@ -41,6 +41,7 @@
 
 #include "log_parser.hpp"
 #include "regex_patterns.hpp"
+#include "simd_line_split.hpp"
 #include "utils.hpp"
 #include <cmath>
 #include <map>
@@ -62,6 +63,10 @@
 #include <sstream>
 #include <iomanip>
 #include <charconv>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <unistd.h>
 
 // using namespace slaplog_rx;
 
@@ -209,11 +214,11 @@ std::string format_etime_log_bin(int bin) {
 // result…) never matches because a whitespace or line start must precede
 // "slapd" and a "(" must follow the number.
 static std::optional<std::string> parse_openldap_version(const std::string& line) {
-    static const slaplog_pcre2::Regex banner(R"(@\(#\)\s*\$OpenLDAP:\s*slapd\s+(\d+\.\d+(?:\.\d+)?))");
-    static const slaplog_pcre2::Regex plain(R"((?:^|\s)slapd\s+(\d+\.\d+(?:\.\d+)?)\s*\()");
-    slaplog_pcre2::MatchResults m;
-    if (slaplog_pcre2::regex_search(line, m, banner)) return m[1];
-    if (slaplog_pcre2::regex_search(line, m, plain)) return m[1];
+    static const slaplog_rx::Regex banner(R"(@\(#\)\s*\$OpenLDAP:\s*slapd\s+(\d+\.\d+(?:\.\d+)?))");
+    static const slaplog_rx::Regex plain(R"((?:^|\s)slapd\s+(\d+\.\d+(?:\.\d+)?)\s*\()");
+    slaplog_rx::MatchResults m;
+    if (slaplog_rx::regex_search(line, m, banner)) return m[1];
+    if (slaplog_rx::regex_search(line, m, plain)) return m[1];
     return std::nullopt;
 }
 
@@ -454,15 +459,15 @@ void set_replay_ops_limit(long long limit) {
  */
     std::string ts_sort_key(const std::string& ts) {
         if (ts.empty()) return "";
-        static const slaplog_pcre2::Regex rfc3339(R"(^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2}))");
-        static const slaplog_pcre2::Regex syslog(R"(^([A-Z][a-z]{2})\s+(\d+)\s+(\d{2}):(\d{2}):(\d{2})$)");
-        slaplog_pcre2::MatchResults m;
-        if (slaplog_pcre2::regex_search(ts, m, rfc3339)) {
+        static const slaplog_rx::Regex rfc3339(R"(^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2}))");
+        static const slaplog_rx::Regex syslog(R"(^([A-Z][a-z]{2})\s+(\d+)\s+(\d{2}):(\d{2}):(\d{2})$)");
+        slaplog_rx::MatchResults m;
+        if (slaplog_rx::regex_search(ts, m, rfc3339)) {
             std::ostringstream oss;
             oss << m[1] << m[2] << m[3] << m[4] << m[5] << m[6];
             return oss.str();
         }
-        if (slaplog_pcre2::regex_match(ts, m, syslog)) {
+        if (slaplog_rx::regex_match(ts, m, syslog)) {
             static const std::map<std::string, int> mon = {{"Jan", 1}, {"Feb", 2}, {"Mar", 3}, {"Apr", 4},
                 {"May", 5}, {"Jun", 6}, {"Jul", 7}, {"Aug", 8},
                 {"Sep", 9}, {"Oct", 10}, {"Nov", 11}, {"Dec", 12}};
@@ -745,9 +750,9 @@ std::string format_epoch_seconds(long long t) {
         if (timestamp.empty()) return {};
 
         // Try RFC3339 format first (most specific)
-        static const slaplog_pcre2::Regex rfc3339(R"(^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2}))");
-        slaplog_pcre2::MatchResults m;
-        if (slaplog_pcre2::regex_search(timestamp, m, rfc3339)) {
+        static const slaplog_rx::Regex rfc3339(R"(^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2}))");
+        slaplog_rx::MatchResults m;
+        if (slaplog_rx::regex_search(timestamp, m, rfc3339)) {
             std::tm tm = {};
             std::istringstream ss(timestamp);
             ss >> std::get_time(&tm, "%Y-%m-%dT%H:%M:%S");
@@ -757,14 +762,14 @@ std::string format_epoch_seconds(long long t) {
         }
 
         // Try syslog format
-        static const slaplog_pcre2::Regex syslog(R"(^([A-Z][a-z]{2})\s+(\d+)\s+(\d{2}):(\d{2}):(\d{2}))");
-        if (slaplog_pcre2::regex_search(timestamp, m, syslog)) {
+        static const slaplog_rx::Regex syslog(R"(^([A-Z][a-z]{2})\s+(\d+)\s+(\d{2}):(\d{2}):(\d{2}))");
+        if (slaplog_rx::regex_search(timestamp, m, syslog)) {
             return parse_syslog_timestamp(timestamp, true);
         }
 
         // Try debug format (hex timestamp)
-        static const slaplog_pcre2::Regex debug(R"(^[0-9a-f]{8}\.[0-9a-f]+)");
-        if (slaplog_pcre2::regex_search(timestamp, m, debug)) {
+        static const slaplog_rx::Regex debug(R"(^[0-9a-f]{8}\.[0-9a-f]+)");
+        if (slaplog_rx::regex_search(timestamp, m, debug)) {
             return parse_debug_timestamp(timestamp);
         }
 
@@ -801,11 +806,11 @@ std::string format_epoch_seconds(long long t) {
                           std::string& timestamp, std::string& host,
                           std::string& proc, std::string& rest,
                           LogFormat* detected_fmt) {
-        slaplog_pcre2::MatchResults m;
+        slaplog_rx::MatchResults m;
 
         switch (fmt) {
             case LogFormat::DEBUG: {
-                if (slaplog_pcre2::regex_match(line, m, slaplog_rx::RE_HDR_DEBUG)) {
+                if (slaplog_rx::regex_match(line, m, slaplog_rx::RE_HDR_DEBUG)) {
                     timestamp = m[1] + "." + m[2];
                     // m[3] is thread ID, we skip it
                     rest = m[4];
@@ -817,7 +822,7 @@ std::string format_epoch_seconds(long long t) {
             case LogFormat::SYSLOG_UTC:
             case LogFormat::SYSLOG_LOCALTIME:
             case LogFormat::SYSLOG: {
-                if (slaplog_pcre2::regex_match(line, m, slaplog_rx::RE_HDR_SYSLOG)) {
+                if (slaplog_rx::regex_match(line, m, slaplog_rx::RE_HDR_SYSLOG)) {
                     timestamp = m[1];
                     host = m[2];
                     proc = m[3];
@@ -825,7 +830,7 @@ std::string format_epoch_seconds(long long t) {
                     if (detected_fmt) *detected_fmt = fmt;
                     return true;
                 }
-                if (slaplog_pcre2::regex_match(line, m, slaplog_rx::RE_HDR_SYSLOG_UTC)) {
+                if (slaplog_rx::regex_match(line, m, slaplog_rx::RE_HDR_SYSLOG_UTC)) {
                     timestamp = m[1];
                     host = m[2];
                     proc = m[3];
@@ -833,7 +838,7 @@ std::string format_epoch_seconds(long long t) {
                     if (detected_fmt) *detected_fmt = LogFormat::SYSLOG_UTC;
                     return true;
                 }
-                if (slaplog_pcre2::regex_match(line, m, slaplog_rx::RE_HDR_SYSLOG_LOCAL)) {
+                if (slaplog_rx::regex_match(line, m, slaplog_rx::RE_HDR_SYSLOG_LOCAL)) {
                     timestamp = m[1];
                     host = m[2];
                     proc = m[3];
@@ -844,7 +849,7 @@ std::string format_epoch_seconds(long long t) {
                 break;
             }
             case LogFormat::RFC3339_UTC: {
-                if (slaplog_pcre2::regex_match(line, m, slaplog_rx::RE_HDR_RFC3339_UTC)) {
+                if (slaplog_rx::regex_match(line, m, slaplog_rx::RE_HDR_RFC3339_UTC)) {
                     timestamp = m[1];
                     host = m[2];
                     proc = m[3];
@@ -855,7 +860,7 @@ std::string format_epoch_seconds(long long t) {
                 break;
             }
             case LogFormat::OL26: {
-                if (slaplog_pcre2::regex_match(line, m, slaplog_rx::RE_HDR_OL26)) {
+                if (slaplog_rx::regex_match(line, m, slaplog_rx::RE_HDR_OL26)) {
                     timestamp = m[1];
                     rest = m[2];
                     if (detected_fmt) *detected_fmt = LogFormat::OL26;
@@ -864,7 +869,7 @@ std::string format_epoch_seconds(long long t) {
                 break;
             }
             case LogFormat::RFC3339: {
-                if (slaplog_pcre2::regex_match(line, m, slaplog_rx::RE_HDR_RFC3339)) {
+                if (slaplog_rx::regex_match(line, m, slaplog_rx::RE_HDR_RFC3339)) {
                     timestamp = m[1];
                     host = m[2];
                     proc = m[3];
@@ -1054,9 +1059,9 @@ std::string format_epoch_seconds(long long t) {
  * per-attribute count in qmark_filter_attr_count.
  */
     void track_qmark_filter(Aggregator& agg, const std::string& filter) {
-        slaplog_pcre2::MatchResults m;
+        slaplog_rx::MatchResults m;
         std::string f = filter;
-        while (slaplog_pcre2::regex_search(f, m, slaplog_rx::RE_QMARK)) {
+        while (slaplog_rx::regex_search(f, m, slaplog_rx::RE_QMARK)) {
             agg.qmark_filter_count++;
             agg.qmark_filter_attr_count[m[1]]++;
             // Use position/length to get suffix
@@ -1232,15 +1237,15 @@ Event parse_line(const std::string& line) {
     while (p < rest.size() && std::isspace(static_cast<unsigned char>(rest[p]))) ++p;
     if (p) rest.erase(0, p);
 
-    slaplog_pcre2::MatchResults m;
+    slaplog_rx::MatchResults m;
 
-    if (slaplog_pcre2::regex_match(rest, m, slaplog_rx::RE_CONN_OP)) {
+    if (slaplog_rx::regex_match(rest, m, slaplog_rx::RE_CONN_OP)) {
         ev.conn = to_int(m[1]);
         ev.op = to_int(m[2]);
         rest = m[3];
     } else {
-        if (slaplog_pcre2::regex_search(rest, m, slaplog_rx::RE_CONN)) ev.conn = to_int(m[1]);
-        if (slaplog_pcre2::regex_search(rest, m, slaplog_rx::RE_OP)) ev.op = to_int(m[1]);
+        if (slaplog_rx::regex_search(rest, m, slaplog_rx::RE_CONN)) ev.conn = to_int(m[1]);
+        if (slaplog_rx::regex_search(rest, m, slaplog_rx::RE_OP)) ev.op = to_int(m[1]);
     }
 
     // ------------------------------------------------------------------
@@ -1253,13 +1258,13 @@ Event parse_line(const std::string& line) {
     // We match either the full form (IP+NAME+USERNAME) or a partial form
     // (IP+NAME only) and populate the corresponding Event fields.
     if (!rest.empty() && rest[0] == '[') {
-        slaplog_pcre2::MatchResults st_m;
-        if (slaplog_pcre2::regex_match(rest, st_m, slaplog_rx::RE_SESSION_TRACK_FULL)) {
+        slaplog_rx::MatchResults st_m;
+        if (slaplog_rx::regex_match(rest, st_m, slaplog_rx::RE_SESSION_TRACK_FULL)) {
             ev.session_ip = st_m[1];
             ev.session_name = st_m[2];
             ev.session_username = st_m[3];
             rest = st_m[4];
-        } else if (slaplog_pcre2::regex_match(rest, st_m, slaplog_rx::RE_SESSION_TRACK_PARTIAL)) {
+        } else if (slaplog_rx::regex_match(rest, st_m, slaplog_rx::RE_SESSION_TRACK_PARTIAL)) {
             ev.session_ip = st_m[1];
             ev.session_name = st_m[2];
             rest = st_m[3];
@@ -1285,7 +1290,7 @@ Event parse_line(const std::string& line) {
     // next line that names one is folded in (see update_aggregator).  Only the
     // OID is kept; the criticality carries nothing for the report.
     if (rest.compare(0, 2, "=>") == 0 &&
-        slaplog_pcre2::regex_match(rest, m, slaplog_rx::RE_GET_CTRLS)) {
+        slaplog_rx::regex_match(rest, m, slaplog_rx::RE_GET_CTRLS)) {
         ev.kind = "GET_CTRLS";
         ev.oid = m[1];
         return ev;
@@ -1298,20 +1303,20 @@ Event parse_line(const std::string& line) {
     //   - RE_RESULT_NOTEXT   : no text= field
     //   - RE_RESULT_OID      : extended op result with oid= prefix
     if (fc == 'R' && rest.compare(0, 6, "RESULT") == 0) {
-        if (slaplog_pcre2::regex_match(rest, m, slaplog_rx::RE_RESULT_FULL)) {
+        if (slaplog_rx::regex_match(rest, m, slaplog_rx::RE_RESULT_FULL)) {
             ev.kind = "RESULT";
             ev.tag = to_int(m[1]); ev.err = to_int(m[2]);
             ev.qtime = to_double(m[3]); ev.etime = to_double(m[4]);
             ev.text = m[5];
             return ev;
         }
-        if (slaplog_pcre2::regex_match(rest, m, slaplog_rx::RE_RESULT_NOTEXT)) {
+        if (slaplog_rx::regex_match(rest, m, slaplog_rx::RE_RESULT_NOTEXT)) {
             ev.kind = "RESULT";
             ev.tag = to_int(m[1]); ev.err = to_int(m[2]);
             ev.qtime = to_double(m[3]); ev.etime = to_double(m[4]);
             return ev;
         }
-        if (slaplog_pcre2::regex_match(rest, m, slaplog_rx::RE_RESULT_OID)) {
+        if (slaplog_rx::regex_match(rest, m, slaplog_rx::RE_RESULT_OID)) {
             ev.kind = "RESULT";
             ev.oid = m[1];
             ev.err = to_int(m[2]); ev.qtime = to_double(m[3]); ev.etime = to_double(m[4]);
@@ -1330,14 +1335,14 @@ Event parse_line(const std::string& line) {
     //   - SASL          : SASL failure messages.
     if (fc == 'S') {
         if (rest.compare(0, 6, "SEARCH") == 0) {
-            if (slaplog_pcre2::regex_match(rest, m, slaplog_rx::RE_SEARCH_RESULT_FULL)) {
+            if (slaplog_rx::regex_match(rest, m, slaplog_rx::RE_SEARCH_RESULT_FULL)) {
                 ev.kind = "SEARCH_RESULT";
                 ev.tag = to_int(m[1]); ev.err = to_int(m[2]);
                 ev.qtime = to_double(m[3]); ev.etime = to_double(m[4]);
                 ev.nentries = to_int(m[5]); ev.text = m[6];
                 return ev;
             }
-            if (slaplog_pcre2::regex_match(rest, m, slaplog_rx::RE_SEARCH_RESULT_NOTEXT)) {
+            if (slaplog_rx::regex_match(rest, m, slaplog_rx::RE_SEARCH_RESULT_NOTEXT)) {
                 ev.kind = "SEARCH_RESULT";
                 ev.tag = to_int(m[1]); ev.err = to_int(m[2]);
                 ev.qtime = to_double(m[3]); ev.etime = to_double(m[4]);
@@ -1348,14 +1353,14 @@ Event parse_line(const std::string& line) {
             return ev;
         }
         if (rest.compare(0, 4, "SRCH") == 0) {
-            if (slaplog_pcre2::regex_match(rest, m, slaplog_rx::RE_SRCH)) {
+            if (slaplog_rx::regex_match(rest, m, slaplog_rx::RE_SRCH)) {
                 ev.kind = "SRCH";
                 ev.base = m[1];
                 ev.scope = to_int(m[2]); ev.deref = to_int(m[3]);
                 ev.filter = m[4];
                 return ev;
             }
-            if (slaplog_pcre2::regex_match(rest, m, slaplog_rx::RE_SRCH_ATTR)) {
+            if (slaplog_rx::regex_match(rest, m, slaplog_rx::RE_SRCH_ATTR)) {
                 ev.kind = "SRCH_ATTR";
                 ev.attrs = m[1];
                 return ev;
@@ -1364,7 +1369,7 @@ Event parse_line(const std::string& line) {
             return ev;
         }
         if (rest.compare(0, 4, "SASL") == 0) {
-            if (slaplog_pcre2::regex_match(rest, m, slaplog_rx::RE_SASL_FAILURE)) {
+            if (slaplog_rx::regex_match(rest, m, slaplog_rx::RE_SASL_FAILURE)) {
                 ev.kind = "SASL";
                 ev.conn = to_int(m[1]);
                 ev.raw = m[2];
@@ -1381,27 +1386,27 @@ Event parse_line(const std::string& line) {
     // The first match wins; lines that do not match any RE_BIND_*
     // pattern fall through to the misc section below.
     if (fc == 'B' && rest.compare(0, 4, "BIND") == 0) {
-        if (slaplog_pcre2::regex_match(rest, m, slaplog_rx::RE_BIND_AUTH)) {
+        if (slaplog_rx::regex_match(rest, m, slaplog_rx::RE_BIND_AUTH)) {
             ev.kind = "BIND_AUTH";
             ev.authcid = m[1]; ev.authzid = m[2];
             return ev;
         }
-        if (slaplog_pcre2::regex_match(rest, m, slaplog_rx::RE_BIND_DN_METHOD)) {
+        if (slaplog_rx::regex_match(rest, m, slaplog_rx::RE_BIND_DN_METHOD)) {
             ev.kind = "BIND";
             ev.dn = m[1]; ev.method = to_int(m[2]);
             return ev;
         }
-        if (slaplog_pcre2::regex_match(rest, m, slaplog_rx::RE_BIND_ANON)) {
+        if (slaplog_rx::regex_match(rest, m, slaplog_rx::RE_BIND_ANON)) {
             ev.kind = "BIND_ANON";
             ev.method = to_int(m[1]);
             return ev;
         }
-        if (slaplog_pcre2::regex_match(rest, m, slaplog_rx::RE_BIND_DN_MECH)) {
+        if (slaplog_rx::regex_match(rest, m, slaplog_rx::RE_BIND_DN_MECH)) {
             ev.kind = "BIND_DN_INFO";
             ev.dn = m[1]; ev.mech = m[2];
             return ev;
         }
-        if (slaplog_pcre2::regex_match(rest, m, slaplog_rx::RE_BIND_DN)) {
+        if (slaplog_rx::regex_match(rest, m, slaplog_rx::RE_BIND_DN)) {
             ev.kind = "BIND_DN_INFO";
             ev.dn = m[1];
             return ev;
@@ -1412,12 +1417,12 @@ Event parse_line(const std::string& line) {
     // --- UNBIND (first character 'U') ---
     // Two forms: with a msgid= parameter, or just the bare "UNBIND" token.
     if (fc == 'U' && rest.compare(0, 6, "UNBIND") == 0) {
-        if (slaplog_pcre2::regex_match(rest, m, slaplog_rx::RE_UNBIND)) {
+        if (slaplog_rx::regex_match(rest, m, slaplog_rx::RE_UNBIND)) {
             ev.kind = "UNBIND";
             ev.msgid = to_int(m[1]);
             return ev;
         }
-        if (slaplog_pcre2::regex_match(rest, m, slaplog_rx::RE_UNBIND_SIMPLE)) {
+        if (slaplog_rx::regex_match(rest, m, slaplog_rx::RE_UNBIND_SIMPLE)) {
             ev.kind = "UNBIND";
             return ev;
         }
@@ -1434,32 +1439,32 @@ Event parse_line(const std::string& line) {
     // "PATH=" prefix so that downstream code can distinguish the two types.
     if (fc == 'c') {
         if (rest.compare(0, 17, "connection_input:") == 0) {
-            if (slaplog_pcre2::regex_match(rest, m, slaplog_rx::RE_CONN_DEFER)) {
+            if (slaplog_rx::regex_match(rest, m, slaplog_rx::RE_CONN_DEFER)) {
                 ev.kind = "CONN_DEFER";
                 ev.conn = to_int(m[1]);
                 ev.text = m[2];
                 return ev;
             }
         } else if (rest.compare(0, 5, "conn=") == 0) {
-            if (slaplog_pcre2::regex_match(rest, m, slaplog_rx::RE_ACCEPT_PATH)) {
+            if (slaplog_rx::regex_match(rest, m, slaplog_rx::RE_ACCEPT_PATH)) {
                 ev.kind = "ACCEPT";
                 ev.conn = to_int(m[1]); ev.fd = to_int(m[2]);
                 ev.src = "PATH=" + m[3];
                 return ev;
             }
-            if (slaplog_pcre2::regex_match(rest, m, slaplog_rx::RE_ACCEPT_IP)) {
+            if (slaplog_rx::regex_match(rest, m, slaplog_rx::RE_ACCEPT_IP)) {
                 ev.kind = "ACCEPT";
                 ev.conn = to_int(m[1]); ev.fd = to_int(m[2]);
                 ev.src = "IP=" + m[3];
                 return ev;
             }
-            if (slaplog_pcre2::regex_match(rest, m, slaplog_rx::RE_CLOSED)) {
+            if (slaplog_rx::regex_match(rest, m, slaplog_rx::RE_CLOSED)) {
                 ev.kind = "CLOSED";
                 ev.conn = to_int(m[1]); ev.fd = to_int(m[2]);
                 ev.reason = m[3];
                 return ev;
             }
-            if (slaplog_pcre2::regex_match(rest, m, slaplog_rx::RE_TLS)) {
+            if (slaplog_rx::regex_match(rest, m, slaplog_rx::RE_TLS)) {
                 ev.kind = "TLS";
                 ev.conn = to_int(m[1]); ev.fd = to_int(m[2]);
                 return ev;
@@ -1471,7 +1476,7 @@ Event parse_line(const std::string& line) {
     // --- EXT (first character 'E') ---
     // Extended operations: "EXT oid=1.3.6.1.4.1.1466.20037"
     if (fc == 'E' && rest.compare(0, 3, "EXT") == 0) {
-        if (slaplog_pcre2::regex_match(rest, m, slaplog_rx::RE_EXT)) {
+        if (slaplog_rx::regex_match(rest, m, slaplog_rx::RE_EXT)) {
             ev.kind = "EXT";
             ev.oid = m[1];
             return ev;
@@ -1485,7 +1490,7 @@ Event parse_line(const std::string& line) {
     // ABANDON: "ABANDON msgid=12345" or "ABANDON msg=12345"
     if (fc == 'A') {
         if (rest.compare(0, 3, "ADD") == 0) {
-            if (slaplog_pcre2::regex_match(rest, m, slaplog_rx::RE_ADD)) {
+            if (slaplog_rx::regex_match(rest, m, slaplog_rx::RE_ADD)) {
                 ev.kind = "ADD";
                 ev.dn = m[1];
                 return ev;
@@ -1494,7 +1499,7 @@ Event parse_line(const std::string& line) {
             return ev;
         }
         if (rest.compare(0, 7, "ABANDON") == 0) {
-            if (slaplog_pcre2::regex_match(rest, m, slaplog_rx::RE_ABANDON)) {
+            if (slaplog_rx::regex_match(rest, m, slaplog_rx::RE_ABANDON)) {
                 ev.kind = "ABANDON";
                 ev.msgid = to_int(m[1]);
                 return ev;
@@ -1509,7 +1514,7 @@ Event parse_line(const std::string& line) {
     // MOD:    "MOD dn=cn=user,dc=example,dc=com" or "MOD attr=userPassword"
     if (fc == 'M') {
         if (rest.compare(0, 6, "MODRDN") == 0) {
-            if (slaplog_pcre2::regex_match(rest, m, slaplog_rx::RE_MODRDN)) {
+            if (slaplog_rx::regex_match(rest, m, slaplog_rx::RE_MODRDN)) {
                 ev.kind = "MODRDN";
                 ev.dn = m[1];
                 return ev;
@@ -1518,12 +1523,12 @@ Event parse_line(const std::string& line) {
             return ev;
         }
         if (rest.compare(0, 3, "MOD") == 0) {
-            if (slaplog_pcre2::regex_match(rest, m, slaplog_rx::RE_MOD)) {
+            if (slaplog_rx::regex_match(rest, m, slaplog_rx::RE_MOD)) {
                 ev.kind = "MOD";
                 ev.dn = m[1];
                 return ev;
             }
-            if (slaplog_pcre2::regex_match(rest, m, slaplog_rx::RE_MOD_ATTR_EQ)) {
+            if (slaplog_rx::regex_match(rest, m, slaplog_rx::RE_MOD_ATTR_EQ)) {
                 ev.kind = "MOD";
                 ev.attrs = m[1];
                 return ev;
@@ -1536,7 +1541,7 @@ Event parse_line(const std::string& line) {
     // --- DEL (first character 'D') ---
     // "DEL dn=cn=olduser,dc=example,dc=com"
     if (fc == 'D' && rest.compare(0, 3, "DEL") == 0) {
-        if (slaplog_pcre2::regex_match(rest, m, slaplog_rx::RE_DEL)) {
+        if (slaplog_rx::regex_match(rest, m, slaplog_rx::RE_DEL)) {
             ev.kind = "DEL";
             ev.dn = m[1];
             return ev;
@@ -1548,7 +1553,7 @@ Event parse_line(const std::string& line) {
     // --- CMP (first character 'C') ---
     // "CMP dn=cn=user,dc=example,dc=com"
     if (fc == 'C' && rest.compare(0, 3, "CMP") == 0) {
-        if (slaplog_pcre2::regex_match(rest, m, slaplog_rx::RE_CMP)) {
+        if (slaplog_rx::regex_match(rest, m, slaplog_rx::RE_CMP)) {
             ev.kind = "CMP";
             ev.dn = m[1];
             return ev;
@@ -1566,7 +1571,7 @@ Event parse_line(const std::string& line) {
     //   - syncprov:              Syncrepl provider messages.
     if (fc == 's') {
         if (rest.rfind("slap_get_csn:", 0) == 0) {
-            if (slaplog_pcre2::regex_match(rest, m, slaplog_rx::RE_CSN_GET)) {
+            if (slaplog_rx::regex_match(rest, m, slaplog_rx::RE_CSN_GET)) {
                 ev.kind = "CSN_GET";
                 ev.conn = to_int(m[1]); ev.op = to_int(m[2]);
                 ev.csn = m[3]; ev.manage = to_int(m[4]);
@@ -1576,7 +1581,7 @@ Event parse_line(const std::string& line) {
             return ev;
         }
         if (rest.rfind("slap_queue_csn:", 0) == 0) {
-            if (slaplog_pcre2::regex_match(rest, m, slaplog_rx::RE_CSN_QUEUE)) {
+            if (slaplog_rx::regex_match(rest, m, slaplog_rx::RE_CSN_QUEUE)) {
                 ev.kind = "CSN_QUEUE";
                 ev.csn = m[1];
                 return ev;
@@ -1585,7 +1590,7 @@ Event parse_line(const std::string& line) {
             return ev;
         }
         if (rest.rfind("slap_graduate_commit_csn:", 0) == 0) {
-            if (slaplog_pcre2::regex_match(rest, m, slaplog_rx::RE_CSN_GRADUATE)) {
+            if (slaplog_rx::regex_match(rest, m, slaplog_rx::RE_CSN_GRADUATE)) {
                 ev.kind = "CSN_GRADUATE";
                 ev.csn = m[1];
                 return ev;
@@ -1595,8 +1600,8 @@ Event parse_line(const std::string& line) {
         }
         if (rest.rfind("slap_global_control:", 0) == 0) {
             ev.kind = "GLOBAL_CONTROL";
-            slaplog_pcre2::MatchResults x;
-            if (slaplog_pcre2::regex_search(rest, x, slaplog_rx::RE_GLOBAL_CONTROL)) {
+            slaplog_rx::MatchResults x;
+            if (slaplog_rx::regex_search(rest, x, slaplog_rx::RE_GLOBAL_CONTROL)) {
                 ev.oid = x[1];
             }
             return ev;
@@ -1613,7 +1618,7 @@ Event parse_line(const std::string& line) {
     // The pairs are parsed into the ev.track map for later consumption
     // by update_aggregator().
     if (fc == 'T' && rest.compare(0, 5, "TRACK") == 0) {
-        if (slaplog_pcre2::regex_match(rest, m, slaplog_rx::RE_TRACK)) {
+        if (slaplog_rx::regex_match(rest, m, slaplog_rx::RE_TRACK)) {
             ev.kind = "TRACK";
             std::string track_data = m[1];
             std::istringstream iss(track_data);
@@ -1637,8 +1642,8 @@ Event parse_line(const std::string& line) {
     // indicate an unindexed search.  These are emitted by slapd's
     // backends when a filter term cannot use an index.
     if (rest.find("mdb_") != std::string::npos || rest.find("bdb_") != std::string::npos) {
-        slaplog_pcre2::MatchResults x;
-        if (slaplog_pcre2::regex_search(rest, x, slaplog_rx::RE_NOT_INDEXED)) {
+        slaplog_rx::MatchResults x;
+        if (slaplog_rx::regex_search(rest, x, slaplog_rx::RE_NOT_INDEXED)) {
             ev.kind = "NOT_INDEXED";
             ev.attrs = x[1];
             return ev;
@@ -1660,57 +1665,57 @@ Event parse_line(const std::string& line) {
     //   SLAPD_STARTING/STOPPED/SHUTDOWN, DAEMON_SHUTDOWN — server lifecycle.
 
     // critical/non-critical control (after conn/op parsed by RE_CONN_OP)
-    if (slaplog_pcre2::regex_match(rest, m, slaplog_rx::RE_CONTROL_NOT_SUPPORTED)) {
+    if (slaplog_rx::regex_match(rest, m, slaplog_rx::RE_CONTROL_NOT_SUPPORTED)) {
         ev.kind = "CONTROL_NOT_SUPPORTED";
         ev.text = m[1] + std::string(" control \"") + m[2] + "\"";
         return ev;
     }
     // BIND anonymous with extended mech info
-    if (slaplog_pcre2::regex_match(rest, m, slaplog_rx::RE_BIND_ANON_MECH_EXT)) {
+    if (slaplog_rx::regex_match(rest, m, slaplog_rx::RE_BIND_ANON_MECH_EXT)) {
         ev.kind = "BIND_ANON";
         ev.method = 0;
         return ev;
     }
     // STARTTLS operation
-    if (slaplog_pcre2::regex_match(rest, m, slaplog_rx::RE_STARTTLS)) {
+    if (slaplog_rx::regex_match(rest, m, slaplog_rx::RE_STARTTLS)) {
         ev.kind = "STARTTLS";
         return ev;
     }
     // do_bind: invalid dn
-    if (slaplog_pcre2::regex_match(rest, m, slaplog_rx::RE_DO_BIND_INVALID)) {
+    if (slaplog_rx::regex_match(rest, m, slaplog_rx::RE_DO_BIND_INVALID)) {
         ev.kind = "DO_BIND_INVALID";
         ev.dn = m[1];
         return ev;
     }
     // ldap_back_dobind_int
-    if (slaplog_pcre2::regex_match(rest, m, slaplog_rx::RE_LDAP_BACK_DOBIND_INT)) {
+    if (slaplog_rx::regex_match(rest, m, slaplog_rx::RE_LDAP_BACK_DOBIND_INT)) {
         ev.kind = "LDAP_BACK_DOBINT";
         ev.dn = m[1];
         return ev;
     }
     // ldap_back_retry
-    if (slaplog_pcre2::regex_match(rest, m, slaplog_rx::RE_LDAP_BACK_RETRY)) {
+    if (slaplog_rx::regex_match(rest, m, slaplog_rx::RE_LDAP_BACK_RETRY)) {
         ev.kind = "LDAP_BACK_RETRY";
         ev.text = m[1];
         ev.dn = m[2];
         return ev;
     }
     // slapd server events
-    if (slaplog_pcre2::regex_match(rest, m, slaplog_rx::RE_SLAPD_STARTING)) {
+    if (slaplog_rx::regex_match(rest, m, slaplog_rx::RE_SLAPD_STARTING)) {
         ev.kind = "SLAPD_STARTING";
         return ev;
     }
-    if (slaplog_pcre2::regex_match(rest, m, slaplog_rx::RE_SLAPD_STOPPED)) {
+    if (slaplog_rx::regex_match(rest, m, slaplog_rx::RE_SLAPD_STOPPED)) {
         ev.kind = "SLAPD_STOPPED";
         return ev;
     }
-    if (slaplog_pcre2::regex_match(rest, m, slaplog_rx::RE_SLAPD_SHUTDOWN)) {
+    if (slaplog_rx::regex_match(rest, m, slaplog_rx::RE_SLAPD_SHUTDOWN)) {
         ev.kind = "SLAPD_SHUTDOWN";
         ev.text = m[1];
         return ev;
     }
     // daemon: shutdown
-    if (slaplog_pcre2::regex_match(rest, m, slaplog_rx::RE_DAEMON_SHUTDOWN)) {
+    if (slaplog_rx::regex_match(rest, m, slaplog_rx::RE_DAEMON_SHUTDOWN)) {
         ev.kind = "DAEMON_SHUTDOWN";
         return ev;
     }
@@ -2897,33 +2902,129 @@ void process_file(const std::string& filename, Aggregator& agg,
 // ------------------------------------------------------------------
 // process_plain_file — Read a plain (uncompressed) text file
 // ------------------------------------------------------------------
-// Uses std::getline in a loop.  Each line is parsed and folded into
-// the Aggregator.  Progress is tracked as the cumulative byte size
-// (line length + 1 for the newline) of processed lines.
+// Uses memory-mapped I/O with SIMD-accelerated line finding.
+// Each line is parsed and folded into the Aggregator.
+// Progress is tracked as the cumulative byte size of processed lines.
 
 void process_plain_file(const std::string& filename, Aggregator& agg,
                         std::atomic<size_t>& progress,
                         std::ostream* unknown_out, std::mutex* unknown_mtx) {
-    std::ifstream file(filename);
-    if (!file) return;
-    std::string line;
-    while (std::getline(file, line)) {
-        Event ev = parse_line(line);
+    slaplog_simd::MmapReader reader;
+    if (!reader.open(filename.c_str())) {
+        // Fallback to std::ifstream if mmap fails
+        std::ifstream file(filename);
+        if (!file) return;
+        std::string line;
+        while (std::getline(file, line)) {
+            Event ev = parse_line(line);
+            update_aggregator(agg, ev, unknown_out, unknown_mtx);
+            progress += line.size() + 1;
+        }
+        return;
+    }
+    
+    if (reader.empty()) return;
+    
+    // Use SIMD-accelerated line processor
+    slaplog_simd::LineProcessor lp(reader.data(), reader.size());
+    
+    std::string_view line;
+    while (!(line = lp.next()).empty()) {
+        // parse_line expects std::string, so we construct one
+        // This avoids copying for most lines since string_view is cheap
+        Event ev = parse_line(std::string(line));
         update_aggregator(agg, ev, unknown_out, unknown_mtx);
         progress += line.size() + 1;
     }
+    
+    // Account for any trailing line without newline
+    progress += 0;  // already counted in loop
 }
+
+// ------------------------------------------------------------------
+// Parallel decompression helpers
+// ------------------------------------------------------------------
+// These use external tools (pigz, lbzip2, xz -T) for multi-threaded
+// decompression when available, falling back to the single-threaded
+// library implementations otherwise.
+
+namespace {
+#if defined(SLAPLOG_WASM)
+    // In WASM, no shell/process execution available - always use library fallbacks
+    inline bool tool_exists(const char*) { return false; }
+#else
+    // Check if a command-line tool exists
+    bool tool_exists(const char* tool) {
+        std::string cmd = "which " + std::string(tool) + " >/dev/null 2>&1";
+        return std::system(cmd.c_str()) == 0;
+    }
+#endif
+
+    // Process a file through a decompression pipe
+    // The pipe is expected to output plain text to stdout
+    void process_decompress_pipe(const std::string& filename, const char* cmd_template,
+                                 Aggregator& agg, std::atomic<size_t>& progress,
+                                 std::ostream* unknown_out, std::mutex* unknown_mtx) {
+        std::string cmd = std::string(cmd_template) + " \"" + filename + "\"";
+        FILE* pipe = ::popen(cmd.c_str(), "r");
+        if (!pipe) return;
+        
+        // Use the same chunked line splitting as bzip2/xz paths
+        char buffer[65536];
+        std::string line;
+        size_t bytes_read = 0;
+        
+        while (true) {
+            size_t n = ::fread(buffer, 1, sizeof(buffer), pipe);
+            if (n == 0) break;
+            
+            line.append(buffer, n);
+            bytes_read += n;
+            
+            size_t pos;
+            while ((pos = line.find('\n')) != std::string::npos) {
+                std::string l = line.substr(0, pos);
+                Event ev = parse_line(l);
+                update_aggregator(agg, ev, unknown_out, unknown_mtx);
+                progress += l.size() + 1;
+                line.erase(0, pos + 1);
+            }
+        }
+        
+        if (!line.empty()) {
+            Event ev = parse_line(line);
+            update_aggregator(agg, ev, unknown_out, unknown_mtx);
+            progress += line.size() + 1;
+        }
+        
+        ::pclose(pipe);
+    }
+} // anonymous namespace
 
 // ------------------------------------------------------------------
 // process_gzip_file — Read a gzip-compressed (.gz) file
 // ------------------------------------------------------------------
-// Uses zlib's gzgets() API, which provides line-by-line reading
-// semantics on top of gzip decompression.  Each line is processed
-// identically to the plain-text path.
+// Uses pigz -dc for parallel decompression when available,
+// falling back to zlib's gzgets() API.
 
 void process_gzip_file(const std::string& filename, Aggregator& agg,
                        std::atomic<size_t>& progress,
                        std::ostream* unknown_out, std::mutex* unknown_mtx) {
+    // Try parallel decompression with pigz first
+    static bool pigz_checked = false;
+    static bool pigz_available = false;
+    
+    if (!pigz_checked) {
+        pigz_available = tool_exists("pigz");
+        pigz_checked = true;
+    }
+    
+    if (pigz_available) {
+        process_decompress_pipe(filename, "pigz -dc", agg, progress, unknown_out, unknown_mtx);
+        return;
+    }
+    
+    // Fallback to single-threaded zlib
     gzFile file = gzopen(filename.c_str(), "rb");
     if (!file) return;
     char buffer[65536];
@@ -2941,14 +3042,27 @@ void process_gzip_file(const std::string& filename, Aggregator& agg,
 // ------------------------------------------------------------------
 // process_bzip2_file — Read a bzip2-compressed (.bz2) file
 // ------------------------------------------------------------------
-// Uses libbzip2's streaming decompression API (BZ2_bzRead).  Since
-// bzip2 does not offer a line-reading wrapper, we read fixed-size
-// chunks into a buffer and split on '\n' manually.  Any remaining
-// data after the final chunk is flushed as the last line.
+// Uses lbzip2 -dc for parallel decompression when available,
+// falling back to libbzip2's streaming decompression API.
 
 void process_bzip2_file(const std::string& filename, Aggregator& agg,
                         std::atomic<size_t>& progress,
                         std::ostream* unknown_out, std::mutex* unknown_mtx) {
+    // Try parallel decompression with lbzip2 first
+    static bool lbzip2_checked = false;
+    static bool lbzip2_available = false;
+    
+    if (!lbzip2_checked) {
+        lbzip2_available = tool_exists("lbzip2");
+        lbzip2_checked = true;
+    }
+    
+    if (lbzip2_available) {
+        process_decompress_pipe(filename, "lbzip2 -dc", agg, progress, unknown_out, unknown_mtx);
+        return;
+    }
+    
+    // Fallback to single-threaded libbzip2
     FILE* file = fopen(filename.c_str(), "rb");
     if (!file) return;
     int bzerror;
@@ -2981,15 +3095,27 @@ void process_bzip2_file(const std::string& filename, Aggregator& agg,
 // ------------------------------------------------------------------
 // process_xz_file — Read an xz-compressed (.xz) file
 // ------------------------------------------------------------------
-// Uses liblzma's streaming decoder (lzma_stream).  The decompression
-// loop reads input from the file, feeds it through the LZMA decoder,
-// and collects decompressed output in a buffer.  Lines are split on
-// '\n' from the output buffer, and any trailing data after the final
-// LZMA_STREAM_END is flushed as the last line.
+// Uses xz -T0 -dc for parallel decompression when available (uses all cores),
+// falling back to liblzma's streaming decoder.
 
 void process_xz_file(const std::string& filename, Aggregator& agg,
                      std::atomic<size_t>& progress,
                      std::ostream* unknown_out, std::mutex* unknown_mtx) {
+    // Try parallel decompression with xz -T0 first
+    static bool xz_checked = false;
+    static bool xz_available = false;
+    
+    if (!xz_checked) {
+        xz_available = tool_exists("xz");
+        xz_checked = true;
+    }
+    
+    if (xz_available) {
+        process_decompress_pipe(filename, "xz -T0 -dc", agg, progress, unknown_out, unknown_mtx);
+        return;
+    }
+    
+    // Fallback to single-threaded liblzma
     FILE* file = fopen(filename.c_str(), "rb");
     if (!file) return;
     lzma_stream strm = LZMA_STREAM_INIT;

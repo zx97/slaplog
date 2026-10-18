@@ -5,7 +5,7 @@
 // message they match — headers, connections, LDAP operations, results,
 // replication, session tracking, and miscellaneous server messages.
 //
-// Now using PCRE2 with JIT for faster, high-performance matching.
+// Using PCRE2 with JIT (native) or without JIT (WASM) for high performance.
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // GNU Affero General Public License v3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
@@ -29,10 +29,15 @@
 #include "pcre2_wrapper.hpp"
 
 namespace slaplog_rx {
-
     using Regex = slaplog_pcre2::Regex;
     using MatchResults = slaplog_pcre2::MatchResults;
     using Flag = slaplog_pcre2::Regex::Flag;
+    // Convenience functions for PCRE2 wrapper
+    using slaplog_pcre2::regex_match;
+    using slaplog_pcre2::regex_search;
+} // namespace slaplog_rx
+
+namespace slaplog_rx {
 
     // -----------------------------------------------------------------
     // --- Headers ---
