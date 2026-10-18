@@ -9,6 +9,12 @@ v3.0 (AGPL-3.0)** — see the [LICENSE](LICENSE) file for the full text.
 
 ## [Unreleased]
 
+## [4.0.2] - 2026-10-18
+
+### Added
+
+- **Documentation**: `--title` option now documented in the command-line options table.
+
 ## [4.0.1] - 2026-10-18
 
 ### Added
