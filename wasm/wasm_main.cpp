@@ -80,6 +80,7 @@ struct Options {
     std::string output_date_format = "rfc3339";
     std::string replay_separator = "|";
     int replay_limit = 1000000;
+    std::string custom_title;
     std::vector<std::string> inputs;   // positional arguments
 };
 
@@ -98,6 +99,8 @@ Options parse_options(const std::vector<std::string>& argv) {
             o.compact = true;
         } else if (arg == "--no-graph") {
             o.no_graph = true;
+        } else if ((arg == "--title") && i + 1 < argv.size()) {
+            take_value(o.custom_title);
         } else if (arg == "-s" || arg == "--section") {
             std::string val;
             take_value(val);
@@ -242,14 +245,14 @@ int emit_report() {
     const Options& o = s.opts;
     try {
         if (o.output_format == "json") {
-            print_json_report(s.total, duration, o.compact, o.output_date_format);
+            print_json_report(s.total, duration, o.compact, o.output_date_format, o.custom_title);
         } else if (o.output_format == "html") {
-            print_html_report(s.total, duration, o.compact, o.output_date_format);
+            print_html_report(s.total, duration, o.compact, o.output_date_format, o.custom_title);
         } else if (o.output_format == "replay") {
             print_replay_report(s.total, duration, o.output_date_format, o.replay_separator);
         } else {
             // color_mode 0: no ANSI escapes in the browser.
-            print_text_report(s.total, duration, o.compact, 0, o.sections, o.output_date_format);
+            print_text_report(s.total, duration, o.compact, 0, o.sections, o.output_date_format, o.custom_title);
         }
     } catch (const std::exception& e) {
         std::cerr << "slaplog(wasm): report generation failed: " << e.what() << "\n";
@@ -319,6 +322,12 @@ extern "C" EMSCRIPTEN_KEEPALIVE int slaplog_end(void) {
 // footer instead of hard-coding a number that would drift from version.hpp.
 extern "C" EMSCRIPTEN_KEEPALIVE const char* slaplog_version(void) {
     return SLAPLOG_VERSION;
+}
+
+// Set a custom title for the report (appended after default, separated by " - ").
+extern "C" EMSCRIPTEN_KEEPALIVE void slaplog_set_title(const char* title) {
+    if (!g_session) return;
+    g_session->opts.custom_title = title ? title : "";
 }
 
 // ---------------------------------------------------------------------------

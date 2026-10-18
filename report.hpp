@@ -33,11 +33,11 @@
 #include <set>
 #include <vector>
 
-void print_text_report(const Aggregator& agg, double duration, bool compact = false, int color_mode = 1, const std::set<std::string>& sections = {"all"}, const std::string& output_date_format = "rfc3339");
+void print_text_report(const Aggregator& agg, double duration, bool compact = false, int color_mode = 1, const std::set<std::string>& sections = {"all"}, const std::string& output_date_format = "rfc3339", const std::string& custom_title = "");
 
-void print_html_report(const Aggregator& agg, double duration, bool compact = false, const std::string& output_date_format = "rfc3339");
+void print_html_report(const Aggregator& agg, double duration, bool compact = false, const std::string& output_date_format = "rfc3339", const std::string& custom_title = "");
 
-void print_json_report(const Aggregator& agg, double duration, bool compact = false, const std::string& output_date_format = "rfc3339");
+void print_json_report(const Aggregator& agg, double duration, bool compact = false, const std::string& output_date_format = "rfc3339", const std::string& custom_title = "");
 
 void print_replay_report(const Aggregator& agg, double duration, const std::string& output_date_format = "rfc3339", const std::string& separator = "|");
 

@@ -561,6 +561,7 @@ struct Aggregator {
     // -- Error tracking --
     std::map<int, long long> error_count;                 // LDAP result code -> count.
     std::map<std::string, std::map<int, long long>> error_per_app; // App -> (code -> count).
+    std::map<int, std::string> error_text;                 // LDAP result code -> error text message.
 
     // -- Extended operation & control OID tracking --
     std::map<std::string, long long> ext_oid_count;            // Extended request OID -> count.

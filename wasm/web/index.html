@@ -227,6 +227,10 @@
           <option value="preserve">preserve</option>
         </select>
       </div>
+      <div class="field">
+        <label for="title">Custom title (appended after default, separated by " - ")</label>
+        <input type="text" id="title" placeholder="Optional custom subtitle">
+      </div>
     </div>
     <div class="auto-note">
       Input log format is always auto-detected, per line — debug, syslog-utc,
@@ -731,6 +735,8 @@
       const lim = parseInt($("limit").value, 10);
       if (!isNaN(lim)) args.push("--replay-limit", String(lim));
     }
+    const titleVal = $("title").value.trim();
+    if (titleVal) args.push("--title", titleVal);
     return args.join(" ");
   }
 

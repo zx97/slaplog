@@ -9,6 +9,25 @@ v3.0 (AGPL-3.0)** — see the [LICENSE](LICENSE) file for the full text.
 
 ## [Unreleased]
 
+## [4.0.1] - 2026-10-18
+
+### Added
+
+- **`--title` option** to append a custom subtitle to the report title (separated by " - ").  Available in both native CLI and WASM page (new `slaplog_set_title()` JS API).
+- **Error text display** in LDAP Result Codes and Errors per Application tables (text, HTML, and JSON outputs).  The `text=` field from result lines is now captured and shown, making it much easier to diagnose errors like `unwillingToPerform` with custom messages (e.g., password policy violations, ACL rules).
+- **Improved progress bar estimation** using measured compression ratios (gzip ~1.3x, bzip2 ~1.8x, xz ~2.5x) instead of fixed multipliers, giving much more accurate progress bars for compressed logs.
+
+### Changed
+
+- **WASM xz decompression fixed** — now uses liblzma fallback instead of trying to spawn `xz -T0` (which doesn't work in WASM sandbox).
+- **HTML report** now includes "Error Text" column in both "LDAP Result Codes" and "Errors per Application" tables.
+- **JSON output** now includes `"text"` field in `error_counts` objects.
+
+### Fixed
+
+- WASM xz decompression now works at ~87K lines/sec (was failing on `tool_exists`/`popen` in WASM sandbox).
+- All 13 test suites pass (303 checks), WASM HTML output byte-identical to native.
+
 ## [4.0.0] - 2026-10-18
 
 ### Added
