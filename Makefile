@@ -6,6 +6,13 @@ ROOT_DIR := $(dir $(realpath $(firstword $(MAKEFILE_LIST))))
 
 # Compiler flags - using system PCRE2
 CXXFLAGS := -std=c++17 -O3 -Wall -Wextra -pedantic -pthread -MMD -MP -I$(ROOT_DIR)
+
+# Enable SIMD optimizations based on CPU support
+# -march=native enables all instructions supported by the build machine
+# For distribution builds, consider -mavx2 -mfma instead
+SIMD_FLAGS := -march=native -mtune=native
+CXXFLAGS += $(SIMD_FLAGS)
+
 LDFLAGS := -lz -lbz2 -llzma -lpcre2-8
 
 # -------------------------------------------------------------------
@@ -106,6 +113,8 @@ EMXX      ?= em++
 WASM_DIR  := $(ROOT_DIR)wasm
 WASM_PRE  := $(WASM_DIR)/prebuilt
 WASM_INC  := $(WASM_PRE)/include
+WASM_LIB  := $(WASM_PRE)/lib
+
 WASM_OUT  := $(WASM_DIR)/web/slaplog.js
 
 WASM_SRCS := $(WASM_DIR)/wasm_main.cpp \
@@ -113,24 +122,29 @@ WASM_SRCS := $(WASM_DIR)/wasm_main.cpp \
              $(ROOT_DIR)report.cpp \
              $(ROOT_DIR)html_chart.cpp
 
-WASM_FLAGS := -std=c++17 -O2 -Wall -Wextra \
+WASM_FLAGS := -std=c++17 -O3 -Wall -Wextra \
               -I$(ROOT_DIR) -I$(WASM_INC) \
               -sUSE_ZLIB=1 -sUSE_BZIP2=1 \
               -sMODULARIZE=1 -sEXPORT_NAME=createSlaplog \
               -sINVOKE_RUN=0 -sEXIT_RUNTIME=0 \
               -sALLOW_MEMORY_GROWTH=1 \
+              -sINITIAL_MEMORY=134217728 \
+              -sMAXIMUM_MEMORY=4294967296 \
               -sSTACK_SIZE=5242880 \
               -sFORCE_FILESYSTEM=1 \
+              -sWASM_BIGINT \
+              -msimd128 \
               -sEXPORTED_FUNCTIONS='["_main","_slaplog_run","_slaplog_begin","_slaplog_input_begin","_slaplog_input_end","_slaplog_add_file","_slaplog_add_text","_slaplog_end","_slaplog_version","_malloc","_free"]' \
-              -sEXPORTED_RUNTIME_METHODS='["ccall","cwrap","FS","HEAPU8"]'
+              -sEXPORTED_RUNTIME_METHODS='["ccall","cwrap","FS","HEAPU8"]' \
+              -DSLAPLOG_WASM
 
 .PHONY: wasm wasm-clean
 
 wasm: $(WASM_OUT)
 
-$(WASM_OUT): $(WASM_SRCS) $(WASM_PRE)/liblzma.a $(WASM_INC)/nlohmann/json.hpp $(BUILD_FILE)
+$(WASM_OUT): $(WASM_SRCS) $(WASM_PRE)/liblzma.a $(WASM_PRE)/lib/libpcre2-8.a $(WASM_INC)/nlohmann/json.hpp $(BUILD_FILE)
 	$(EMXX) $(WASM_FLAGS) -DBUILD_NUMBER=$$(cat $(BUILD_FILE)) \
-	        $(WASM_SRCS) $(WASM_PRE)/liblzma.a -o $@
+	        $(WASM_SRCS) $(WASM_PRE)/liblzma.a $(WASM_PRE)/lib/libpcre2-8.a -o $@
 
 # liblzma (xz) has no Emscripten port: cross-build it once.
 $(WASM_PRE)/liblzma.a $(WASM_INC)/lzma.h: $(WASM_DIR)/build_liblzma.sh
