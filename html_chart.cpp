@@ -139,6 +139,13 @@ std::string hatch_background_css() {
            ldap_code_class_hatch_color(LdapCodeClass::PolicyOrClient) + " 3px 6px)";
 }
 
+// Shared palette: donut slices take a colour by position, and the per-server
+// coverage lanes take the same ones, so a cluster report reads in one set of
+// colours.  Nine is what a legend can carry without a repeat.
+constexpr size_t PALETTE_N = 9;
+const char* const PALETTE[PALETTE_N] = {"#3498db", "#e67e22", "#27ae60", "#9b59b6",
+                                        "#e74c3c", "#16a085", "#f1c40f", "#7f8c8d", "#34495e"};
+
 // One tag per chart, never reused: see print_hatch_defs().
 const char* const HATCH_TAG_STACK = "sl-hatch-stack";
 const char* const HATCH_TAG_BREAKDOWN = "sl-hatch-breakdown";
@@ -204,6 +211,12 @@ void print_chart_style() {
   .sl-tip{position:absolute;pointer-events:none;background:#2c3e50;color:#ecf0f1;border-radius:5px;
           padding:4px 9px;font-size:12px;white-space:nowrap;transform:translate(12px,-50%);z-index:9;
           box-shadow:0 2px 6px rgba(0,0,0,.25)}
+  /* Per-server time coverage: one lane under the x axis per server — the track
+     is the window the chart plots, the filled span is what that server's own
+     log covers, so the reader can see where one file stops and another starts. */
+  .sl-cov-track{fill:#eef1f5}
+  .sl-cov-span{fill-opacity:0.55}
+  .sl-cov-key-track{background:#eef1f5;border:1px solid #d3dbe3}
 </style>
 )CSS";
 }
@@ -263,6 +276,107 @@ void print_time_frame(double L, double T, double pw, double ph, double H,
               << "\" x2=\"" << num(W - 14, 0) << "\" y2=\"" << num(T + ph, 0) << "\"/>\n";
 }
 
+// ---- per-server coverage band ----------------------------------------------
+//
+// A cluster's servers are rotated and restarted at different moments, so their
+// files do not cover the same window as each other.  A curve that steps up and
+// then falls off a cliff at the edge of one server's file is otherwise read as
+// the end of a heavy operation, when it is only the end of that log.  Each
+// server therefore gets one lane under the x axis: the window the chart plots,
+// as a faint track, and the span that server's own log covers, painted on it.
+
+struct CoverageLane {
+    std::string server;
+    long long first = 0;                 // epoch seconds
+    long long last = 0;
+};
+
+// One lane per server whose own window is known, ordered by when its log starts.
+// Empty when a single server is in play — its window *is* the chart's window, so
+// a lane would say nothing — and also when the logs name no host at all, which
+// is what the debug format looks like.
+std::vector<CoverageLane> coverage_lanes(const Aggregator& agg) {
+    std::vector<CoverageLane> lanes;
+    if (agg.servers.size() < 2) return lanes;
+    for (const auto& [server, w] : agg.time_by_server) {
+        auto a = ts_epoch_seconds(w.first), b = ts_epoch_seconds(w.last);
+        if (!a || !b) continue;          // unreadable stamp: no lane rather than a wrong one
+        lanes.push_back({server, *a, *b});
+    }
+    if (lanes.size() < 2) return {};     // a single known window has nothing to compare with
+    std::sort(lanes.begin(), lanes.end(), [](const CoverageLane& a, const CoverageLane& b) {
+        if (a.first != b.first) return a.first < b.first;
+        return a.server < b.server;      // deterministic for two logs starting together
+    });
+    return lanes;
+}
+
+constexpr double LANE_H = 7.0;           // height of one server's lane
+constexpr double LANE_GAP = 2.0;         // between two lanes
+constexpr double LANE_LEAD = 5.0;        // between the x axis and the first lane
+
+// The height the SVG must gain to hold the strip.  The caller adds it to `H`,
+// which is exactly what makes room: print_time_frame pins the time labels to
+// `H - 12`, so they move down by the same amount and the strip takes the freed
+// space between the axis and them.
+double coverage_strip_height(size_t lanes) {
+    if (lanes == 0) return 0.0;
+    return LANE_LEAD + static_cast<double>(lanes) * LANE_H +
+           static_cast<double>(lanes - 1) * LANE_GAP;
+}
+
+// The strip itself, drawn in the space reserved above.  Emitted into the SVG the
+// caller has already opened, so it is called before `</svg>`.
+void print_coverage_lanes(const std::vector<CoverageLane>& lanes,
+                          long long t0, long long t1,
+                          double L, double pw, double T, double ph) {
+    if (lanes.empty()) return;
+    const double span = static_cast<double>(t1 - t0);
+    if (span <= 0) return;
+    auto xof = [&](long long t) { return L + (static_cast<double>(t - t0) / span) * pw; };
+    const double top = T + ph + LANE_LEAD;
+
+    std::cout << "<g class=\"sl-cov\">\n";
+    for (size_t i = 0; i < lanes.size(); ++i) {
+        const CoverageLane& ln = lanes[i];
+        const double y = top + static_cast<double>(i) * (LANE_H + LANE_GAP);
+        const double x0 = std::max(xof(ln.first), L);
+        const double x1 = std::min(xof(ln.last), L + pw);
+        std::cout << "<rect class=\"sl-cov-track\" x=\"" << num(L, 0) << "\" y=\"" << num(y, 1)
+                  << "\" width=\"" << num(pw, 0) << "\" height=\"" << num(LANE_H, 0) << "\"/>\n";
+        if (x1 > x0)
+            std::cout << "<rect class=\"sl-cov-span\" x=\"" << num(x0, 1) << "\" y=\"" << num(y, 1)
+                      << "\" width=\"" << num(x1 - x0, 1) << "\" height=\"" << num(LANE_H, 0)
+                      << "\" style=\"fill:" << PALETTE[i % PALETTE_N] << "\"/>\n";
+        // A hit area across the whole lane, so the server and the exact window
+        // can be read without measuring pixels.
+        std::cout << "<rect class=\"sl-hit\" x=\"" << num(L, 0) << "\" y=\"" << num(y, 1)
+                  << "\" width=\"" << num(pw, 0) << "\" height=\"" << num(LANE_H, 0)
+                  << "\" data-x=\"" << xml_escape(ln.server) << "\" data-y=\"log covers "
+                  << xml_escape(format_epoch_seconds(ln.first)) << " to "
+                  << xml_escape(format_epoch_seconds(ln.last)) << "\"/>\n";
+    }
+    std::cout << "</g>\n";
+}
+
+// The key, emitted in HTML beside the other legends.  Without it the lanes are
+// just marks: the track has to be told from the covered span, and each span has
+// to be told from the others.
+void print_coverage_legend(const std::vector<CoverageLane>& lanes) {
+    if (lanes.empty()) return;
+    std::cout << "<div class=\"sl-stack-legend\">"
+                 "<span class=\"sl-stack-key\" title=\"the window this chart plots\">"
+                 "<i class=\"sl-cov-key-track\"></i>chart window</span>";
+    for (size_t i = 0; i < lanes.size(); ++i) {
+        std::cout << "<span class=\"sl-stack-key\" title=\"covered by this server's own log\">"
+                  << "<i style=\"background:" << PALETTE[i % PALETTE_N] << "\"></i>"
+                  << xml_escape(lanes[i].server) << " — "
+                  << xml_escape(format_epoch_seconds(lanes[i].first)) << " \xe2\x86\x92 "
+                  << xml_escape(format_epoch_seconds(lanes[i].last)) << "</span>";
+    }
+    std::cout << "</div>\n";
+}
+
 void print_connection_chart(const Aggregator& agg) {
     if (agg.conn_timeline.empty()) return;
     std::vector<ConnEvent> ev = agg.conn_timeline;
@@ -313,9 +427,15 @@ void print_connection_chart(const Aggregator& agg) {
     const double step = nice_step(static_cast<double>(ymax), 5);
     const long long ytop = static_cast<long long>(std::ceil(ymax / step) * step);
 
-    // SVG geometry
-    const double W = 1000, H = 300, L = 68, R = 14, T = 14, B = 34;
-    const double pw = W - L - R, ph = H - T - B;
+    // SVG geometry.  The per-server coverage lanes are measured before anything
+    // is drawn: the strip grows the canvas by its own height, which is the only
+    // way to seat it under the axis without pushing the time labels off the
+    // bottom — print_time_frame pins those to `H - 12`, so they follow.
+    const double W = 1000, H0 = 300, L = 68, R = 14, T = 14, B = 34;
+    const double ph = H0 - T - B;
+    const std::vector<CoverageLane> lanes = coverage_lanes(agg);
+    const double H = H0 + coverage_strip_height(lanes.size());
+    const double pw = W - L - R;
     auto xof = [&](long long t) { return L + (static_cast<double>(t - t0) / span) * pw; };
     auto yof = [&](double v) { return T + ph - (v / static_cast<double>(ytop)) * ph; };
 
@@ -391,7 +511,7 @@ void print_connection_chart(const Aggregator& agg) {
     // are the whole of the chart's vocabulary and nothing else explains them.
     std::cout << " &middot; markers: green start, red stop, orange restart without a clean shutdown";
     std::cout << "</div>\n";
-    std::cout << "<svg viewBox=\"0 0 1000 300\" role=\"img\" "
+    std::cout << "<svg viewBox=\"0 0 1000 " << num(H, 0) << "\" role=\"img\" "
                  "aria-label=\"Simultaneous connections over time\">\n";
 
     // downtime bands, behind everything else
@@ -471,7 +591,10 @@ void print_connection_chart(const Aggregator& agg) {
                   << "\" data-y=\"" << xml_escape(note) << "\"/>\n";
     }
 
+    print_coverage_lanes(lanes, t0, t1, L, pw, T, ph);
+
     std::cout << "</svg>\n<div class=\"sl-tip\" hidden></div>\n";
+    print_coverage_legend(lanes);
     // No reading note here: how many connections were open at a glance needs no
     // explaining, and the marker key is in the subtitle.
     std::cout << "</div>\n";
@@ -572,8 +695,11 @@ void print_error_series_chart(const Aggregator& agg, long long t0, long long t1,
 
     const double step = nice_step(static_cast<double>(ymax), 4);
     const double ytop = std::ceil(ymax / step) * step;
-    const double W = 1000, H = 260, L = 68, R = 14, T = 14, B = 34;
-    const double pw = W - L - R, ph = H - T - B;
+    const double W = 1000, H0 = 260, L = 68, R = 14, T = 14, B = 34;
+    const double ph = H0 - T - B;
+    const std::vector<CoverageLane> lanes = coverage_lanes(agg);
+    const double H = H0 + coverage_strip_height(lanes.size());
+    const double pw = W - L - R;
     auto yof = [&](double v) { return T + ph - (v / ytop) * ph; };
     // Slice k covers [k/NB, (k+1)/NB) of the window.  The fractions are used
     // directly rather than round-tripped through a timestamp: span/NB truncates
@@ -582,7 +708,7 @@ void print_error_series_chart(const Aggregator& agg, long long t0, long long t1,
 
     std::cout << "<h2>Errors Over Time</h2>\n<div class=\"sl-chart\">\n";
     std::cout << "<div class=\"sl-chart-sub\">" << xml_escape(sub) << "</div>\n";
-    std::cout << "<svg viewBox=\"0 0 1000 260\" role=\"img\" aria-label=\"Errors over time, "
+    std::cout << "<svg viewBox=\"0 0 1000 " << num(H, 0) << "\" role=\"img\" aria-label=\"Errors over time, "
                  "stacked by result code\">\n";
     if (any_hatch) print_hatch_defs(HATCH_TAG_STACK);
     print_time_frame(L, T, pw, ph, H, t0, t1, ytop, step, ytop);
@@ -638,7 +764,10 @@ void print_error_series_chart(const Aggregator& agg, long long t0, long long t1,
                   << "\" data-y=\"" << xml_escape(det) << "\"/>\n";
     }
 
+    print_coverage_lanes(lanes, t0, t1, L, pw, T, ph);
+
     std::cout << "</svg>\n<div class=\"sl-tip\" hidden></div>\n";
+    print_coverage_legend(lanes);
     // Legend in HTML rather than in the drawing: it wraps, and the bands are
     // read by name here (the colours alone would not say which code is which).
     std::cout << "<div class=\"sl-stack-legend\">";
@@ -710,9 +839,7 @@ std::vector<Slice> keep_top(std::vector<Slice> rows, size_t keep, const char* ot
 // An explicit value may be a paint reference (`url(#…)`), used for the hatched
 // dual class; the pattern it names is emitted by whichever chart built the rows.
 const char* slice_fill(const std::vector<Slice>& rows, size_t i) {
-    static const char* PALETTE[] = {"#3498db", "#e67e22", "#27ae60", "#9b59b6",
-                                    "#e74c3c", "#16a085", "#f1c40f", "#7f8c8d", "#34495e"};
-    return rows[i].fill.empty() ? PALETTE[i % 9] : rows[i].fill.c_str();
+    return rows[i].fill.empty() ? PALETTE[i % PALETTE_N] : rows[i].fill.c_str();
 }
 
 std::string slice_style(const std::vector<Slice>& rows, size_t i) {

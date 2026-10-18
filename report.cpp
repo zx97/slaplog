@@ -192,6 +192,24 @@ namespace {
     }
 
     /**
+     * fmt_pct – Format a share (count out of total) as a percentage.
+     *
+     * Four significant digits keep a rare share readable: 71.107 %, 3.571 %,
+     * 0.002882 %.  A non-zero share below 0.01 % still scans as zero in a table
+     * whose other rows read "71.107 %", so it is printed as "<0.01%" instead:
+     * the count column carries the exact number, and the row can no longer be
+     * mistaken for "nothing happened here".  A literal zero keeps its "0%".
+     */
+    std::string fmt_pct(long long count, long long total) {
+        if (total <= 0) return "0%";
+        const double pct = 100.0 * static_cast<double>(count) / total;
+        if (count > 0 && pct < 0.01) return "<0.01%";
+        char buf[32];
+        std::snprintf(buf, sizeof(buf), "%.4g%%", pct);
+        return buf;
+    }
+
+    /**
      * strip_ansi – Remove all ANSI escape sequences from a string.
      *
      * Walks the input one character at a time; when it encounters the
@@ -552,9 +570,8 @@ void print_text_report(const Aggregator& agg, double processing_time, bool compa
         std::sort(by_ops.begin(), by_ops.end(), std::greater<>());
         std::vector<std::vector<std::string>> load_rows;
         for (const auto& [n, s] : by_ops) {
-            const double share = total_ops > 0 ? 100.0 * static_cast<double>(n) / total_ops : 0.0;
             load_rows.push_back({
-                s, fmt_int(n), fmt_double(share) + "%",
+                s, fmt_int(n), fmt_pct(n, total_ops),
                 fmt_etime(agg.etime_by_server.count(s) ? agg.etime_by_server.at(s) : 0.0),
                 fmt_int(agg.conn_by_server.count(s) ? agg.conn_by_server.at(s) : 0),
                 fmt_int(agg.results_by_server.count(s) ? agg.results_by_server.at(s) : 0)});
@@ -572,8 +589,7 @@ void print_text_report(const Aggregator& agg, double processing_time, bool compa
             if (m.empty()) return;
             std::vector<std::vector<std::string>> rows;
             for (const auto& [key, n] : sort_map_by_value_desc(m)) {
-                const double share = 100.0 * static_cast<double>(n) / agg.bind_total;
-                rows.push_back({key, fmt_int(n), fmt_double(share) + "%"});
+                rows.push_back({key, fmt_int(n), fmt_pct(n, agg.bind_total)});
             }
             print_table({title, "Count", "Share"}, rows);
         };
@@ -1247,12 +1263,9 @@ void print_html_report(const Aggregator& agg, double duration, bool /*compact*/,
         for (const auto& [s, n] : agg.ops_by_server) by_ops.emplace_back(n, s);
         std::sort(by_ops.begin(), by_ops.end(), std::greater<>());
         for (const auto& [n, s] : by_ops) {
-            const double share = total_ops > 0 ? 100.0 * static_cast<double>(n) / total_ops : 0.0;
-            char pct[32];
-            std::snprintf(pct, sizeof(pct), "%.4g%%", share);
             const double et = agg.etime_by_server.count(s) ? agg.etime_by_server.at(s) : 0.0;
             std::cout << "<tr><td>" << html_escape(s) << "</td><td>" << n << "</td><td>"
-                      << pct << "</td><td style=\"" << etime_color(et) << "\">"
+                      << fmt_pct(n, total_ops) << "</td><td style=\"" << etime_color(et) << "\">"
                       << fmt_double(et) << "</td><td>"
                       << (agg.conn_by_server.count(s) ? agg.conn_by_server.at(s) : 0)
                       << "</td><td>"
@@ -1297,11 +1310,8 @@ void print_html_report(const Aggregator& agg, double duration, bool /*compact*/,
             std::cout << "<table>\n<tr><th>" << title << "</th><th>Count</th>"
                          "<th>Share</th></tr>\n";
             for (const auto& [key, n] : sort_map_by_value_desc(m)) {
-                char pct[32];
-                std::snprintf(pct, sizeof(pct), "%.4g%%",
-                              total > 0 ? 100.0 * static_cast<double>(n) / total : 0.0);
                 std::cout << "<tr><td>" << html_escape(key) << "</td><td>" << n
-                          << "</td><td>" << pct << "</td></tr>\n";
+                          << "</td><td>" << fmt_pct(n, total) << "</td></tr>\n";
             }
             std::cout << "</table>\n";
         };
@@ -1846,6 +1856,19 @@ void print_json_report(const Aggregator& agg, double duration, bool /*compact*/,
             };
         }
         report["load_by_server"] = load;
+    }
+    // The window each server's own log covers, as the raw timestamps the log
+    // carried: the pair the charts draw as coverage lanes, and the only way to
+    // tell that a fall in a time series is the edge of a file.  Same shape as
+    // first_timestamp / last_timestamp, one entry per host.
+    if (!agg.time_by_server.empty()) {
+        json coverage = json::object();
+        for (const auto& [srv, w] : agg.time_by_server) {
+            if (w.first.empty() || w.last.empty()) continue;
+            coverage[srv] = { {"first_timestamp", w.first},
+                              {"last_timestamp", w.last} };
+        }
+        if (!coverage.empty()) report["time_by_server"] = coverage;
     }
     if (agg.bind_total > 0) {
         json bind = json::object();

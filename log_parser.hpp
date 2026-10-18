@@ -648,6 +648,25 @@ struct Aggregator {
     std::map<std::string, long long> conn_by_server;     // Connections opened.
     std::map<std::string, long long> results_by_server;  // Result lines.
 
+    // -- Per-server time coverage --
+    // The window each server's own log covers: the earliest and the latest
+    // timestamped line seen from that host.  A cluster's servers are rotated,
+    // restarted and shipped at different moments, so their files rarely cover
+    // the same span; without this the time-series curves step up and then fall
+    // off a cliff at the edge of one server's file, which reads as a heavy
+    // operation ending instead of as "that log stops here".  Same raw
+    // timestamp strings as firsttime/lasttime, so any input format works.
+    //
+    // The sort key of each bound is kept beside it: comparing the raw text of
+    // two mixed formats (RFC 3339 against year-less syslog) is meaningless,
+    // and re-deriving the key with ts_sort_key() on every line costs a regex
+    // match per line, which measured 4 % of the whole run.
+    struct ServerWindow {
+        std::string first, last;          // raw, as the log wrote them
+        std::string first_key, last_key;  // ts_sort_key() of the two
+    };
+    std::map<std::string, ServerWindow> time_by_server;
+
     // -- Bind usage --
     // How clients authenticated, counted from the BIND request lines.  The
     // method is the decoded LDAP authentication choice slapd logs (128 = the
