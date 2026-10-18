@@ -2240,6 +2240,10 @@ void update_aggregator(Aggregator& agg, const Event& ev,
             op.err = ev.err;
             agg.error_count[*ev.err]++;
             agg.error_per_app[who][*ev.err]++;
+            // Store the error text message for this error code (keep the last one seen)
+            if (!ev.text.empty()) {
+                agg.error_text[*ev.err] = ev.text;
+            }
             // Only the *failing* codes feed the "errors over time" chart: a
             // Compare answers compareFalse / compareTrue as its normal result, a
             // referral is a success and saslBindInProgress is an exchange still
@@ -2322,6 +2326,10 @@ void update_aggregator(Aggregator& agg, const Event& ev,
             op.err = ev.err;
             agg.error_count[*ev.err]++;
             agg.error_per_app[who][*ev.err]++;
+            // Store the error text message for this error code (keep the last one seen)
+            if (!ev.text.empty()) {
+                agg.error_text[*ev.err] = ev.text;
+            }
             // Only the *failing* codes feed the "errors over time" chart: a
             // Compare answers compareFalse / compareTrue as its normal result, a
             // referral is a success and saslBindInProgress is an exchange still
@@ -2732,6 +2740,10 @@ void merge_aggregators(Aggregator& dest, const Aggregator& src) {
     for (const auto& [app, errs] : src.error_per_app) {
         for (const auto& [code, cnt] : errs)
             dest.error_per_app[app][code] += cnt;
+    }
+    // Merge error text messages (keep the non-empty one if both have it)
+    for (const auto& [code, text] : src.error_text) {
+        if (!text.empty()) dest.error_text[code] = text;
     }
 
     // --- Extended operations and global control OIDs ---

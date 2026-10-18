@@ -486,7 +486,7 @@ static std::string hatch_background_css() {
 static const char* HATCH_CELL_BG =
     "repeating-linear-gradient(45deg,#f3e6f7 0 3px,#fdeee0 3px 6px)";
 
-void print_text_report(const Aggregator& agg, double processing_time, bool compact, int color_mode, const std::set<std::string>& sections, const std::string& /*output_date_format*/) {
+void print_text_report(const Aggregator& agg, double processing_time, bool compact, int color_mode, const std::set<std::string>& sections, const std::string& /*output_date_format*/, const std::string& custom_title) {
     set_color_output(color_mode);
     int limit = compact ? 5 : 20;
 
@@ -510,7 +510,11 @@ void print_text_report(const Aggregator& agg, double processing_time, bool compa
         return COLOR_RED;
     };
 
-    std::cout << COLOR_BOLD << COLOR_BLUE << "OpenLDAP Log Analysis Report" << COLOR_RESET << "\n";
+    std::cout << COLOR_BOLD << COLOR_BLUE << "OpenLDAP Log Analysis Report" << COLOR_RESET;
+    if (!custom_title.empty()) {
+        std::cout << " - " << custom_title;
+    }
+    std::cout << "\n";
     std::cout << COLOR_BOLD << "=============================================" << COLOR_RESET << "\n";
     std::cout << "Generated on: " << format_time(std::chrono::system_clock::now()) << "\n";
 
@@ -636,7 +640,9 @@ void print_text_report(const Aggregator& agg, double processing_time, bool compa
                 code_str = c + code_str + COLOR_RESET;
                 name = c + name + COLOR_RESET;
             }
-            error_rows.push_back({code_str, name, fmt_int(count)});
+            // Include error text if available
+            std::string text = agg.error_text.count(code) ? agg.error_text.at(code) : "";
+            error_rows.push_back({code_str, name, fmt_int(count), text});
         }
         if (!normal.empty())
             std::cout << "  Not errors (informational): " << normal << "\n";
@@ -646,7 +652,7 @@ void print_text_report(const Aggregator& agg, double processing_time, bool compa
                       << COLOR_MAGENTA << "violet" << COLOR_RESET << " refused by configuration   "
                       << COLOR_RED << "red" << COLOR_RESET << " slapd itself\n";
         }
-        print_table({"Code", "Name", "Count"}, error_rows);
+        print_table({"Code", "Name", "Count", "Error Text"}, error_rows);
     }
 
     // Errors per application
@@ -980,7 +986,7 @@ void print_text_report(const Aggregator& agg, double processing_time, bool compa
  *   > 0.1 s  → #00aaaa
  *   else     → #00aa00
  */
-void print_html_report(const Aggregator& agg, double duration, bool /*compact*/, const std::string& /*output_date_format*/) {
+void print_html_report(const Aggregator& agg, double duration, bool /*compact*/, const std::string& /*output_date_format*/, const std::string& custom_title) {
     // Charts are placed under the section whose data they draw; nothing is
     // emitted (not even the stylesheet) when there is no chart to draw.
     const bool charts = html_charts_available(agg);
@@ -1047,7 +1053,11 @@ void print_html_report(const Aggregator& agg, double duration, bool /*compact*/,
     std::cout << "<head>\n";
     std::cout << "<meta charset=\"UTF-8\">\n";
     std::cout << "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">\n";
-    std::cout << "<title>LDAP Log Analysis Report</title>\n";
+    std::cout << "<title>LDAP Log Analysis Report";
+    if (!custom_title.empty()) {
+        std::cout << " - " << custom_title;
+    }
+    std::cout << "</title>\n";
     // Inline CSS: uses a system-ui font stack, a dark h1 gradient header,
     // rounded corners, subtle shadows, and monospace table data cells.
     std::cout << "<style>\n";
@@ -1145,7 +1155,11 @@ void print_html_report(const Aggregator& agg, double duration, bool /*compact*/,
     std::cout << "</head>\n<body>\n";
 
     // Header
-    std::cout << "<h1>OpenLDAP Log Analysis Report</h1>\n";
+    std::cout << "<h1>OpenLDAP Log Analysis Report";
+    if (!custom_title.empty()) {
+        std::cout << " - " << custom_title;
+    }
+    std::cout << "</h1>\n";
 
     // Meta information
     // A flexbox row of key-value metadata at the top of the report.
@@ -1350,11 +1364,13 @@ void print_html_report(const Aggregator& agg, double duration, bool /*compact*/,
                                              "refused by configuration &mdash; or a client-side mistake")
               << " &middot; " << code_swatch(LdapCodeClass::Server, "slapd itself")
               << ".</p>\n";
-    std::cout << "<table>\n<tr><th>Code</th><th>Name</th><th>Count</th></tr>\n";
+    std::cout << "<table>\n<tr><th>Code</th><th>Name</th><th>Count</th><th>Error Text</th></tr>\n";
     for (const auto& [code, count] : error_sorted) {
+        std::string text = agg.error_text.count(code) ? agg.error_text.at(code) : "";
         std::cout << "<tr><td style=\"" << err_color(code) << "\">" << code << "</td>"
                   << "<td style=\"" << err_color(code) << "\">" << ldap_error_name(code) << "</td>"
-                  << "<td>" << count << "</td></tr>\n";
+                  << "<td>" << count << "</td>"
+                  << "<td>" << html_escape(text) << "</td></tr>\n";
     }
     std::cout << "</table>\n";
     // Right under the table it belongs to: every code, successful ones included,
@@ -1367,16 +1383,17 @@ void print_html_report(const Aggregator& agg, double duration, bool /*compact*/,
     // Errors per application
     if (!agg.error_per_app.empty()) {
         std::cout << "<h2 id=\"sec-errors-app\">Errors per Application</h2>\n";
-        std::cout << "<table>\n<tr><th>App</th><th>Code</th><th>Name</th><th>Count</th></tr>\n";
+        std::cout << "<table>\n<tr><th>App</th><th>Code</th><th>Name</th><th>Count</th><th>Error Text</th></tr>\n";
         for (const auto& [app_name, errs] : agg.error_per_app) {
             auto sorted_errs = sort_map_by_value_desc(errs);
             for (const auto& [code, cnt] : sorted_errs) {
                 auto it = LDAP_ERRORS.find(code);
                 std::string name = (it != LDAP_ERRORS.end()) ? it->second : "unknown";
-                std::cout << "<tr><td>" << app_name << "</td>"
+                std::string text = agg.error_text.count(code) ? agg.error_text.at(code) : "";
+                std::cout << "<tr><td>"
                           << "<td style=\"" << err_color(code) << "\">" << code << "</td>"
                           << "<td style=\"" << err_color(code) << "\">" << name << "</td>"
-                          << "<td>" << cnt << "</td></tr>\n";
+                          << "<td>" << cnt << "</td>" << "<td>" << html_escape(text) << "</td></tr>\n";
             }
         }
         std::cout << "</table>\n";
@@ -1833,8 +1850,12 @@ void print_html_report(const Aggregator& agg, double duration, bool /*compact*/,
  *   "qmark_filter_attributes":  { attr: count, ... }
  * }
  */
-void print_json_report(const Aggregator& agg, double duration, bool /*compact*/, const std::string& /*output_date_format*/) {
+void print_json_report(const Aggregator& agg, double duration, bool /*compact*/, const std::string& /*output_date_format*/, const std::string& custom_title) {
     json report;
+    report["title"] = "OpenLDAP Log Analysis Report";
+    if (!custom_title.empty()) {
+        report["title"] += " - " + custom_title;
+    }
 
     // Top-level scalar metrics
     report["processing_time"] = duration;
@@ -1920,7 +1941,8 @@ void print_json_report(const Aggregator& agg, double duration, bool /*compact*/,
     for (const auto& [code, count] : agg.error_count) {
         auto it = LDAP_ERRORS.find(code);
         std::string name = (it != LDAP_ERRORS.end()) ? it->second : "unknown";
-        errors[std::to_string(code)] = {{"name", name}, {"count", count}};
+                std::string text = agg.error_text.count(code) ? agg.error_text.at(code) : "";
+        errors[std::to_string(code)] = {{"name", name}, {"count", count}, {"text", text}};
     }
     report["error_counts"] = errors;
 

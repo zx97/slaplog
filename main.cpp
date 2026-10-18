@@ -305,6 +305,7 @@ static void usage(const char* prog) {
     std::cerr << "  --unknown-lines FILE       Write unknown lines to FILE\n";
     std::cerr << "  --unknown-lines-only FILE  Like --unknown-lines, no final report\n";
     std::cerr << "  --no-graph                 Omit the charts from the html report\n";
+    std::cerr << "  --title TITLE              Custom report title (appended after default, separated by \" - \")\n";
     std::cerr << "  -D, --documentation        Print documentation to stdout\n";
     std::cerr << "  -l, --licence              Print license to stdout\n";
     std::cerr << "  -d, --debug                Enable debug mode with verbose traces\n";
@@ -347,6 +348,7 @@ int main(int argc, char* argv[]) {
     // output_date_format  -- desired date format in reports
     // replay_separator    -- delimiter for replay output (default: "|")
     // replay_limit        -- max ops stored for replay (default: 1000000, 0=unlimited)
+    // custom_title        -- optional custom title appended to default (separated by " - ")
     // ------------------------------------------------------------------
     std::vector<std::string> inputs;
     bool recursive = false;
@@ -368,6 +370,7 @@ int main(int argc, char* argv[]) {
     std::string output_date_format = "rfc3339";
     std::string replay_separator = "|";
     int replay_limit = 1000000;
+    std::string custom_title;
 
     // ------------------------------------------------------------------
     // Argument parsing loop.
@@ -391,6 +394,8 @@ int main(int argc, char* argv[]) {
             quiet = true;
         } else if (arg == "--no-graph") {
             no_graph = true;
+        } else if ((arg == "--title") && i + 1 < argc) {
+            custom_title = argv[++i];
         } else if ((arg == "-n" || arg == "--max-files") && i + 1 < argc) {
             // Keep only the N most recently modified files in a directory scan.
             try {
@@ -850,15 +855,15 @@ int main(int argc, char* argv[]) {
     // ------------------------------------------------------------------
     try {
         if (output_format == "textcolor") {
-            print_text_report(final_agg, duration, compact_mode, 2, enabled_sections, output_date_format);
+            print_text_report(final_agg, duration, compact_mode, 2, enabled_sections, output_date_format, custom_title);
         } else if (output_format == "json") {
-            print_json_report(final_agg, duration, compact_mode, output_date_format);
+            print_json_report(final_agg, duration, compact_mode, output_date_format, custom_title);
         } else if (output_format == "html") {
-            print_html_report(final_agg, duration, compact_mode, output_date_format);
+            print_html_report(final_agg, duration, compact_mode, output_date_format, custom_title);
         } else if (output_format == "replay") {
             print_replay_report(final_agg, duration, output_date_format, replay_separator);
         } else {
-            print_text_report(final_agg, duration, compact_mode, color_mode, enabled_sections, output_date_format);
+            print_text_report(final_agg, duration, compact_mode, color_mode, enabled_sections, output_date_format, custom_title);
         }
     } catch (const std::exception& e) {
         std::cerr << "\nFatal error during report generation: " << e.what()
