@@ -3,8 +3,10 @@ CXX := g++
 # Directory containing this Makefile — resolves correctly even under
 # "make -C /path" or "make -f /path/to/Makefile".
 ROOT_DIR := $(dir $(realpath $(firstword $(MAKEFILE_LIST))))
-# Compiler flags
+
+# Compiler flags - using system PCRE2
 CXXFLAGS := -std=c++17 -O3 -Wall -Wextra -pedantic -pthread -MMD -MP -I$(ROOT_DIR)
+LDFLAGS := -lz -lbz2 -llzma -lpcre2-8
 
 # -------------------------------------------------------------------
 # std::filesystem linkage
@@ -17,7 +19,7 @@ CXXFLAGS := -std=c++17 -O3 -Wall -Wextra -pedantic -pthread -MMD -MP -I$(ROOT_DI
 # We check the GCC major version to decide.
 # -------------------------------------------------------------------
 GCC_MAJOR := $(shell $(CXX) -dumpversion | cut -d. -f1)
-LDFLAGS := -lz -lbz2 -llzma
+LDFLAGS := -lz -lbz2 -llzma -lpcre2-8
 ifneq ($(shell [ "$(GCC_MAJOR)" -lt 9 ] && echo old),)
   LDFLAGS += -lstdc++fs
 endif
