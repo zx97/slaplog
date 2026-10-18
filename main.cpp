@@ -289,7 +289,7 @@ static void usage(const char* prog) {
     std::cerr << "  -m, --mtime DAYS           Analyze only files modified in the last DAYS days\n";
     std::cerr << "  -j, --jobs N               Worker threads (default: CPU cores - 1)\n";
     std::cerr << "  -s, --section LIST         Sections to show (comma-sep): all,\n";
-    std::cerr << "                             stats,ops,errors,errors_per_app,\n";
+    std::cerr << "                             stats,load,ops,bind,errors,errors_per_app,\n";
     std::cerr << "                             bases,filters,wildcards,\n";
     std::cerr << "                             filters_per_app,attrs,apps,extops,\n";
     std::cerr << "                             qmark,csn,server,index,sessions,\n";

@@ -37,7 +37,9 @@
 
 enum class HtmlChart {
     Connections,          // simultaneous connections over time  (after Statistics)
+    LoadByServer,         // load split across the log's servers   (after Statistics)
     OperationTypes,       // operation mix                      (after Operation Counts)
+    BindMethod,           // authentication method mix          (after Bind Usage)
     ResultCodeBreakdown,  // every result code, successful ones included
                           //                                    (right after the table)
     ResultCodes,          // failing result codes only          (after LDAP Result Codes)

@@ -539,6 +539,52 @@ void print_text_report(const Aggregator& agg, double processing_time, bool compa
         print_table({"Metric", "Value"}, st_rows);
     }
 
+    // Load by server
+    // A cluster's logs aggregated into one report: how the load splits across
+    // the servers.  Shown only when there is more than one (see the HTML side);
+    // the JSON carries the totals either way.
+    if (has_section("load") && agg.servers.size() > 1) {
+        print_separator("Load by Server");
+        long long total_ops = 0;
+        for (const auto& [s, n] : agg.ops_by_server) total_ops += n;
+        std::vector<std::pair<long long, std::string>> by_ops;
+        for (const auto& [s, n] : agg.ops_by_server) by_ops.emplace_back(n, s);
+        std::sort(by_ops.begin(), by_ops.end(), std::greater<>());
+        std::vector<std::vector<std::string>> load_rows;
+        for (const auto& [n, s] : by_ops) {
+            const double share = total_ops > 0 ? 100.0 * static_cast<double>(n) / total_ops : 0.0;
+            load_rows.push_back({
+                s, fmt_int(n), fmt_double(share) + "%",
+                fmt_etime(agg.etime_by_server.count(s) ? agg.etime_by_server.at(s) : 0.0),
+                fmt_int(agg.conn_by_server.count(s) ? agg.conn_by_server.at(s) : 0),
+                fmt_int(agg.results_by_server.count(s) ? agg.results_by_server.at(s) : 0)});
+        }
+        print_table({"Server", "Operations", "Share", "Total etime", "Connections", "Results"},
+                    load_rows);
+    }
+
+    // Bind usage
+    // How clients authenticated: method, transport the bind ran over, and the
+    // SASL mechanism.  Absent when the log carries no BIND.
+    if (has_section("bind") && agg.bind_total > 0) {
+        print_separator("Bind Usage");
+        auto dist = [&](const char* title, const std::map<std::string, long long>& m) {
+            if (m.empty()) return;
+            std::vector<std::vector<std::string>> rows;
+            for (const auto& [key, n] : sort_map_by_value_desc(m)) {
+                const double share = 100.0 * static_cast<double>(n) / agg.bind_total;
+                rows.push_back({key, fmt_int(n), fmt_double(share) + "%"});
+            }
+            print_table({title, "Count", "Share"}, rows);
+        };
+        dist("Authentication method", agg.bind_method_count);
+        dist("Transport", agg.bind_transport_count);
+        dist("SASL mechanism", agg.bind_mech_count);
+        if (agg.bind_session_control > 0)
+            std::cout << "  " << agg.bind_session_control
+                      << " bind request(s) carried the session-tracking control.\n";
+    }
+
     // Operation counts
     // Lists every LDAP operation type (bind, search, add, modify, delete,
     // etc.) and how many times it was invoked.
@@ -874,20 +920,26 @@ void print_text_report(const Aggregator& agg, double processing_time, bool compa
     if (has_section("topconns")) {
         if (!agg.top_conns.empty()) {
             print_separator("Top Connections by Cumulative etime");
+            // A cluster's logs all number their connections from 1: the server
+            // column is what keeps two conn=1 apart (see "Load by Server").
+            const bool multi_server = agg.servers.size() > 1;
             std::vector<std::vector<std::string>> top_conn_rows;
             for (const auto& r : agg.top_conns) {
                 std::string etime_str = fmt_double(r.total_etime);
                 if (color_mode >= 2) etime_str = fmt_etime(r.total_etime);
-                top_conn_rows.push_back({
-                    etime_str,
-                    std::to_string(r.conn),
-                    r.who,
-                    r.src,
-                    std::to_string(r.ops_count),
-                    r.binddn
-                });
+                std::vector<std::string> row{etime_str};
+                if (multi_server) row.push_back(r.server);
+                row.push_back(std::to_string(r.conn));
+                row.push_back(r.who);
+                row.push_back(r.src);
+                row.push_back(std::to_string(r.ops_count));
+                row.push_back(r.binddn);
+                top_conn_rows.push_back(std::move(row));
             }
-            print_table({"total etime", "conn", "who", "src", "ops", "binddn"}, top_conn_rows);
+            std::vector<std::string> header{"total etime"};
+            if (multi_server) header.push_back("server");
+            header.insert(header.end(), {"conn", "who", "src", "ops", "binddn"});
+            print_table(header, top_conn_rows);
         }
     }
 }
@@ -1161,6 +1213,37 @@ void print_html_report(const Aggregator& agg, double duration, bool /*compact*/,
     }
     std::cout << "</table>\n";
 
+    // Load by server
+    // A cluster's logs are aggregated into one report; this section shows how
+    // the load splits across the servers.  Drawn only when there is more than
+    // one: with a single server the split would be one row at 100 %, and the
+    // *Statistics* section already carries that server's totals.
+    if (agg.servers.size() > 1) {
+        long long total_ops = 0;
+        for (const auto& [s, n] : agg.ops_by_server) total_ops += n;
+        std::cout << "<h2 id=\"sec-load\">Load by Server</h2>\n";
+        std::cout << "<table>\n<tr><th>Server</th><th>Operations</th><th>Share</th>"
+                     "<th>Total etime</th><th>Connections</th><th>Results</th></tr>\n";
+        std::vector<std::pair<long long, std::string>> by_ops;
+        for (const auto& [s, n] : agg.ops_by_server) by_ops.emplace_back(n, s);
+        std::sort(by_ops.begin(), by_ops.end(), std::greater<>());
+        for (const auto& [n, s] : by_ops) {
+            const double share = total_ops > 0 ? 100.0 * static_cast<double>(n) / total_ops : 0.0;
+            char pct[32];
+            std::snprintf(pct, sizeof(pct), "%.4g%%", share);
+            const double et = agg.etime_by_server.count(s) ? agg.etime_by_server.at(s) : 0.0;
+            std::cout << "<tr><td>" << html_escape(s) << "</td><td>" << n << "</td><td>"
+                      << pct << "</td><td style=\"" << etime_color(et) << "\">"
+                      << fmt_double(et) << "</td><td>"
+                      << (agg.conn_by_server.count(s) ? agg.conn_by_server.at(s) : 0)
+                      << "</td><td>"
+                      << (agg.results_by_server.count(s) ? agg.results_by_server.at(s) : 0)
+                      << "</td></tr>\n";
+        }
+        std::cout << "</table>\n";
+        print_html_chart(agg, HtmlChart::LoadByServer);
+    }
+
     // Each chart is emitted under the section whose data it draws; the first
     // one therefore sits right after the Statistics table.
     print_html_chart(agg, HtmlChart::Connections);
@@ -1173,6 +1256,44 @@ void print_html_report(const Aggregator& agg, double duration, bool /*compact*/,
     }
     std::cout << "</table>\n";
     print_html_chart(agg, HtmlChart::OperationTypes);
+
+    // Bind usage
+    // How clients authenticated: the method slapd logged, the transport the
+    // connection was on when the bind ran, and the SASL mechanism.  The whole
+    // section is absent when the log carries no BIND.
+    if (agg.bind_total > 0) {
+        std::cout << "<h2 id=\"sec-bind\">Bind Usage</h2>\n";
+        std::cout << "<p class=\"note\">Every BIND request, split three ways.  "
+                     "The <b>method</b> is what slapd decoded: 128 is the simple "
+                     "method, 163 is SASL, and a simple bind with an empty DN is "
+                     "anonymous.  The <b>transport</b> is read from the handshake "
+                     "that preceded the bind: TLS with no STARTTLS was implicit "
+                     "<code>ldaps</code>, TLS after a STARTTLS operation was "
+                     "<code>ldap + StartTLS</code>, no TLS at all was plain "
+                     "<code>ldap</code>.  The <b>mechanism</b> is the SASL "
+                     "mechanism slapd named when the bind succeeded.</p>\n";
+        auto dist = [&](const char* title, const std::map<std::string, long long>& m,
+                        long long total) {
+            if (m.empty()) return;
+            std::cout << "<table>\n<tr><th>" << title << "</th><th>Count</th>"
+                         "<th>Share</th></tr>\n";
+            for (const auto& [key, n] : sort_map_by_value_desc(m)) {
+                char pct[32];
+                std::snprintf(pct, sizeof(pct), "%.4g%%",
+                              total > 0 ? 100.0 * static_cast<double>(n) / total : 0.0);
+                std::cout << "<tr><td>" << html_escape(key) << "</td><td>" << n
+                          << "</td><td>" << pct << "</td></tr>\n";
+            }
+            std::cout << "</table>\n";
+        };
+        dist("Authentication method", agg.bind_method_count, agg.bind_total);
+        dist("Transport", agg.bind_transport_count, agg.bind_total);
+        dist("SASL mechanism", agg.bind_mech_count, agg.bind_total);
+        if (agg.bind_session_control > 0)
+            std::cout << "<p class=\"note\">" << agg.bind_session_control
+                      << " bind request(s) carried the session-tracking control.</p>\n";
+        print_html_chart(agg, HtmlChart::BindMethod);
+    }
 
     // LDAP result codes
     // Every LDAP result code, coloured by class, with the codes that are *not*
@@ -1475,10 +1596,16 @@ void print_html_report(const Aggregator& agg, double duration, bool /*compact*/,
     // Top connections
     // Connections sorted by cumulative elapsed time.
     std::cout << "<h2 id=\"sec-top-conns\">Top Connections by Cumulative etime</h2>\n";
-    std::cout << "<table>\n<tr><th>total etime</th><th>conn</th><th>who</th><th>src</th><th>ops</th></tr>\n";
+    // A cluster's logs all number their connections from 1: the server column is
+    // what keeps two conn=1 apart.  A single-server log does not need it.
+    const bool multi_server = agg.servers.size() > 1;
+    std::cout << "<table>\n<tr><th>total etime</th>";
+    if (multi_server) std::cout << "<th>server</th>";
+    std::cout << "<th>conn</th><th>who</th><th>src</th><th>ops</th></tr>\n";
     for (const auto& r : agg.top_conns) {
-        std::cout << "<tr><td style=\"" << etime_color(r.total_etime) << "\">" << fmt_double(r.total_etime) << "</td>"
-                  << "<td>" << r.conn << "</td><td>" << r.who
+        std::cout << "<tr><td style=\"" << etime_color(r.total_etime) << "\">" << fmt_double(r.total_etime) << "</td>";
+        if (multi_server) std::cout << "<td>" << html_escape(r.server) << "</td>";
+        std::cout << "<td>" << r.conn << "</td><td>" << r.who
                   << "</td><td>" << r.src << "</td><td>" << r.ops_count << "</td></tr>\n";
     }
     std::cout << "</table>\n";
@@ -1607,6 +1734,27 @@ void print_json_report(const Aggregator& agg, double duration, bool /*compact*/,
     // the "debug" format was used, which names no host.
     if (!agg.servers.empty())
         report["servers"] = std::vector<std::string>(agg.servers.begin(), agg.servers.end());
+    if (!agg.ops_by_server.empty()) {
+        json load = json::object();
+        for (const auto& [srv, n] : agg.ops_by_server) {
+            load[srv] = {
+                {"operations", n},
+                {"etime_total", agg.etime_by_server.count(srv) ? agg.etime_by_server.at(srv) : 0.0},
+                {"connections", agg.conn_by_server.count(srv) ? agg.conn_by_server.at(srv) : 0},
+                {"results", agg.results_by_server.count(srv) ? agg.results_by_server.at(srv) : 0},
+            };
+        }
+        report["load_by_server"] = load;
+    }
+    if (agg.bind_total > 0) {
+        json bind = json::object();
+        bind["total"] = agg.bind_total;
+        bind["by_method"] = agg.bind_method_count;
+        bind["by_transport"] = agg.bind_transport_count;
+        if (!agg.bind_mech_count.empty()) bind["by_mechanism"] = agg.bind_mech_count;
+        if (agg.bind_session_control > 0) bind["session_tracking"] = agg.bind_session_control;
+        report["bind_usage"] = bind;
+    }
     report["paged_search_count"] = agg.paged_search_count;
     if (!agg.paged_search_by_app.empty()) report["paged_search_by_app"] = agg.paged_search_by_app;
     report["connections_opened"] = agg.stats.conn_count;
@@ -1719,6 +1867,7 @@ void print_json_report(const Aggregator& agg, double duration, bool /*compact*/,
             if (seen.insert(tup).second) {
                 json entry;
                 entry["restart"] = corr.restart;
+                if (agg.servers.size() > 1) entry["server"] = corr.server;
                 entry["conn"] = corr.conn;
                 entry["timestamp"] = corr.ts;
                 entry["accept_ip"] = corr.accept_ip;
@@ -1738,6 +1887,9 @@ void print_json_report(const Aggregator& agg, double duration, bool /*compact*/,
     for (const auto& r : agg.top_conns) {
         json entry;
         entry["total_etime"] = r.total_etime;
+        // Only when it says something: a single-server log numbers its
+        // connections uniquely, and its JSON keeps the flat shape it always had.
+        if (agg.servers.size() > 1) entry["server"] = r.server;
         entry["conn"] = r.conn;
         entry["who"] = r.who;
         entry["src"] = r.src;

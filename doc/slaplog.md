@@ -68,6 +68,13 @@ Key features:
   operation.
 - Session tracking correlation: maps NAT'd ACCEPT IPs to real client IPs via
   the OpenLDAP session tracking request control `[IP=... NAME=... USERNAME=...]`.
+- **Cluster aggregation**: the logs of several servers (same period, or periods
+  that overlap) are analysed into a single global picture, with the load split
+  back per server.  A connection is keyed by *(server, conn)*, so two servers
+  that both number their connections from 1 are never merged into one.
+- **Bind usage**: how clients authenticated — method (simple / SASL /
+  anonymous), the transport the bind ran over (ldaps / ldap + StartTLS / plain
+  ldap), the SASL mechanism, and whether the session-tracking control was used.
 - Top-N slowest operations and busiest connections.
 - Indexing diagnostics, question-mark filter analysis, global control warnings.
 - Section filtering (`-s`) to show only the parts of the report you need.
@@ -233,10 +240,12 @@ to select specific sections:
 | Section | Content |
 |---------|---------|
 | `stats` | Processing time, line counts, connection stats, time range |
+| `load` | Per-server load: operations, cumulative etime, connections (cluster aggregation) |
 | `ops` | Per-operation type counts (BIND, SRCH, RESULT, etc.) |
+| `bind` | Bind usage: authentication method, transport (ldap/ldaps/StartTLS), SASL mechanism |
 | `errors` | Error code distribution with LDAP error names |
 | `errors_per_app` | Errors broken down by application identity |
-| `paged` | Searches using the pagedResultsControl (needs loglevel trace) |
+| `paged` | Searches using the pagedResultsControl (by shape, or the control line at loglevel `trace`) |
 | `bases` | Top search bases by count and cumulative etime |
 | `filters` | Top search filters by count, etime, nentries=1/0, wildcards |
 | `filters_per_app` | Filters broken down by application identity |
@@ -263,11 +272,80 @@ carries none and the row is simply absent.  The HTML report lays these metrics
 out **two per row**, because the section holds little data and a single column
 would make it far taller than it needs to be.
 
+### Load by Server
+
+The one section that only means something when the logs of **several servers**
+are analysed together — a cluster, a load-balanced pair, a set of rotated files
+collected from each node.  It is drawn only when the log names more than one
+server; the JSON always carries the per-server totals, since that output is
+data rather than a rendered report.
+
+Each file is parsed independently and its counters summed, so a run over the
+whole set yields one global picture; this section splits that picture back
+across the servers the log lines name:
+
+| Column | Meaning |
+|--------|---------|
+| Server | The hostname in the syslog/rfc3339 header of the lines |
+| Operations | Completed operations (result lines) attributed to that server |
+| Share | That server's part of the total operation count |
+| Total etime | Cumulative execution time of its operations |
+| Connections | Connections opened on it (`ACCEPT`) |
+| Results | Result lines it produced |
+
+A connection's identity is **(server, conn)**, not the connection number alone:
+every server in a cluster numbers its connections from 1, so `conn=1` on two
+servers is two different connections.  Keying on the number alone — as a
+single-server analysis can — would merge them into one and corrupt the
+per-connection figures (top connections, session correlation, paged runs).  When
+the log names more than one server, the *Top Connections* table therefore gains
+a **server** column so a connection number can be attributed to the right node;
+a single-server log, where the number is already unambiguous, keeps its
+narrower table.  The *replay* format keeps its fixed schema, in which `conn` is
+per-server: a replay run over a cluster should be split by server.
+
+The *debug* log format names no host, so it contributes nothing here and the
+section is absent — that format describes one server, and there is nothing to
+split.
+
 ### Operation Counts
 
 Counts per operation type: BIND, BIND ANONYMOUS, EXT, ADD, DEL, MOD, MODRDN,
 CMP, SRCH, SRCH ATTR, RESULT, SEARCH RESULT, ABANDON, UNBIND, TLS, SASL,
 GLOBAL_CONTROL, SYNCPROV, CSN_GET/QUEUE/GRADUATE, NOT_INDEXED, STARTTLS.
+
+### Bind Usage
+
+How clients authenticated, from the `BIND` request lines.  Three cuts of the
+same set of binds:
+
+**Authentication method** — the method slapd decoded and logged:
+
+| `method=` | Meaning |
+|-----------|---------|
+| `128` (0x80) | The simple method.  A simple bind with an **empty DN** is counted as *anonymous*, not *simple* |
+| `163` (0xa3) | SASL |
+| `0` | The anonymous-demotion line (`BIND anonymous mech=implicit …`) |
+
+**Transport** — read from the connection's state at the moment of the bind, so
+it is the transport that bind actually ran over:
+
+| Value | How it is recognised |
+|-------|----------------------|
+| `ldaps` | A `TLS established` line and **no** STARTTLS on the connection (implicit TLS) |
+| `ldap + StartTLS` | A `TLS established` line **after** a `STARTTLS` operation on the connection |
+| `ldap` | No `TLS established` at all |
+
+A bind that runs *before* the STARTTLS operation is counted as `ldap`, which is
+what it was: the credentials crossed in the clear, whatever happened later.
+
+**SASL mechanism** — the mechanism slapd names when a bind succeeds
+(`EXTERNAL`, `PLAIN`, …).  `SIMPLE` and `implicit` are not listed: the first is
+the simple method already counted above, the second the anonymous demotion.
+
+The section also reports how many bind requests carried the **session-tracking
+control**, and draws a donut of the method mix whose footnote gives the share of
+binds that ran over TLS.
 
 ### LDAP Result Codes
 
@@ -322,10 +400,19 @@ ways are used, and either may find one:
 That line carries no `conn=`, so the control is attributed to the connection of
 the next line that names one — normally the `SRCH` that asked for it.
 
-The shape is a match, not a proof: an application that repeats one search and
-then stops has the same shape, so the count is an upper bound on the real number
-of paged searches.  A run is closed when the parameters change, a non-search
+The shape is a match, not a proof.  Two cases it gets wrong, in opposite
+directions: an application that repeats one search and then stops has exactly
+this shape, so a counted run is an *upper bound* on the real number of paged
+searches; and a result set whose size is an exact multiple of the page size ends
+on a full page, leaving every count equal, so a real paged walk of that shape is
+*not* counted.  A run is closed when the parameters change, a non-search
 operation completes, or the connection ends.
+
+On the 1 GiB reference log the count is **zero**, and that is the honest answer
+rather than a failure of the method: its busiest searching connection interleaves
+a `SRCH` with a `DEL` (a uid lookup before a delete), so every run is one search
+long, and the rest query a different uid each time.  No connection there repeats
+one identical request, which is what a paged walk does.
 
 ### Search Analysis
 
@@ -408,7 +495,7 @@ Standalone HTML page with embedded CSS featuring:
   section the report actually drew (charts are not sections) and scrolls to it
   on click.  Its heading collapses the list.  The links are built from the page
   itself, so the index can never offer a section that is not there.
-- **Eight inline SVG charts**, each placed under the section it summarises —
+- **Ten inline SVG charts**, each placed under the section it summarises —
   drawn by default, disable with `--no-graph`.  None of them carries a
   *"How to read it"* note.  A note under a drawing that needs no explaining (a
   share ring, a connection curve, a pie) is noise, and a note that talks past the
@@ -450,6 +537,12 @@ Standalone HTML page with embedded CSS featuring:
     time (etime) per bind DN, with each account's operation count and average
     time per operation;
   - *Operation Types*: share of SRCH / BIND / MOD / … ;
+  - *Load by Server*: share of the operations each server of the analysed set
+    handled, with each server's operation count in the legend — the only chart
+    that only means something when several servers' logs are analysed together;
+  - *Bind Usage*: share of each authentication method (simple / SASL /
+    anonymous), with a footnote giving how many of the binds ran over TLS
+    (ldaps or ldap + StartTLS) rather than in the clear;
   - *Result Code Breakdown*: every result code, successes included, as bars
     coloured by class, with the same codes drawn as **a pie** on the right — same
     order, same colours, sized by area.  One huge slice and a tail of slivers is
