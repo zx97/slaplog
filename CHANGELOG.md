@@ -7,7 +7,7 @@ adheres to [Semantic Versioning](https://semver.org/).
 The project is distributed under the **GNU Affero General Public License
 v3.0 (AGPL-3.0)** — see the [LICENSE](LICENSE) file for the full text.
 
-## [Unreleased]
+## [3.9.0] - 2026-10-18
 
 ### Added
 
@@ -404,6 +404,7 @@ v3.0 (AGPL-3.0)** — see the [LICENSE](LICENSE) file for the full text.
 - Initial release: OpenLDAP slapd access-log analyzer with text/HTML/JSON
   reports, parallel processing, compressed-log support, and session tracking.
 
+[3.9.0]: https://github.com/zx97/slaplog/releases/tag/v3.9.0
 [3.8.0]: https://github.com/zx97/slaplog/releases/tag/v3.8.0
 [3.7.0]: https://github.com/zx97/slaplog/releases/tag/v3.7.0
 [3.6.2]: https://github.com/zx97/slaplog/releases/tag/v3.6.2
