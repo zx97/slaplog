@@ -34,6 +34,64 @@ namespace slaplog_pcre2 {
 // Forward declaration
 class Regex;
 
+// Proxy object for std::smatch-like access with .str() method
+class MatchProxy {
+public:
+    MatchProxy() = default;
+    MatchProxy(const std::string* ptr, bool m) : ptr_(ptr), matched_(m) {}
+    
+    // Implicit conversion to string_view for easy use
+    operator std::string_view() const { return ptr_ ? *ptr_ : std::string_view(); }
+    operator std::string() const { return ptr_ ? *ptr_ : std::string(); }
+    
+    // std::smatch compatibility: .str() method
+    std::string str() const { return ptr_ ? *ptr_ : std::string(); }
+    
+    // Check if this capture group participated in the match
+    bool matched() const { return ptr_ != nullptr; }
+    
+    // Length of the match
+    size_t length() const { return ptr_ ? ptr_->size() : 0; }
+    
+    // String concatenation operators for std::smatch-like usage
+    friend std::string operator+(const MatchProxy& lhs, const std::string& rhs) {
+        return lhs.str() + rhs;
+    }
+    friend std::string operator+(const std::string& lhs, const MatchProxy& rhs) {
+        return lhs + rhs.str();
+    }
+    friend std::string operator+(const MatchProxy& lhs, const char* rhs) {
+        return lhs.str() + rhs;
+    }
+    friend std::string operator+(const char* lhs, const MatchProxy& rhs) {
+        return lhs + rhs.str();
+    }
+    friend std::string operator+(const MatchProxy& lhs, const MatchProxy& rhs) {
+        return lhs.str() + rhs.str();
+    }
+    friend std::string operator+(const MatchProxy& lhs, std::string_view rhs) {
+        return lhs.str() + std::string(rhs);
+    }
+    friend std::string operator+(std::string_view lhs, const MatchProxy& rhs) {
+        return std::string(lhs) + rhs.str();
+    }
+    friend std::string operator+(const MatchProxy& lhs, char rhs) {
+        return lhs.str() + rhs;
+    }
+    friend std::string operator+(char lhs, const MatchProxy& rhs) {
+        return std::string(1, lhs) + rhs.str();
+    }
+    
+    // Stream output operator for std::smatch-like usage
+    friend std::ostream& operator<<(std::ostream& os, const MatchProxy& mp) {
+        return os << mp.str();
+    }
+    
+private:
+    const std::string* ptr_ = nullptr;
+    bool matched_ = false;
+};
+
 // Match results container, mimicking std::smatch
 class MatchResults {
 public:
@@ -42,9 +100,15 @@ public:
     // Number of sub-matches (0 = full match, 1+ = capture groups)
     size_t size() const { return matches_.size(); }
     
-    // Access by index
-    const std::string& operator[](size_t i) const { return matches_[i]; }
-    std::string& operator[](size_t i) { return matches_[i]; }
+    // Access by index - returns proxy with .str() for std::smatch compatibility
+    MatchProxy operator[](size_t i) const {
+        if (i < matches_.size()) return MatchProxy(&matches_[i], true);
+        return MatchProxy(nullptr, false);
+    }
+    MatchProxy operator[](size_t i) {
+        if (i < matches_.size()) return MatchProxy(&matches_[i], true);
+        return MatchProxy(nullptr, false);
+    }
     
     // Check if match succeeded
     bool matched() const { return matched_; }
