@@ -1092,16 +1092,35 @@ void print_html_report(const Aggregator& agg, double duration, bool /*compact*/,
     std::cout << "  table.stats td.sl-stat-l { font-weight:600; color:#34495e; width:240px; }\n";
     // Floating section index, fixed in the top-right corner.  Built by script
     // from the h2[id] elements, so it never lists a section the report did not
-    // draw and never drifts from the headings themselves.
+    // draw and never drifts from the headings themselves.  It opens with the
+    // report — the reader sees where he can go — then tucks itself away into a
+    // three-line window on the section being read: the one before, the one the
+    // reader is in, the one after.  It opens again when the pointer comes near,
+    // and a click on the heading pins it open (the only way to reach it without
+    // a pointer: touch, keyboard).
     std::cout << "  .sl-index { position:fixed; top:12px; right:12px; z-index:1000; max-width:260px; "
-                 "max-height:80vh; overflow:auto; background:#fff; border:1px solid #c8d0da; "
-                 "border-radius:6px; box-shadow:0 2px 10px rgba(0,0,0,0.12); font-size:0.8em; }\n";
+                 "background:#fff; border:1px solid #c8d0da; border-radius:6px; "
+                 "box-shadow:0 2px 10px rgba(0,0,0,0.12); font-size:0.8em; }\n";
     std::cout << "  .sl-index-head { padding:6px 12px; background:#34495e; color:#fff; "
-                 "font-weight:600; cursor:pointer; user-select:none; }\n";
-    std::cout << "  .sl-index.collapsed .sl-index-list { display:none; }\n";
-    std::cout << "  .sl-index-list { padding:6px 0; }\n";
+                 "font-weight:600; cursor:pointer; user-select:none; white-space:nowrap; "
+                 "border-radius:5px 5px 0 0; }\n";
+    std::cout << "  .sl-index-caret { display:inline-block; margin-left:7px; opacity:0.75; "
+                 "transition:transform 0.2s; }\n";
+    std::cout << "  .sl-index.open .sl-index-caret { transform:rotate(90deg); }\n";
+    // The list is a window, not a disclosure: it always shows the row being read
+    // and its neighbours, and grows to the whole index when the index opens.  The
+    // window is a clipped, scrolled list rather than a shorter one, so the lines
+    // do not change identity as it opens and closes — and both states are a pixel
+    // height, which is what lets the change be animated.  The box is sized by all
+    // the links either way, so its width never moves.
+    std::cout << "  .sl-index-list { padding:6px 0; height:var(--sl-win,66px); overflow:hidden; "
+                 "transition:height 0.32s ease; }\n";
+    std::cout << "  .sl-index.open .sl-index-list { height:var(--sl-full,78vh); overflow:auto; }\n";
+    // One line per row, so every row is the same height and the window can be
+    // sized from a single measurement.
     std::cout << "  .sl-index-list a { display:block; padding:3px 12px; color:#2980b9; "
-                 "text-decoration:none; }\n";
+                 "text-decoration:none; white-space:nowrap; overflow:hidden; "
+                 "text-overflow:ellipsis; }\n";
     std::cout << "  .sl-index-list a:hover { background:#eef2f7; }\n";
     std::cout << "  .sl-index-list a.active { background:#34495e; color:#fff; }\n";
     std::cout << "  @media (max-width:768px) { .sl-index { max-width:45vw; } }\n";
@@ -1638,8 +1657,12 @@ void print_html_report(const Aggregator& agg, double duration, bool /*compact*/,
   })(tables[i]); }
 
   // Floating section index: built from the h2[id] elements, so it lists exactly
-  // the sections the report drew — charts have no id and stay out of it.  The
-  // heading toggles the list; clicking a link scrolls to that section.
+  // the sections the report drew — charts have no id and stay out of it.  It
+  // opens with the report, then tucks itself into a three-line window around the
+  // section being read (the one before, the one read, the one after).  It opens
+  // again when the pointer comes near, and a click on the heading pins it open,
+  // the only way to reach it without a pointer (touch, keyboard).  Clicking a
+  // link scrolls to that section.
   var hs = document.querySelectorAll('h2[id]');
   if (hs.length) {
     var box = document.createElement('div');
@@ -1647,36 +1670,114 @@ void print_html_report(const Aggregator& agg, double duration, bool /*compact*/,
     var head = document.createElement('div');
     head.className = 'sl-index-head';
     head.appendChild(document.createTextNode('Index'));
-    head.onclick = function(){ box.classList.toggle('collapsed'); };
+    var caret = document.createElement('span');
+    caret.className = 'sl-index-caret';
+    caret.appendChild(document.createTextNode('\u25B8'));   // ▸, rotated when open
+    head.appendChild(caret);
     var list = document.createElement('div');
     list.className = 'sl-index-list';
+    var rows = [];
     for (var i = 0; i < hs.length; i++) {
       var a = document.createElement('a');
       a.href = '#' + hs[i].id;
       a.appendChild(document.createTextNode(hs[i].textContent));
       list.appendChild(a);
+      rows.push(a);
     }
     box.appendChild(head);
     box.appendChild(list);
     document.body.appendChild(box);
 
-    // Highlight the section the reader is in — the last heading whose top has
-    // passed the offset — so the index doubles as a position indicator.
-    var links = {};
-    for (var i = 0; i < hs.length; i++) links[hs[i].id] = list.childNodes[i];
-    var updateActive = function() {
-      var current = null;
-      for (var i = 0; i < hs.length; i++)
-        if (hs[i].getBoundingClientRect().top <= 100) current = hs[i].id;
-      for (var id in links) links[id].classList.toggle('active', id === current);
+    // --- the window on the section being read ----------------------------
+    // One list, two heights: closed, the box clips it to WIN rows and scrolls it
+    // to the section being read, so those three lines are always the ones in
+    // view; open, it shows the lot.  Heights are pixels in both states, which is
+    // what makes the change animatable; only the box is measured, never the text.
+    var WIN = 3;                       // rows visible when closed
+    var PAD = 12;                      // the list's own 6px top and bottom
+    var open = false, pinned = false, intro = true, queued = false, ticking = false;
+    var px = -1, py = -1, active = 0, top0 = 0;
+
+    function measure() {
+      var row = rows[0].offsetHeight || 22;
+      var win = row * Math.min(WIN, rows.length) +
+                (window.getComputedStyle(list).boxSizing === 'content-box' ? 0 : PAD);
+      var full = Math.min(Math.round(window.innerHeight * 0.78), list.scrollHeight || win);
+      box.style.setProperty('--sl-win', win + 'px');
+      box.style.setProperty('--sl-full', Math.max(full, win) + 'px');
+    }
+    // Put the window on the active row: a contiguous three-row run containing it,
+    // clamped to the list, scrolled to the top of the box.  Open, the list is the
+    // reader's to scroll, so it is left alone.
+    function place() {
+      top0 = rows[0].offsetTop;
+      if (open) return;
+      var start = Math.max(0, Math.min(active - 1, rows.length - WIN));
+      list.scrollTop = rows[start].offsetTop - top0;
+    }
+    function setOpen(v) {
+      if (v === open) return;
+      measure();
+      open = v;
+      box.classList.toggle('open', v);
+      if (v) place();                                        // no scrolling left over
+      else { anchor = head.getBoundingClientRect(); place(); }
+    }
+
+    // --- open on approach, close on leave --------------------------------
+    // The reference is the *collapsed* box: its top-right anchor never moves, the
+    // list growing down from it.  Measuring the live box instead would make the
+    // test chase the box it is itself opening, and flap.
+    var anchor = head.getBoundingClientRect();
+    var NEAR = 48;    // how close the pointer must come to open
+    var KEEP = 110;   // how far it must leave before closing again (hysteresis)
+
+    function apply() {
+      if (pinned) { setOpen(true); return; }
+      if (px < 0) { if (!intro) setOpen(false); return; }
+      var r = box.getBoundingClientRect();
+      // Inside the box — the opened list included — always counts as near.
+      if (px >= r.left && px <= r.right && py >= r.top && py <= r.bottom) { setOpen(true); return; }
+      // The opening view is the reader's to look at: it is not cut short by a
+      // pointer that merely happens to be far away.
+      if (intro) return;
+      var d = open ? KEEP : NEAR;
+      setOpen(px >= anchor.left - d && px <= anchor.right + d &&
+              py >= anchor.top - d && py <= anchor.bottom + d);
+    }
+    function onMove(x, y) {
+      px = x; py = y;
+      if (queued) return;
+      queued = true;
+      window.requestAnimationFrame(function(){ queued = false; apply(); });
+    }
+    head.onclick = function() {
+      pinned = !pinned;
+      if (pinned) setOpen(true); else apply();
     };
-    var ticking = false;
+    document.addEventListener('mousemove', function(e){ onMove(e.clientX, e.clientY); });
+    // Leaving the window must not leave the list hanging open.
+    document.addEventListener('mouseleave', function(){ px = -1; py = -1; apply(); });
+    window.addEventListener('resize', function(){ measure(); if (!open) anchor = head.getBoundingClientRect(); place(); });
+
+    // Highlight the section the reader is in — the last heading whose top has
+    // passed the offset — and move the window onto it, so the index doubles as a
+    // position indicator even while it is tucked away.
+    var updateActive = function() {
+      active = 0;
+      for (var i = 0; i < hs.length; i++)
+        if (hs[i].getBoundingClientRect().top <= 100) active = i;
+      for (var i = 0; i < rows.length; i++) rows[i].classList.toggle('active', i === active);
+      place();
+    };
     window.addEventListener('scroll', function() {
       if (ticking) return;
       ticking = true;
       window.requestAnimationFrame(function() { updateActive(); ticking = false; });
     });
     updateActive();
+    setOpen(true);          // it opens with the report…
+    window.setTimeout(function(){ intro = false; apply(); }, 3000);   // …then tucks itself away
   }
 })();
 </script>

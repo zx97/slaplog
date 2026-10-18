@@ -53,8 +53,21 @@ Drop one or more log files, pick the output format and options, then click
 sequentially and aggregated into a single report, and a progress bar reports
 the file in flight and the bytes consumed.
 
-The form mirrors the CLI options. Two details worth knowing:
+The form mirrors the CLI options. Three details worth knowing:
 
+- **Folders.** A browser picker is bound to a single folder and a drag cannot
+  span folders, so a folder is the unit that works: **Add a folder…** takes a
+  whole tree (`webkitdirectory`, every descendant file), and a dropped folder is
+  walked entry by entry. This is how one gathers a cluster's logs
+  (`logs/*/access.log`) in one gesture. Selections add up without
+  duplicating, and each file is identified by its path inside the selection —
+  a folder holding one identically named log per server directory would
+  otherwise lose all but the first to the duplicate test.
+- **Removing a file.** Every row of the list has its own remove button, however
+  many files were picked: the list scrolls rather than summarising its tail, so
+  a file added by mistake — a folder picked twice under a different name, an
+  unrelated log dragged in — is taken back out one at a time, and *clear file
+  list* empties the whole selection.
 - The **Replay options** (separator, op limit) appear only when the output
   format is `replay`.
 - The **Sections & detail** panel only appears for the `text` format — the

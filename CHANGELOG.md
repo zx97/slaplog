@@ -7,6 +7,37 @@ adheres to [Semantic Versioning](https://semver.org/).
 The project is distributed under the **GNU Affero General Public License
 v3.0 (AGPL-3.0)** — see the [LICENSE](LICENSE) file for the full text.
 
+## [Unreleased]
+
+### Changed
+
+- **The floating section index is a window on the section being read.**  It used
+  to list every section as soon as the report opened, taking up to 80 % of the
+  window height in the top-right corner.  It still opens with the report — so the
+  reader sees where he can go — but it then tucks itself away, animated, into
+  three lines: the section being read and its neighbours, which it keeps up to
+  date as the report is scrolled.  It opens again as the pointer comes near it
+  (48 px, with hysteresis so that it cannot flap while the box it opens is the
+  box it measures).  A click on the heading pins it open — which is how it is
+  reached with a touch screen or the keyboard — and a caret shows which state it
+  is in.  Both states are a pixel height of the *same* clipped list, so the lines
+  do not change identity as it opens and the box's width never moves.
+- **A whole folder can be added to the WebAssembly page**, not only individual
+  files.  A browser picker is bound to one folder and a drag cannot span
+  folders, so the folder is the unit that has to work: it is walked entry by
+  entry when dropped, and `webkitdirectory` returns every descendant file when
+  picked.  That is what makes a cluster's logs reachable in one gesture
+  (`logs/*/access.log`).  A file is now identified by its path *inside*
+  the selection rather than by its name: a folder holding one identically named
+  log per server directory used to lose every one but the first to the duplicate
+  test, silently.
+- **The file list can be edited.** Every file keeps its own remove button,
+  however many were picked: the list scrolls instead of summarising its tail,
+  and the button is a bordered pill that turns red under the pointer rather than
+  a bare glyph lost at the edge of the panel.  The list used to be cut off after
+  20 files, which left the rest with no way out of the selection short of
+  clearing it.
+
 ## [3.9.0] - 2026-10-18
 
 ### Added
