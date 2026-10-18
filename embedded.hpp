@@ -837,8 +837,15 @@ make clean
 
 slaplog can also be compiled to WebAssembly, so a log file can be analysed
 **entirely inside a browser tab** — the file never leaves the machine. Several
-files can be dropped at once: they are analysed sequentially and aggregated
-into a single report, with a progress indicator.
+files can be dropped at once, and a **whole folder can be added**: it is walked
+recursively, which is how a cluster's logs are gathered in one gesture
+(`logs/*/access.log`). Selections add up, and a file is identified by its path
+*inside* the selection rather than by its name — a folder holding one
+identically named `access.log` per server directory would otherwise lose all but
+the first.  Each file in the list carries its own **remove** button, so a file
+picked by mistake comes back out of the selection without starting over.
+The files are analysed sequentially and aggregated into a single report, with a
+progress indicator.
 
 **Live build:** <https://slaplog.pages.dev/>
 
@@ -1191,7 +1198,13 @@ Standalone HTML page with embedded CSS featuring:
 - Responsive layout (`@media` query for mobile)
 - **A floating section index**, fixed in the top-right corner: it lists every
   section the report actually drew (charts are not sections) and scrolls to it
-  on click.  Its heading collapses the list.  The links are built from the page
+  on click.  It opens with the report, so the reader sees where he can go, then
+  tucks itself away into a three-line window on the section being read — the one
+  before, the one read, the one after — which it keeps up to date as the report
+  is scrolled.  It opens again as the pointer comes near, and a click on the
+  heading pins it open, so it is also usable without a pointer (touch,
+  keyboard); the change of height is animated, and the box is clipped rather
+  than rebuilt, so its width never moves.  The links are built from the page
   itself, so the index can never offer a section that is not there.
 - **Ten inline SVG charts**, each placed under the section it summarises —
   drawn by default, disable with `--no-graph`.  None of them carries a

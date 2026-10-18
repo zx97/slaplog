@@ -51,18 +51,33 @@
   #drop .big { font-size: 17px; font-weight: 600; margin-bottom: 6px; }
   #drop .hint { color: var(--muted); font-size: 13px; }
   #filelist { margin-top: 12px; display: flex; flex-direction: column; gap: 3px; }
+  /* A picked folder tree can hold hundreds of logs, so the rows scroll instead
+     of being cut off: a file that is not on screen cannot be removed. */
+  #filelist .frows { display: flex; flex-direction: column; gap: 3px; max-height: 42vh; overflow-y: auto; }
   #filelist .f {
     font-family: var(--mono); font-size: 12.5px; color: var(--accent);
-    display: flex; justify-content: space-between; gap: 16px; text-align: left;
+    display: flex; justify-content: space-between; align-items: center; gap: 16px; text-align: left;
   }
   #filelist .f .sz { color: var(--muted); }
+  /* Removal is the only edit the list offers, so it has to be seen: a bordered
+     pill that turns red under the pointer, not a bare glyph in the margin. */
   #filelist .f .fdel {
-    background: transparent; border: 0; color: var(--muted); cursor: pointer;
-    font-size: 13px; line-height: 1; padding: 2px 5px; border-radius: 4px; margin-left: 8px;
+    display: inline-flex; align-items: center; justify-content: center;
+    background: var(--panel-2); border: 1px solid var(--border); color: var(--muted);
+    cursor: pointer; line-height: 1; padding: 3px 6px; border-radius: 5px; margin-left: 10px;
   }
-  #filelist .f .fdel:hover { color: var(--err); background: #2a1a1a; }
+  #filelist .f .fdel svg { display: block; }
+  #filelist .f .fdel:hover { color: #fff; background: var(--err); border-color: var(--err); }
+  #filelist .f .fdel:focus-visible { outline: 2px solid var(--accent-2); outline-offset: 1px; }
   #filelist .f .fmeta { display: flex; align-items: center; white-space: nowrap; }
   #filelist .f.tot { color: var(--fg); border-top: 1px dashed var(--border); padding-top: 5px; margin-top: 4px; font-weight: 600; }
+  #filelist .f .fpath { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  /* Buttons inside the drop zone.  The zone itself opens the file picker; the
+     folder button takes a whole directory tree, which is the only way to gather
+     one log per server directory in a single gesture. */
+  #drop .pickers { margin-top: 14px; display: flex; flex-wrap: wrap; gap: 10px; justify-content: center; }
+  #drop .pickers .preset { padding: 6px 14px; font-size: 12.5px; }
 
   fieldset {
     border: 1px solid var(--border); border-radius: 12px; background: var(--panel);
@@ -175,8 +190,15 @@
   <div id="drop" tabindex="0" role="button" aria-label="Drop one or more log files here">
     <div class="big">Drop OpenLDAP <code>slapd</code> access logs here</div>
     <div class="hint">
-      or click to choose files — several files are allowed and analysed
-      sequentially into a single report. Plain, .gz, .bz2 and .xz are all supported.
+      or click to choose files, or <b>add a folder</b> — a folder is walked
+      recursively, which is how the logs of several servers are gathered in one
+      gesture (<code>logs/*/access.log</code>). Selections add up, and
+      the files are analysed sequentially into a single report.
+      Plain, .gz, .bz2 and .xz are all supported.
+    </div>
+    <div class="pickers">
+      <button class="preset" type="button" id="pick-files">Choose files…</button>
+      <button class="preset" type="button" id="pick-folder">Add a folder…</button>
     </div>
     <div id="filelist"></div>
   </div>
@@ -436,26 +458,46 @@
   }
 
   // ------------------------------------------------------------------
-  // File selection (drag & drop, or picker).  Files are sorted by name so the
-  // processing order — and therefore any order-dependent metric — is stable
-  // and matches the native tool.
+  // File selection (drag & drop, picker, or folder).  A file's identity is its
+  // path inside the selection, not its bare name: a folder tree of logs — one
+  // access.log per server directory — gives N files with the same name, and
+  // often the same size and mtime, so keying on the name alone would silently
+  // drop all but the first.
   // ------------------------------------------------------------------
+  // A picked folder sets webkitRelativePath ("server1/access.log"); files
+  // walked out of a dropped folder have no such attribute (it is read-only on
+  // File), so the walk tags them with our own property.
+  const pathOf = (f) => f.slaplogPath || f.webkitRelativePath || f.name;
+
+  // Last two path segments, to keep the progress line on one line.
+  const shortPath = (p) => { const s = p.split("/"); return s.slice(-2).join("/"); };
+
   function setFiles(list) {
-    // Drop duplicates: picking the same file twice would analyse it twice.
+    // Drop duplicates: the same file added twice would be analysed twice.  The
+    // same path is genuinely the same file, so picking a folder a second time
+    // is idempotent — but two identically named files from different folders
+    // are two different inputs and both survive here.
     const seen = new Set();
     const uniq = [];
     for (const f of list) {
-      const key = `${f.name}|${f.size}|${f.lastModified ?? ""}`;
+      const key = `${pathOf(f)}|${f.size}|${f.lastModified ?? ""}`;
       if (seen.has(key)) continue;
       seen.add(key);
       uniq.push(f);
     }
-    files = uniq.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+    // Sort by that same path, so the processing order — and therefore any
+    // order-dependent metric — is stable and matches a native run over the
+    // same files given in the same order.
+    files = uniq.sort((a, b) => {
+      const x = pathOf(a), y = pathOf(b);
+      return x < y ? -1 : x > y ? 1 : 0;
+    });
     renderFileList();
     updateWarning();
     if (module) runBtn.disabled = files.length === 0 || moduleBroken;
+    const total = files.reduce((a, f) => a + f.size, 0);
     statusEl.textContent = files.length
-      ? `${files.length} file(s) ready. Click “Analyze locally”.`
+      ? `${files.length} file(s) ready (${fmtSize(total)}). Click “Analyze locally”.`
       : "Ready. Drop one or more log files to begin.";
     statusEl.className = "status";
   }
@@ -517,19 +559,29 @@
     }
   });
 
+  // Every file is listed with its own remove button, however many there are.
+  // The rows scroll (see `.frows`) instead of being summarised: an inert "… and
+  // N more" line left those files with no remove button at all, and a file the
+  // reader cannot take back out of the selection is a file he has to start over
+  // for.  Rendering is not what costs: 3000 rows block the page for about 50 ms.
   function renderFileList() {
     filelistEl.innerHTML = "";
     if (!files.length) { dropEl.classList.remove("done"); clearBtn.style.display = "none"; return; }
     dropEl.classList.add("done");
     clearBtn.style.display = "";
     const total = files.reduce((a, f) => a + f.size, 0);
+
+    const frows = document.createElement("div");
+    frows.className = "frows";
     for (const f of files) {
+      const path = pathOf(f);
       const row = document.createElement("div");
       row.className = "f";
 
       const name = document.createElement("span");
-      name.className = "fname";
-      name.textContent = f.name;
+      name.className = "fpath";
+      name.textContent = path;
+      name.title = f.name === path ? path : `${path}  (${f.name})`;
 
       const meta = document.createElement("span");
       meta.className = "fmeta";
@@ -543,9 +595,9 @@
       del.type = "button";
       del.className = "fdel";
       del.title = "Remove this file from the list";
-      del.setAttribute("aria-label", "Remove " + f.name);
+      del.setAttribute("aria-label", "Remove " + path);
       del.innerHTML =
-        '<svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true">' +
+        '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">' +
         '<rect x="6" y="1.6" width="4" height="1.4" rx="0.6"/>' +
         '<rect x="2.4" y="3.6" width="11.2" height="1.4" rx="0.6"/>' +
         '<path d="M4.4 6h7.2l-.55 7.3a1.2 1.2 0 0 1-1.2 1.1H6.15a1.2 1.2 0 0 1-1.2-1.1L4.4 6z"/>' +
@@ -559,26 +611,89 @@
       meta.appendChild(del);
       row.appendChild(name);
       row.appendChild(meta);
-      filelistEl.appendChild(row);
+      frows.appendChild(row);
     }
-    if (files.length > 1) {
-      const t = document.createElement("div");
-      t.className = "f tot";
-      t.innerHTML = `<span>${files.length} files</span><span class="sz">${fmtSize(total)}</span>`;
-      filelistEl.appendChild(t);
+    filelistEl.appendChild(frows);
+
+    const t = document.createElement("div");
+    t.className = "f tot";
+    t.innerHTML = `<span>${files.length} file${files.length > 1 ? "s" : ""}` +
+                  `${files.length > 1 ? ", analysed sequentially" : ""}</span>` +
+                  `<span class="sz">${fmtSize(total)}</span>`;
+    filelistEl.appendChild(t);
+  }
+
+  // ------------------------------------------------------------------
+  // Folders.  Neither a file input nor a plain drag can span directories: a
+  // picker is bound to one folder, and a multi-selection cannot cross folders
+  // either.  So a folder is the unit that has to work — it is walked entry by
+  // entry (webkitGetAsEntry) on drop, and picked through the non-standard
+  // webkitdirectory attribute, which returns every descendant file at once.
+  // Both paths tag each file with its path inside the selection, so the list is
+  // readable and the dedup key is unambiguous when several directories hold a
+  // file with the same name.
+  // ------------------------------------------------------------------
+  const readEntries = (reader) => new Promise((res, rej) => reader.readEntries(res, rej));
+  const fileFromEntry = (entry) => new Promise((res, rej) => entry.file(res, rej));
+
+  async function walkEntry(entry, prefix, out) {
+    const path = prefix ? `${prefix}/${entry.name}` : entry.name;
+    if (entry.isFile) {
+      const f = await fileFromEntry(entry);
+      if (path !== f.name) {
+        // A File's webkitRelativePath is read-only and empty here, so keep our
+        // own copy; the list and the dedup key read it through pathOf().
+        try { f.slaplogPath = path; } catch (e) { /* frozen File: keep the name */ }
+      }
+      out.push(f);
+      return;
     }
+    if (!entry.isDirectory) return;
+    const reader = entry.createReader();
+    for (;;) {
+      const batch = await readEntries(reader);
+      if (!batch.length) break;          // readEntries() hands over in batches
+      for (const child of batch) await walkEntry(child, path, out);
+    }
+  }
+
+  async function filesFromDrop(dt) {
+    if (!dt) return [];
+    // webkitGetAsEntry() must be read before the first await: the item list is
+    // emptied as soon as the event handler yields.
+    const entries = (dt.items ? Array.from(dt.items) : [])
+      .map((it) => (it.kind === "file" && it.webkitGetAsEntry ? it.webkitGetAsEntry() : null))
+      .filter(Boolean);
+    if (!entries.length) return Array.from(dt.files || []);
+    const out = [];
+    for (const e of entries) await walkEntry(e, "", out);
+    return out.length ? out : Array.from(dt.files || []);
+  }
+
+  // Every entry point adds to the list rather than replacing it, so the logs of
+  // several folders can be gathered one gesture at a time; picking the same
+  // folder twice is a no-op (see the dedup key in setFiles).
+  function addFiles(list) { if (list && list.length) setFiles(files.concat(list)); }
+
+  function pick(folder) {
+    const inp = document.createElement("input");
+    inp.type = "file";
+    inp.multiple = true;
+    if (folder) { inp.webkitdirectory = true; inp.setAttribute("directory", ""); }
+    inp.onchange = () => addFiles(Array.from(inp.files));
+    inp.click();
   }
 
   setFiles([]);
   clearBtn.addEventListener("click", (e) => { e.stopPropagation(); setFiles([]); });
 
-  dropEl.addEventListener("click", () => {
-    const inp = document.createElement("input");
-    inp.type = "file";
-    inp.multiple = true;
-    inp.onchange = () => setFiles(Array.from(inp.files));
-    inp.click();
-  });
+  // The zone itself opens the file picker; the two buttons do the same, or take
+  // a whole folder.  Both stop the click so it does not reach the zone's own
+  // handler and open a second picker.
+  const filesBtn = $("pick-files"), folderBtn = $("pick-folder");
+  dropEl.addEventListener("click", () => pick(false));
+  if (filesBtn) filesBtn.addEventListener("click", (e) => { e.stopPropagation(); pick(false); });
+  if (folderBtn) folderBtn.addEventListener("click", (e) => { e.stopPropagation(); pick(true); });
   dropEl.addEventListener("keydown", (e) => {
     if (e.key === "Enter" || e.key === " ") { e.preventDefault(); dropEl.click(); }
   });
@@ -586,9 +701,9 @@
     dropEl.addEventListener(ev, (e) => { e.preventDefault(); dropEl.classList.add("hover"); }));
   ["dragleave", "drop"].forEach((ev) =>
     dropEl.addEventListener(ev, (e) => { e.preventDefault(); dropEl.classList.remove("hover"); }));
-  dropEl.addEventListener("drop", (e) => {
-    const dropped = e.dataTransfer && e.dataTransfer.files;
-    if (dropped && dropped.length) setFiles(files.concat(Array.from(dropped)));
+  dropEl.addEventListener("drop", async (e) => {
+    const found = await filesFromDrop(e.dataTransfer);
+    if (found.length) addFiles(found);
   });
 
   // ------------------------------------------------------------------
@@ -689,7 +804,8 @@
 
       for (let i = 0; i < files.length; i++) {
         const f = files[i];
-        setProgress(done, total, i + 1, files.length, f.name, t0);
+        const label = shortPath(pathOf(f));   // "server1/access.log"
+        setProgress(done, total, i + 1, files.length, label, t0);
         await yieldToUI();
 
         const bytes = new Uint8Array(await f.arrayBuffer());
@@ -716,19 +832,20 @@
             module.ccall("slaplog_add_text", "number", ["number", "number"],
                          [bufPtr, chunk.length]);
             done += chunk.length;
-            setProgress(done, total, i + 1, files.length, f.name, t0);
+            setProgress(done, total, i + 1, files.length, label, t0);
             await yieldToUI();
           }
           module.ccall("slaplog_input_end", "number", [], []);
         }
 
-        setProgress(done, total, i + 1, files.length, f.name, t0);
+        setProgress(done, total, i + 1, files.length, label, t0);
         if (i < last) await yieldToUI();
       }
 
       const rc = module.ccall("slaplog_end", "number", [], []);
       const ms = (performance.now() - t0).toFixed(0);
-      setProgress(total, total, files.length, files.length, files[last].name, t0);
+      setProgress(total, total, files.length, files.length,
+                  shortPath(pathOf(files[last])), t0);
 
       const text = captured.join("\n") + (captured.length ? "\n" : "");
       const diag = captured.filter((l) => /^slaplog\(wasm\)/.test(l)).join("\n");
@@ -768,13 +885,16 @@
   // Rendering
   // ------------------------------------------------------------------
   function showResult(text, ms, rc, diag) {
-    const label = files.length === 1 ? files[0].name : `${files.length} files`;
+    const label = files.length === 1 ? shortPath(pathOf(files[0])) : `${files.length} files`;
     titleEl.textContent = `Result — ${label} (${ms} ms)`;
     panelEl.innerHTML = "";
 
     const fmt = outputEl.value;
+    // The download name must be a bare file name: a picked folder gives paths
+    // such as "server1/access.log".
+    const first = pathOf(files[0]).split("/").pop();
     const base = files.length === 1
-      ? (files[0].name.replace(/\.[A-Za-z0-9]+$/, "") || "report")
+      ? (first.replace(/\.[A-Za-z0-9]+$/, "") || "report")
       : "slaplog-report";
 
     if (fmt === "html") {
