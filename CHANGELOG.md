@@ -9,6 +9,25 @@ v3.0 (AGPL-3.0)** — see the [LICENSE](LICENSE) file for the full text.
 
 ## [Unreleased]
 
+## [4.0.0] - 2026-10-18
+
+### Added
+
+- **Major performance overhaul: PCRE2 JIT regex engine** replacing `std::regex`
+  for 2-3x faster parsing.  The native build uses PCRE2 with JIT compilation;
+  the WASM build cross-compiles PCRE2 (JIT disabled) for ~7x faster WASM
+  parsing vs `std::regex`.
+- **SIMD-accelerated line finding** (AVX2/AVX-512) processes 64 bytes/cycle
+  finding newlines.  Falls back to scalar on unsupported CPUs.
+- **Memory-mapped I/O** for plain files — zero-copy, avoids syscall overhead.
+- **Parallel decompression** via `pigz`, `lbzip2`, `xz -T0` when available,
+  falling back to library decompressors.
+- **Per-server time coverage lanes** on both time-series charts: each server
+  gets a lane showing its exact log window, so curves that step up and fall
+  off a cliff are read as "that log stops here" not "operation ended".
+- **PCRE2 for WASM**: cross-compiled PCRE2 (no JIT) linked into WASM module,
+  replacing `std::regex` for ~7x faster WASM parsing (90K vs 12K lines/sec).
+
 ### Changed
 
 - **The floating section index is a window on the section being read.**  It used
@@ -37,6 +56,7 @@ v3.0 (AGPL-3.0)** — see the [LICENSE](LICENSE) file for the full text.
   a bare glyph lost at the edge of the panel.  The list used to be cut off after
   20 files, which left the rest with no way out of the selection short of
   clearing it.
+- **Version bump to 4.0.0** for the major performance architecture changes.
 
 ## [3.9.0] - 2026-10-18
 
