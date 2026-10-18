@@ -217,6 +217,13 @@ void print_chart_style() {
   .sl-cov-track{fill:#eef1f5}
   .sl-cov-span{fill-opacity:0.55}
   .sl-cov-key-track{background:#eef1f5;border:1px solid #d3dbe3}
+  /* Spans of the chart window that NO server's log covers.  A run that mixes
+     logs of unrelated periods (an old file left beside the current ones) plots
+     a window that is mostly empty; without this, a flat curve there reads as
+     "no traffic" instead of "no data". */
+  .sl-nolog-band{fill:#5b6b7c;fill-opacity:0.13}
+  .sl-nolog-edge{stroke:#8a97a6;stroke-opacity:0.55;stroke-dasharray:2 4;stroke-width:1}
+  .sl-nolog-key{background:repeating-linear-gradient(45deg,#eef1f5 0 3px,#c2ccd6 3px 6px)}
 </style>
 )CSS";
 }
@@ -325,6 +332,65 @@ double coverage_strip_height(size_t lanes) {
            static_cast<double>(lanes - 1) * LANE_GAP;
 }
 
+// The spans of [t0, t1] that no server's own log covers: the complement of the
+// union of the coverage windows.
+std::vector<std::pair<long long, long long>> uncovered_spans(
+        const std::vector<CoverageLane>& lanes, long long t0, long long t1) {
+    std::vector<std::pair<long long, long long>> gaps;
+    if (lanes.empty() || t1 <= t0) return gaps;
+    std::vector<std::pair<long long, long long>> iv;
+    iv.reserve(lanes.size());
+    for (const CoverageLane& l : lanes)
+        iv.emplace_back(std::max(l.first, t0), std::min(l.last, t1));
+    std::sort(iv.begin(), iv.end());
+    long long cur = t0;
+    for (const auto& [a, b] : iv) {
+        if (b <= cur) continue;
+        if (a > cur) gaps.emplace_back(cur, a);
+        cur = b;
+    }
+    if (cur < t1) gaps.emplace_back(cur, t1);
+    return gaps;
+}
+
+// The bands, drawn behind the data.
+void print_nolog_bands(const std::vector<std::pair<long long, long long>>& gaps,
+                       long long t0, long long t1, double L, double pw,
+                       double T, double ph) {
+    if (gaps.empty() || t1 <= t0) return;
+    const double span = static_cast<double>(t1 - t0);
+    for (const auto& [a, b] : gaps) {
+        const double x0 = std::max(L + (static_cast<double>(a - t0) / span) * pw, L);
+        const double x1 = std::min(L + (static_cast<double>(b - t0) / span) * pw, L + pw);
+        if (x1 <= x0) continue;
+        std::cout << "<rect class=\"sl-nolog-band\" x=\"" << num(x0, 1) << "\" y=\"" << num(T, 0)
+                  << "\" width=\"" << num(x1 - x0, 1) << "\" height=\"" << num(ph, 0) << "\"/>\n";
+        std::cout << "<line class=\"sl-nolog-edge\" x1=\"" << num(x0, 1) << "\" y1=\"" << num(T, 0)
+                  << "\" x2=\"" << num(x0, 1) << "\" y2=\"" << num(T + ph, 0) << "\"/>\n";
+        std::cout << "<line class=\"sl-nolog-edge\" x1=\"" << num(x1, 1) << "\" y1=\"" << num(T, 0)
+                  << "\" x2=\"" << num(x1, 1) << "\" y2=\"" << num(T + ph, 0) << "\"/>\n";
+    }
+}
+
+// The hover targets, emitted last so they win over the per-bucket strips: a gap
+// has no data, so its tooltip must say "missing data", not "0 connection(s)".
+void print_nolog_hits(const std::vector<std::pair<long long, long long>>& gaps,
+                      long long t0, long long t1, double L, double pw,
+                      double T, double ph) {
+    if (gaps.empty() || t1 <= t0) return;
+    const double span = static_cast<double>(t1 - t0);
+    for (const auto& [a, b] : gaps) {
+        const double x0 = std::max(L + (static_cast<double>(a - t0) / span) * pw, L);
+        const double x1 = std::min(L + (static_cast<double>(b - t0) / span) * pw, L + pw);
+        if (x1 <= x0) continue;
+        std::cout << "<rect class=\"sl-hit\" x=\"" << num(x0, 1) << "\" y=\"" << num(T, 0)
+                  << "\" width=\"" << num(x1 - x0, 1) << "\" height=\"" << num(ph, 0)
+                  << "\" data-x=\"missing data\" data-y=\"no server's log covers "
+                  << xml_escape(format_epoch_seconds(a)) << " to "
+                  << xml_escape(format_epoch_seconds(b)) << "\"/>\n";
+    }
+}
+
 // The strip itself, drawn in the space reserved above.  Emitted into the SVG the
 // caller has already opened, so it is called before `</svg>`.
 void print_coverage_lanes(const std::vector<CoverageLane>& lanes,
@@ -362,7 +428,8 @@ void print_coverage_lanes(const std::vector<CoverageLane>& lanes,
 // The key, emitted in HTML beside the other legends.  Without it the lanes are
 // just marks: the track has to be told from the covered span, and each span has
 // to be told from the others.
-void print_coverage_legend(const std::vector<CoverageLane>& lanes) {
+void print_coverage_legend(const std::vector<CoverageLane>& lanes,
+                           const std::vector<std::pair<long long, long long>>& gaps) {
     if (lanes.empty()) return;
     std::cout << "<div class=\"sl-stack-legend\">"
                  "<span class=\"sl-stack-key\" title=\"the window this chart plots\">"
@@ -374,6 +441,9 @@ void print_coverage_legend(const std::vector<CoverageLane>& lanes) {
                   << xml_escape(format_epoch_seconds(lanes[i].first)) << " \xe2\x86\x92 "
                   << xml_escape(format_epoch_seconds(lanes[i].last)) << "</span>";
     }
+    if (!gaps.empty())
+        std::cout << "<span class=\"sl-stack-key\" title=\"no server's log covers this period\">"
+                     "<i class=\"sl-nolog-key\"></i>no log</span>";
     std::cout << "</div>\n";
 }
 
@@ -436,6 +506,7 @@ void print_connection_chart(const Aggregator& agg) {
     const std::vector<CoverageLane> lanes = coverage_lanes(agg);
     const double H = H0 + coverage_strip_height(lanes.size());
     const double pw = W - L - R;
+    const std::vector<std::pair<long long, long long>> gaps = uncovered_spans(lanes, t0, t1);
     auto xof = [&](long long t) { return L + (static_cast<double>(t - t0) / span) * pw; };
     auto yof = [&](double v) { return T + ph - (v / static_cast<double>(ytop)) * ph; };
 
@@ -507,6 +578,7 @@ void print_connection_chart(const Aggregator& agg) {
               << " &rarr; " << xml_escape(agg.lasttime)
               << " &middot; peak " << peak << " connection(s)";
     if (!bands.empty()) std::cout << " &middot; " << bands.size() << " downtime period(s)";
+    if (!gaps.empty()) std::cout << " &middot; shaded: no server's log covers it";
     // The marker key belongs with the legend, not in a note: these three marks
     // are the whole of the chart's vocabulary and nothing else explains them.
     std::cout << " &middot; markers: green start, red stop, orange restart without a clean shutdown";
@@ -519,6 +591,8 @@ void print_connection_chart(const Aggregator& agg) {
         std::cout << "<rect class=\"sl-downtime\" x=\"" << num(x0, 1) << "\" y=\"" << num(T, 0)
                   << "\" width=\"" << num(x1 - x0, 1) << "\" height=\"" << num(ph, 0) << "\"/>\n";
     }
+    // Spans no server's log covers, on the same layer as the downtime bands.
+    print_nolog_bands(gaps, t0, t1, L, pw, T, ph);
 
     print_time_frame(L, T, pw, ph, H, t0, t1, static_cast<double>(ytop), step,
                      static_cast<double>(ytop));
@@ -592,9 +666,10 @@ void print_connection_chart(const Aggregator& agg) {
     }
 
     print_coverage_lanes(lanes, t0, t1, L, pw, T, ph);
+    print_nolog_hits(gaps, t0, t1, L, pw, T, ph);
 
     std::cout << "</svg>\n<div class=\"sl-tip\" hidden></div>\n";
-    print_coverage_legend(lanes);
+    print_coverage_legend(lanes, gaps);
     // No reading note here: how many connections were open at a glance needs no
     // explaining, and the marker key is in the subtitle.
     std::cout << "</div>\n";
@@ -700,6 +775,7 @@ void print_error_series_chart(const Aggregator& agg, long long t0, long long t1,
     const std::vector<CoverageLane> lanes = coverage_lanes(agg);
     const double H = H0 + coverage_strip_height(lanes.size());
     const double pw = W - L - R;
+    const std::vector<std::pair<long long, long long>> gaps = uncovered_spans(lanes, t0, t1);
     auto yof = [&](double v) { return T + ph - (v / ytop) * ph; };
     // Slice k covers [k/NB, (k+1)/NB) of the window.  The fractions are used
     // directly rather than round-tripped through a timestamp: span/NB truncates
@@ -707,10 +783,13 @@ void print_error_series_chart(const Aggregator& agg, long long t0, long long t1,
     auto xat = [&](int k) { return L + pw * k / NB; };
 
     std::cout << "<h2>Errors Over Time</h2>\n<div class=\"sl-chart\">\n";
-    std::cout << "<div class=\"sl-chart-sub\">" << xml_escape(sub) << "</div>\n";
+    std::cout << "<div class=\"sl-chart-sub\">" << xml_escape(sub);
+    if (!gaps.empty()) std::cout << " &middot; shaded: no server's log covers it";
+    std::cout << "</div>\n";
     std::cout << "<svg viewBox=\"0 0 1000 " << num(H, 0) << "\" role=\"img\" aria-label=\"Errors over time, "
                  "stacked by result code\">\n";
     if (any_hatch) print_hatch_defs(HATCH_TAG_STACK);
+    print_nolog_bands(gaps, t0, t1, L, pw, T, ph);
     print_time_frame(L, T, pw, ph, H, t0, t1, ytop, step, ytop);
 
     // One filled band per code: the same profile stacked on top of each other,
@@ -765,9 +844,10 @@ void print_error_series_chart(const Aggregator& agg, long long t0, long long t1,
     }
 
     print_coverage_lanes(lanes, t0, t1, L, pw, T, ph);
+    print_nolog_hits(gaps, t0, t1, L, pw, T, ph);
 
     std::cout << "</svg>\n<div class=\"sl-tip\" hidden></div>\n";
-    print_coverage_legend(lanes);
+    print_coverage_legend(lanes, gaps);
     // Legend in HTML rather than in the drawing: it wraps, and the bands are
     // read by name here (the colours alone would not say which code is which).
     std::cout << "<div class=\"sl-stack-legend\">";

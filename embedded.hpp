@@ -700,7 +700,7 @@ For more information on this, and how to apply and follow the GNU AGPL, see
 
 **SPDX-License-Identifier:** AGPL-3.0-or-later  
 **License:** GNU Affero General Public License v3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)  
-**Version:** 4.0.2  
+**Version:** 4.0.5  
 **Author:** Manuel FLURY  
 **Copyright:** © 2026 Manuel FLURY. All rights reserved.
 
@@ -743,9 +743,10 @@ produces structured reports in text (with ANSI color), HTML, JSON, or replay
 format (for jMeter/LoadRunner).
 
 It is designed to handle large log volumes (multi-GB, thousands of files) by
-processing files in parallel using one thread per file. Each thread builds its
-own `Aggregator` instance, which are then merged after all files are processed,
-avoiding any mutex contention during parsing.
+processing files in parallel with a bounded worker pool (`-j`, default CPU
+cores − 1, never more than the file count). Each worker owns the `Aggregator`
+for the file it is reading and folds it into the shared result under a single
+mutex, so parsing itself never contends.
 
 Key features:
 
@@ -832,6 +833,18 @@ The Makefile auto-increments a build number on each compilation.
 ```bash
 make clean
 ```
+
+### Tests
+
+```bash
+make test        # dependency-free: perf and TZ guards (shell + the binary)
+make test-ui     # the jsdom/WebAssembly harnesses (needs node, and `make wasm`)
+make check       # check-doc + make test
+```
+
+`make test-ui` needs jsdom: `npm install --prefix tests`. The suite lives in
+`tests/`, is tracked, and compares the native report against the WebAssembly one
+byte for byte.
 
 ### WebAssembly build (browser)
 
@@ -932,7 +945,7 @@ slaplog --unknown-lines unknown.txt /var/log/slapd/access.log
 | `--unknown-lines FILE` | Write unrecognised lines to FILE, then generate the full report |
 | `--unknown-lines-only FILE` | Like `--unknown-lines` but skip the report |
 | `--no-graph` | Omit the charts from the `html` report (they are drawn by default) |
-| `--title TITLE` | Custom report subtitle (appended after default, separated by ` - `) |
+| `--title TITLE` | Custom subtitle for the rendered reports (text, HTML), appended after the default one, separated by ` - `.  Ignored by `json` and `replay`, whose schemas are fixed. |
 | `-d, --debug` | Print debug information (file count, parsing details, per-file traces) |
 | `-D, --documentation` | Print full documentation to stdout |
 | `-h, --help` | Show help message |
@@ -953,7 +966,8 @@ to select specific sections:
 | `errors_per_app` | Errors broken down by application identity |
 | `paged` | Searches using the pagedResultsControl (by shape, or the control line at loglevel `trace`) |
 | `bases` | Top search bases by count and cumulative etime |
-| `filters` | Top search filters by count, etime, nentries=1/0, wildcards |
+| `filters` | Top search filters by count, etime, nentries=1/0 |
+| `wildcards` | Filters containing wildcards (also included with `filters`) |
 | `filters_per_app` | Filters broken down by application identity |
 | `attrs` | Most frequently requested attributes |
 | `apps` | Top applications by operation count and etime |
@@ -1228,7 +1242,10 @@ Standalone HTML page with embedded CSS featuring:
     curve that steps up and then falls off a cliff is read as the end of a file
     instead of the end of a heavy operation.  A single server gets no lane — its
     window *is* the chart's — and the key under the chart names each server with
-    the window it covers;
+    the window it covers.  Spans that **no** server's log covers are shaded
+     across the plot and keyed *no log*: when a run mixes logs of unrelated
+     periods the window is mostly empty, and a flat stretch there must read as
+     missing data, not as a quiet period (hovering the band names its span);
   - *Errors Over Time*: **failing** results only — informational codes (success,
     both Compare answers, a referral) are not plotted, so the curve is not
     inflated by operations that did what they were asked.  The curve is
@@ -1306,6 +1323,12 @@ Standalone HTML page with embedded CSS featuring:
 Complete machine-readable output via `nlohmann/json` with all aggregated data
 structures (operation counts, error distribution, top operations, session
 correlations, etc.).
+
+`error_counts` is keyed by result code and carries the global message histogram
+for that code, while `error_counts_by_app` repeats the same shape per
+application (`who`) — each application's own counts and its own `text=`
+messages.  The two agree: for a given code, the per-application figures add up
+to the global ones.
 
 ### Replay (`-o replay`)
 
@@ -1409,13 +1432,12 @@ with an ID from a new instance.
 main.cpp
   ├── parse CLI arguments
   ├── collect_input_files() — discover log files
-  ├── create per-thread Aggregator instances
-  ├── spawn worker threads (one per file)
-  │     └── process_file() → parse_line() → update_aggregator()
+  ├── spawn a bounded worker pool (-j, capped at the file count)
+  │     └── per file: process_file() → parse_line() → update_aggregator()
+  │        into a local Aggregator, then merge_aggregators() under one mutex
   ├── progress bar thread (stderr)
-  ├── merge_aggregators() — combine thread results
   ├── write unknown lines if --unknown-lines
-  └── print_report() — text / HTML / JSON
+  └── print_report() — text / HTML / JSON / replay
 ```
 
 ### Two-stage parsing
@@ -1507,10 +1529,11 @@ All parsing and aggregation logic:
 
 ### `regex_patterns.hpp`
 
-All compiled `std::regex` objects in the `slaplog_rx` namespace. Organised
-into groups: headers, connection identifiers, connection events, BIND
-patterns, operations, results, sub-patterns, replication CSN, session
-tracking, and miscellaneous.
+All compiled patterns in the `slaplog_rx` namespace, backed by **PCRE2** (with
+JIT in the native build) through the `std::regex`-like façade in
+`pcre2_wrapper.hpp`. Organised into groups: headers, connection identifiers,
+connection events, BIND patterns, operations, results, sub-patterns,
+replication CSN, session tracking, and miscellaneous.
 
 ### `report.hpp` / `report.cpp`
 
@@ -1542,22 +1565,47 @@ hand: the two copies used to be maintained that way and drifted apart.
 ### `utils.hpp`
 
 Small utility functions: `ends_with` for filename suffix checks,
-`parse_timestamp` for ISO 8601 parsing, `format_time` for display
-formatting, and a regex cache for frequently-used patterns.
+`parse_timestamp` for ISO 8601 parsing, and `format_time` for display
+formatting.
 
 ## Extending the Parser
 
 ### Adding a new log line pattern
 
-1. Add the regex to `regex_patterns.hpp` in the appropriate group.
-2. In `parse_line()` (`log_parser.cpp`), add a dispatch branch:
-   - For operation lines: add an `if (fc == 'X' && rest.compare(...))` block.
-   - For connection events: add to the existing `c` dispatch.
-   - For miscellaneous patterns: add to the catch-all section at the end.
-3. Set `ev.kind` to a unique string for the new pattern.
-4. In `update_aggregator()`, add an `if (ev.kind == "NEW_KIND")` handler.
-5. Add any new counters to the `Aggregator` struct in `log_parser.hpp`.
-6. Handle merge in `merge_aggregators()`.
+Patterns are **PCRE2** regular expressions (`slaplog_rx::Regex` is
+`slaplog_pcre2::Regex`, a `std::regex`-like façade over PCRE2 — see
+`pcre2_wrapper.hpp`; the native build JIT-compiles them). They are declared
+**once at namespace scope**, never compiled inside `parse_line()`. Captures are
+read through `slaplog_rx::MatchResults` / `MatchProxy`, *not* `std::smatch`:
+`m[i]` converts implicitly to `std::string`/`std::string_view` and also offers
+`.str()`, `.matched()` (did the group take part) and `.length()`.
+
+1. Add the pattern to `regex_patterns.hpp` in the appropriate group:
+
+   ```cpp
+   inline const Regex RE_FOO(R"xx(^foo\s+(\S+)$)xx");
+   ```
+
+   A raw string (`R"xx(...)xx"`) keeps backslashes readable; pick a delimiter
+   that does not occur in the pattern.
+2. Match it in `parse_line()` (`log_parser.cpp`) and read the captures:
+
+   ```cpp
+   slaplog_rx::MatchResults m;
+   if (slaplog_rx::regex_match(rest, m, RE_FOO)) {
+       ev.kind = "FOO";        // a unique kind string
+       ev.foo  = m[1].str();   // m[i] is a MatchProxy, not a std::ssub_match
+   }
+   ```
+
+   Put the branch in the first-character dispatch when the line has one
+   (`if (fc == 'F' && rest.compare(0, 3, "FOO") == 0)`), or in the catch-all
+   section at the end when it does not.
+3. In `update_aggregator()`, add an `if (ev.kind == "FOO")` handler.
+4. Add any new field to `Event` and any counter to `Aggregator`, in
+   `log_parser.hpp`.
+5. Handle them in `merge_aggregators()` (and expose them in
+   `print_json_report()` if the JSON must carry them).
 
 ### Adding a report section
 
@@ -1570,12 +1618,20 @@ formatting, and a regex cache for frequently-used patterns.
 
 ### Thread safety
 
-- `parse_line()` is a pure function (no mutable globals).
-- `update_aggregator()` modifies its `Aggregator&` argument only — no shared
-  state.
-- `merge_aggregators()` is called single-threaded after all workers join.
-- If adding new mutable global state, protect it with `std::mutex` or refactor
-  into the `Aggregator` struct.
+- `parse_line()` holds no mutable global state: patterns are `const` and each
+  match uses its own PCRE2 match block, so it is safe to call from several
+  workers at once.
+- `update_aggregator()` modifies its `Aggregator&` argument only.
+- `merge_aggregators()` **is** called concurrently — each worker folds its
+  finished file into the shared result under `merge_mtx`. It must therefore
+  stay order-independent (compare sort keys, not raw text) and must not read
+  shared state.
+- Never use the non-reentrant libc time functions (`gmtime`, `localtime`,
+  `asctime`): they return one process-wide static buffer, so two workers
+  formatting a timestamp at the same time overwrite each other. Use
+  `gmtime_r` / `localtime_r`.
+- New mutable global state must be protected with `std::mutex`, or moved into
+  the `Aggregator` struct.
 )EMBED";
 
 } // namespace embedded

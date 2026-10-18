@@ -1,0 +1,13 @@
+2026-08-05T10:00:00.000000Z h slapd[1]: slapd starting
+2026-08-05T10:00:01.000000Z h slapd[1]: conn=1 fd=8 ACCEPT from IP=192.0.2.1:1111 (IP=0.0.0.0:389)
+2026-08-05T10:05:00.000000Z h slapd[1]: conn=1 fd=8 closed
+2026-08-05T10:10:00.000000Z h slapd[1]: daemon: shutdown requested and initiated.
+2026-08-05T10:10:01.000000Z h slapd[1]: slapd shutdown: waiting for 0 operations/tasks to finish
+2026-08-05T10:10:02.000000Z h slapd[1]: slapd stopped.
+2026-08-05T10:20:00.000000Z h slapd[2]: slapd starting
+2026-08-05T10:25:00.000000Z h slapd[2]: conn=2 fd=9 ACCEPT from IP=192.0.2.2:2222 (IP=0.0.0.0:389)
+2026-08-05T10:30:00.000000Z h slapd[2]: conn=2 fd=9 closed
+2026-08-05T10:40:00.000000Z h slapd[3]: slapd starting
+2026-08-05T10:45:00.000000Z h slapd[3]: conn=3 fd=10 ACCEPT from IP=192.0.2.3:3333 (IP=0.0.0.0:389)
+2026-08-05T10:50:00.000000Z h slapd[3]: conn=3 fd=10 closed
+2026-08-05T11:00:00.000000Z h slapd[3]: slapd shutdown: waiting for 0 operations/tasks to finish

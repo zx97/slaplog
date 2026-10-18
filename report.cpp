@@ -137,8 +137,12 @@ namespace {
     std::string format_time(SystemTimePoint tp) {
         auto in_time_t = std::chrono::system_clock::to_time_t(
             std::chrono::time_point_cast<std::chrono::system_clock::duration>(tp));
+        // localtime_r, not localtime: the latter returns one static struct tm
+        // shared by the whole process.
+        std::tm tm_buf{};
+        if (localtime_r(&in_time_t, &tm_buf) == nullptr) return "";
         std::stringstream ss;
-        ss << std::put_time(std::localtime(&in_time_t), "%Y-%m-%d %H:%M:%S");
+        ss << std::put_time(&tm_buf, "%Y-%m-%d %H:%M:%S");
         return ss.str();
     }
 
@@ -486,6 +490,19 @@ static std::string hatch_background_css() {
 static const char* HATCH_CELL_BG =
     "repeating-linear-gradient(45deg,#f3e6f7 0 3px,#fdeee0 3px 6px)";
 
+// Total occurrences of each "text=" message for a result code, summed over
+// every application.  The LDAP Result Codes table and the JSON are global; the
+// "Errors per Application" table reads its own application's slice instead.
+static std::map<std::string, long long> error_texts_for_code(const Aggregator& agg, int code) {
+    std::map<std::string, long long> out;
+    for (const auto& [app, by_code] : agg.error_texts) {
+        auto it = by_code.find(code);
+        if (it == by_code.end()) continue;
+        for (const auto& [msg, n] : it->second) out[msg] += n;
+    }
+    return out;
+}
+
 void print_text_report(const Aggregator& agg, double processing_time, bool compact, int color_mode, const std::set<std::string>& sections, const std::string& /*output_date_format*/, const std::string& custom_title) {
     set_color_output(color_mode);
     int limit = compact ? 5 : 20;
@@ -640,13 +657,11 @@ void print_text_report(const Aggregator& agg, double processing_time, bool compa
                 code_str = c + code_str + COLOR_RESET;
                 name = c + name + COLOR_RESET;
             }
-            // Include all error texts with their counts
+            // All error texts for the code, summed over every application.
             std::string text_col;
-            if (agg.error_texts.count(code)) {
-                for (const auto& [msg, msg_cnt] : agg.error_texts.at(code)) {
-                    if (!text_col.empty()) text_col += " | ";
-                    text_col += fmt_int(msg_cnt) + "x: " + msg;
-                }
+            for (const auto& [msg, msg_cnt] : error_texts_for_code(agg, code)) {
+                if (!text_col.empty()) text_col += " | ";
+                text_col += fmt_int(msg_cnt) + "x: " + msg;
             }
             error_rows.push_back({code_str, name, fmt_int(count), text_col});
         }
@@ -664,7 +679,7 @@ void print_text_report(const Aggregator& agg, double processing_time, bool compa
     // Errors per application
     // Groups the error counts by the application ("who") field that
     // triggered the operation, making it easier to identify problematic
-    // clients.
+    // clients.  Each row carries its own application's error messages.
     if (has_section("errors_per_app") && !agg.error_per_app.empty()) {
         print_separator("Errors per Application");
         std::vector<std::vector<std::string>> err_rows;
@@ -678,25 +693,22 @@ void print_text_report(const Aggregator& agg, double processing_time, bool compa
                     code_str = c + code_str + COLOR_RESET;
                     name = c + name + COLOR_RESET;
                 }
-                err_rows.push_back({app_name, code_str, name, fmt_int(cnt)});
-            }
-        }
-        // Add Error Text column with all messages and counts
-        std::vector<std::vector<std::string>> err_rows_with_text;
-        err_rows_with_text.reserve(err_rows.size());
-        for (const auto& row : err_rows) {
-            int code = std::stoi(row[1].substr(row[1].find_first_not_of("\033[")));
-            std::string text_col;
-            if (agg.error_texts.count(code)) {
-                for (const auto& [msg, msg_cnt] : agg.error_texts.at(code)) {
-                    if (!text_col.empty()) text_col += " | ";
-                    text_col += fmt_int(msg_cnt) + "x: " + msg;
+                // This application's own messages for this code.
+                std::string text_col;
+                auto app_it = agg.error_texts.find(app_name);
+                if (app_it != agg.error_texts.end()) {
+                    auto code_it = app_it->second.find(code);
+                    if (code_it != app_it->second.end()) {
+                        for (const auto& [msg, msg_cnt] : code_it->second) {
+                            if (!text_col.empty()) text_col += " | ";
+                            text_col += fmt_int(msg_cnt) + "x: " + msg;
+                        }
+                    }
                 }
+                err_rows.push_back({app_name, code_str, name, fmt_int(cnt), text_col});
             }
-            std::vector<std::string> new_row = {row[0], row[1], row[2], row[3], text_col};
-            err_rows_with_text.push_back(std::move(new_row));
         }
-        print_table({"App", "Code", "Name", "Count", "Error Text"}, err_rows_with_text);
+        print_table({"App", "Code", "Name", "Count", "Error Text"}, err_rows);
     }
 
     // Paged searches
@@ -728,6 +740,9 @@ void print_text_report(const Aggregator& agg, double processing_time, bool compa
         print_string_double_map("Top Filters (by etime)", "Filter", agg.filter_stats, limit);
         print_string_count_map("Top Filters (nentries=1)", "Filter", agg.norm_filter_n1_count, limit);
         print_string_count_map("Top Filters (nentries=0)", "Filter", agg.norm_filter_n0_count, limit);
+    }
+    // Wildcard filters: selectable on their own, and also part of `filters`.
+    if (has_section("wildcards") || has_section("filters")) {
         print_string_count_map("Top Wildcard Filters", "Wildcard Filter", agg.wildcard_filter_count, limit);
     }
 
@@ -870,7 +885,7 @@ void print_text_report(const Aggregator& agg, double processing_time, bool compa
 
     // Server start/stop events
     // Timestamped list of when the LDAP server started or stopped.
-    if (!agg.server_event_list.empty()) {
+    if (has_section("server") && !agg.server_event_list.empty()) {
         print_separator("Server Start / Stop Events");
         std::vector<std::vector<std::string>> sv_rows;
         for (const auto& [ts, event_type] : agg.server_event_list) {
@@ -1388,11 +1403,9 @@ void print_html_report(const Aggregator& agg, double duration, bool /*compact*/,
     std::cout << "<table>\n<tr><th>Code</th><th>Name</th><th>Count</th><th>Error Text</th></tr>\n";
     for (const auto& [code, count] : error_sorted) {
         std::string text_col;
-        if (agg.error_texts.count(code)) {
-            for (const auto& [msg, msg_cnt] : agg.error_texts.at(code)) {
-                if (!text_col.empty()) text_col += " | ";
-                text_col += fmt_int(msg_cnt) + "x: " + html_escape(msg);
-            }
+        for (const auto& [msg, msg_cnt] : error_texts_for_code(agg, code)) {
+            if (!text_col.empty()) text_col += " | ";
+            text_col += fmt_int(msg_cnt) + "x: " + html_escape(msg);
         }
         std::cout << "<tr><td style=\"" << err_color(code) << "\">" << code << "</td>"
                   << "<td style=\"" << err_color(code) << "\">" << ldap_error_name(code) << "</td>"
@@ -1417,10 +1430,14 @@ void print_html_report(const Aggregator& agg, double duration, bool /*compact*/,
                 auto it = LDAP_ERRORS.find(code);
                 std::string name = (it != LDAP_ERRORS.end()) ? it->second : "unknown";
                 std::string text_col;
-                if (agg.error_texts.count(code)) {
-                    for (const auto& [msg, msg_cnt] : agg.error_texts.at(code)) {
-                        if (!text_col.empty()) text_col += " | ";
-                        text_col += fmt_int(msg_cnt) + "x: " + html_escape(msg);
+                auto app_it = agg.error_texts.find(app_name);
+                if (app_it != agg.error_texts.end()) {
+                    auto code_it = app_it->second.find(code);
+                    if (code_it != app_it->second.end()) {
+                        for (const auto& [msg, msg_cnt] : code_it->second) {
+                            if (!text_col.empty()) text_col += " | ";
+                            text_col += fmt_int(msg_cnt) + "x: " + html_escape(msg);
+                        }
                     }
                 }
                 std::cout << "<tr><td>" << app_name << "</td>"
@@ -1869,7 +1886,8 @@ void print_html_report(const Aggregator& agg, double duration, bool /*compact*/,
  *   "read_operations":          long long,
  *   "write_operations":         long long,
  *   "operation_counts":         { op_name: count, ... },
- *   "error_counts":             { code: { name, count }, ... },
+ *   "error_counts":             { code: { name, count, texts: [ {text, count} ] }, ... },
+ *   "error_counts_by_app":      { app: { code: { name, count, texts: [...] }, ... }, ... },
  *   "top_bases":                [ { base, count, etime_total? }, ... ],
  *   "top_filters":              [ { filter, count, etime_total? }, ... ],
  *   "top_operations":           [ { etime, conn, op, type, who, base, filter, nentries?, err? }, ... ],
@@ -1884,12 +1902,13 @@ void print_html_report(const Aggregator& agg, double duration, bool /*compact*/,
  *   "qmark_filter_attributes":  { attr: count, ... }
  * }
  */
-void print_json_report(const Aggregator& agg, double duration, bool /*compact*/, const std::string& /*output_date_format*/, const std::string& custom_title) {
+void print_json_report(const Aggregator& agg, double duration, bool /*compact*/, const std::string& /*output_date_format*/, const std::string& /*custom_title*/) {
     json report;
+    // The JSON carries the report's own name; --title applies to the rendered
+    // reports (text, HTML) only.  Appending it here also crashed:
+    // `json += " - " + title` resolves to the array push_back() overload with
+    // this nlohmann version and throws type_error.308.
     report["title"] = "OpenLDAP Log Analysis Report";
-    if (!custom_title.empty()) {
-        report["title"] += " - " + custom_title;
-    }
 
     // Top-level scalar metrics
     report["processing_time"] = duration;
@@ -1977,14 +1996,40 @@ void print_json_report(const Aggregator& agg, double duration, bool /*compact*/,
         auto it = LDAP_ERRORS.find(code);
         std::string name = (it != LDAP_ERRORS.end()) ? it->second : "unknown";
         json texts = json::array();
-        if (agg.error_texts.count(code)) {
-            for (const auto& [msg, msg_cnt] : agg.error_texts.at(code)) {
-                texts.push_back({{"text", msg}, {"count", msg_cnt}});
-            }
+        for (const auto& [msg, msg_cnt] : error_texts_for_code(agg, code)) {
+            texts.push_back({{"text", msg}, {"count", msg_cnt}});
         }
         errors[std::to_string(code)] = {{"name", name}, {"count", count}, {"texts", texts}};
     }
     report["error_counts"] = errors;
+
+    // Per-application error counts, with each application's own messages.
+    // Object keyed by the application ("who") string; each value has the same
+    // shape as error_counts, so a consumer can read one application without
+    // re-aggregating the whole report.  error_counts stays global (summed over
+    // applications) and the two agree: for any code, the per-application counts
+    // and texts add up to the global ones.
+    json errors_by_app = json::object();
+    for (const auto& [app, errs] : agg.error_per_app) {
+        auto app_it = agg.error_texts.find(app);
+        json app_obj = json::object();
+        for (const auto& [code, count] : errs) {
+            auto it = LDAP_ERRORS.find(code);
+            std::string name = (it != LDAP_ERRORS.end()) ? it->second : "unknown";
+            json texts = json::array();
+            if (app_it != agg.error_texts.end()) {
+                auto code_it = app_it->second.find(code);
+                if (code_it != app_it->second.end()) {
+                    for (const auto& [msg, msg_cnt] : code_it->second) {
+                        texts.push_back({{"text", msg}, {"count", msg_cnt}});
+                    }
+                }
+            }
+            app_obj[std::to_string(code)] = {{"name", name}, {"count", count}, {"texts", texts}};
+        }
+        errors_by_app[app] = app_obj;
+    }
+    report["error_counts_by_app"] = errors_by_app;
 
     // Top bases
     // Array of objects sorted by count descending (limit 20).

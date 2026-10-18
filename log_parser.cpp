@@ -590,10 +590,61 @@ std::string format_epoch_seconds(long long t) {
         {"Sep", 9}, {"Oct", 10}, {"Nov", 11}, {"Dec", 12}
     };
 
-    // Parse syslog timestamp (e.g., "Aug  5 14:23:01") to time_t
-    // Assumes current year if not specified
+    // Current calendar year, resolved once.  A syslog line carries no year
+    // ("Aug  5 14:23:01"), so the year in force is assumed.  This was a
+    // std::localtime() call *per line* before; the year cannot change in a way
+    // that matters during a run, so it is looked up once.
+    static int current_civil_year() {
+        static const int year = [] {
+            std::time_t now_c =
+                std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
+            std::tm lt{};
+            localtime_r(&now_c, &lt);
+            return lt.tm_year + 1900;
+        }();
+        return year;
+    }
+
+    // Seconds east of UTC for the analysing host in the given civil month, used
+    // to read a local-time log.  Cached per (year, month): glibc re-reads
+    // /etc/localtime on *every* mktime()/localtime() call while TZ is unset —
+    // which is the default in a shell, in cron and in a systemd unit — so a
+    // per-line zone lookup made syslog parsing 3.7x slower (37k vs 140k
+    // lines/s, measured).  One lookup per month removes that cost entirely, and
+    // the probe sits at mid-month noon so it can never fall inside a DST gap.
+    static long local_utc_offset(long year, int month0) {
+        static thread_local long cached_year = -1;
+        static thread_local int cached_month = -1;
+        static thread_local long cached_offset = 0;
+        if (year != cached_year || month0 != cached_month) {
+            std::tm probe{};
+            probe.tm_year = static_cast<int>(year) - 1900;
+            probe.tm_mon = month0;
+            probe.tm_mday = 15;
+            probe.tm_hour = 12;
+            probe.tm_isdst = -1;
+            const std::time_t as_local = std::mktime(&probe);   // one zone consult
+            const long long as_utc =
+                days_from_civil(year, month0 + 1, 15) * 86400 + 12 * 3600;
+            cached_offset = static_cast<long>(as_utc - static_cast<long long>(as_local));
+            cached_year = year;
+            cached_month = month0;
+        }
+        return cached_offset;
+    }
+
+    // Parse a syslog timestamp (e.g., "Aug  5 14:23:01") into an absolute
+    // instant.  The year is absent and taken from the wall clock; `is_utc` says
+    // whether the fields are UTC (syslog-utc) or the host's local time
+    // (syslog-localtime).
+    //
+    // The conversion is pure civil arithmetic — no mktime()/localtime()/gmtime()
+    // chain.  That is both faster (the libc chain cost ~19.6 us per line, more
+    // than the entire rest of the parse) and *correct*: the old chain produced a
+    // different instant for the same line depending on the analysing machine's
+    // TZ (it mixed the DST and standard offsets), so a syslog-UTC log read
+    // "09:30:16" as 06:30:16Z here and 09:30:16Z under TZ=UTC.
     static SystemTimePoint parse_syslog_timestamp(const std::string& ts, bool is_utc) {
-        std::tm tm = {};
         char mon[4] = {};
         int day = 0, hour = 0, min = 0, sec = 0;
 
@@ -601,31 +652,17 @@ std::string format_epoch_seconds(long long t) {
             return {};
         }
 
-        std::string mon_str(mon);
-        auto it = MONTH_MAP.find(mon_str);
+        auto it = MONTH_MAP.find(std::string(mon));
         if (it == MONTH_MAP.end()) return {};
 
-        tm.tm_mon = it->second - 1;
-        tm.tm_mday = day;
-        tm.tm_hour = hour;
-        tm.tm_min = min;
-        tm.tm_sec = sec;
-        tm.tm_isdst = -1;
+        const long year = current_civil_year();
+        long long epoch = days_from_civil(year, it->second, day) * 86400
+                        + static_cast<long long>(hour) * 3600 + min * 60 + sec;
+        if (!is_utc)
+            epoch -= local_utc_offset(year, it->second - 1);   // local -> UTC
 
-        auto now = std::chrono::system_clock::now();
-        std::time_t now_c = std::chrono::system_clock::to_time_t(now);
-        std::tm* now_tm = std::localtime(&now_c);
-        tm.tm_year = now_tm->tm_year;
-
-        if (is_utc) {
-            std::time_t t = std::mktime(&tm);
-            std::tm local_tm = *std::localtime(&t);
-            std::tm utc_tm = *std::gmtime(&t);
-            long offset = static_cast<long>(difftime(std::mktime(&local_tm), std::mktime(&utc_tm)));
-            return std::chrono::system_clock::from_time_t(t - offset);
-        } else {
-            return std::chrono::system_clock::from_time_t(std::mktime(&tm));
-        }
+        return std::chrono::system_clock::from_time_t(
+            static_cast<std::time_t>(epoch));
     }
 
     // Parse debug format hex timestamp (e.g., "411d2b6a.1f4b2c3a")
@@ -668,7 +705,16 @@ std::string format_epoch_seconds(long long t) {
     static std::string format_rfc3339_utc(SystemTimePoint tp) {
         std::time_t t = std::chrono::system_clock::to_time_t(
             std::chrono::time_point_cast<std::chrono::system_clock::duration>(tp));
-        std::tm* tm = std::gmtime(&t);
+        // gmtime() returns a pointer to ONE process-wide static `struct tm`.
+        // With several worker threads formatting timestamps at once, one thread
+        // overwrites another's civil time between the call and put_time(), so a
+        // line could be stamped with the previous line's (or another server's)
+        // date.  That is what made a per-server coverage lane read "2026-10-16"
+        // for data taken on the 17th, and the chart window a day too wide on
+        // both ends.  gmtime_r() writes into the caller's own buffer.
+        std::tm tm_buf{};
+        if (gmtime_r(&t, &tm_buf) == nullptr) return "";
+        std::tm* tm = &tm_buf;
 
         // Get fractional seconds
         auto duration = tp.time_since_epoch();
@@ -785,16 +831,18 @@ std::string format_epoch_seconds(long long t) {
         } else if (format == "iso8601") {
             auto in_time_t = std::chrono::system_clock::to_time_t(
                 std::chrono::time_point_cast<std::chrono::system_clock::duration>(tp));
-            std::tm* tm = std::localtime(&in_time_t);
+            std::tm tm_buf{};
+            if (localtime_r(&in_time_t, &tm_buf) == nullptr) return "";
             char buf[32];
-            std::strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%S", tm);
+            std::strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%S", &tm_buf);
             return buf;
         } else if (format == "syslog") {
             auto in_time_t = std::chrono::system_clock::to_time_t(
                 std::chrono::time_point_cast<std::chrono::system_clock::duration>(tp));
-            std::tm* tm = std::localtime(&in_time_t);
+            std::tm tm_buf{};
+            if (localtime_r(&in_time_t, &tm_buf) == nullptr) return "";
             char buf[32];
-            std::strftime(buf, sizeof(buf), "%b %d %H:%M:%S", tm);
+            std::strftime(buf, sizeof(buf), "%b %d %H:%M:%S", &tm_buf);
             return buf;
         } else {
             // Default: RFC3339 UTC
@@ -2240,9 +2288,9 @@ void update_aggregator(Aggregator& agg, const Event& ev,
             op.err = ev.err;
             agg.error_count[*ev.err]++;
             agg.error_per_app[who][*ev.err]++;
-            // Store the error text message for this error code, counting occurrences
+            // Store the error text message for this error code, per application
             if (!ev.text.empty()) {
-                agg.error_texts[*ev.err][ev.text]++;
+                agg.error_texts[who][*ev.err][ev.text]++;
             }
             // Only the *failing* codes feed the "errors over time" chart: a
             // Compare answers compareFalse / compareTrue as its normal result, a
@@ -2326,9 +2374,9 @@ void update_aggregator(Aggregator& agg, const Event& ev,
             op.err = ev.err;
             agg.error_count[*ev.err]++;
             agg.error_per_app[who][*ev.err]++;
-            // Store the error text message for this error code, counting occurrences
+            // Store the error text message for this error code, per application
             if (!ev.text.empty()) {
-                agg.error_texts[*ev.err][ev.text]++;
+                agg.error_texts[who][*ev.err][ev.text]++;
             }
             // Only the *failing* codes feed the "errors over time" chart: a
             // Compare answers compareFalse / compareTrue as its normal result, a
@@ -2741,10 +2789,13 @@ void merge_aggregators(Aggregator& dest, const Aggregator& src) {
         for (const auto& [code, cnt] : errs)
             dest.error_per_app[app][code] += cnt;
     }
-    // Merge error text messages (sum the counts for each unique message)
-    for (const auto& [code, texts] : src.error_texts) {
-        for (const auto& [text, cnt] : texts) {
-            if (!text.empty()) dest.error_texts[code][text] += cnt;
+    // Merge error text messages, per application and code (sum the counts for
+    // each unique message).
+    for (const auto& [app, by_code] : src.error_texts) {
+        for (const auto& [code, texts] : by_code) {
+            for (const auto& [text, cnt] : texts) {
+                if (!text.empty()) dest.error_texts[app][code][text] += cnt;
+            }
         }
     }
 

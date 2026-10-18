@@ -3,7 +3,7 @@
 
 **SPDX-License-Identifier:** AGPL-3.0-or-later  
 **License:** GNU Affero General Public License v3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)  
-**Version:** 4.0.2  
+**Version:** 4.0.5  
 **Author:** Manuel FLURY  
 **Copyright:** © 2026 Manuel FLURY. All rights reserved.
 
@@ -38,7 +38,7 @@ make
 ## Features
 
 - **4 output formats**: text/ANSI color, HTML (standalone with CSS), JSON, replay (for jMeter/LoadRunner)
-- **Parallel processing**: one thread per file, no mutex contention
+- **Parallel processing**: bounded worker pool (`-j`, capped at the file count), each worker merging its file under one mutex
 - **Compressed logs**: `.gz`, `.bz2`, `.xz` transparently handled
 - **Session tracking**: correlates NAT'd IPs to real clients via `[IP=... NAME=... USERNAME=...]`
 - **Section filtering**: `-s all` (default) or select specific sections
@@ -163,6 +163,13 @@ Then build:
 
 ```bash
 make clean && make
+```
+
+## Tests
+
+```bash
+make test        # dependency-free guards (shell + the binary): parse rate, TZ
+make test-ui     # the jsdom/WebAssembly harnesses (npm install --prefix tests)
 ```
 
 ## WebAssembly build (browser)

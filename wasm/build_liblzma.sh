@@ -32,7 +32,7 @@ XZ_VERSION="${XZ_VERSION:-5.6.4}"
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 OUT_DIR="$ROOT_DIR/wasm/prebuilt"
-WORK_DIR="${WORK_DIR:-/tmp/opencode/slaplog-liblzma}"
+WORK_DIR="${WORK_DIR:-${TMPDIR:-/tmp}/slaplog-liblzma}"
 
 log() { printf '[liblzma] %s\n' "$*"; }
 

@@ -7,6 +7,16 @@ ROOT_DIR := $(dir $(realpath $(firstword $(MAKEFILE_LIST))))
 # Compiler flags - using system PCRE2
 CXXFLAGS := -std=c++17 -O3 -Wall -Wextra -pedantic -pthread -MMD -MP -I$(ROOT_DIR)
 
+# Float determinism.
+# -march=native lets the compiler contract a*b+c into a single FMA (one rounding
+# instead of two).  The WebAssembly build cannot do that, so the two builds
+# disagreed by a few pixels on the odd SVG vertex and the "native == wasm"
+# guarantee no longer held; two native builds on different CPUs could disagree
+# the same way.  Turning contraction off makes every build produce identical
+# floats.  The parser's hot path does no floating-point work (regexes and
+# integers), so the cost is in the noise.
+CXXFLAGS += -ffp-contract=off
+
 # Enable SIMD optimizations based on CPU support
 # -march=native enables all instructions supported by the build machine
 # For distribution builds, consider -mavx2 -mfma instead
@@ -90,6 +100,24 @@ check-doc:
 	@$(ROOT_DIR)tools/gen_embedded.py --check
 
 # ===================================================================
+# Tests
+# ===================================================================
+# `make test`     — dependency-free: the native binary and a POSIX shell only.
+#                   Runs the perf and correctness guards under tests/native/.
+# `make test-ui`  — the jsdom/wasm harnesses under tests/ui/ (needs node, and
+#                   jsdom; the WebAssembly harnesses also need `make wasm`).
+# `make check`    — the documentation guard plus `make test`.
+# ===================================================================
+.PHONY: test test-ui check
+test: $(TARGET)
+	@sh $(ROOT_DIR)tests/native/run.sh
+
+test-ui: $(TARGET)
+	@node $(ROOT_DIR)tests/run-ui.cjs
+
+check: check-doc test
+
+# ===================================================================
 # WebAssembly build (Emscripten)  --  `make wasm`
 # ===================================================================
 # This section is purely additive: it defines new variables and new
@@ -123,6 +151,7 @@ WASM_SRCS := $(WASM_DIR)/wasm_main.cpp \
              $(ROOT_DIR)html_chart.cpp
 
 WASM_FLAGS := -std=c++17 -O3 -Wall -Wextra \
+              -ffp-contract=off \
               -I$(ROOT_DIR) -I$(WASM_INC) \
               -sUSE_ZLIB=1 -sUSE_BZIP2=1 \
               -sMODULARIZE=1 -sEXPORT_NAME=createSlaplog \
