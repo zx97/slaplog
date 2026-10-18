@@ -81,14 +81,15 @@ namespace utils {
      * format_time – Convert a system_clock time_point to a human-readable
      * string in the form "YYYY-MM-DD HH:MM:SS".
      *
-     * Uses std::put_time with the local time zone via std::localtime.
+     * Uses std::put_time with the local time zone via localtime_r.
      *
      * @param tp  The time point to format.
      * @return    Formatted date-time string.
      */
     inline std::string format_time(std::chrono::system_clock::time_point tp) {
         auto time = std::chrono::system_clock::to_time_t(tp);
-        std::tm tm = *std::localtime(&time);
+        std::tm tm{};
+        if (localtime_r(&time, &tm) == nullptr) return "";
         std::stringstream ss;
         ss << std::put_time(&tm, "%Y-%m-%d %H:%M:%S");
         return ss.str();

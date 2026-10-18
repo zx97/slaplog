@@ -382,8 +382,18 @@ int main(int argc, char* argv[]) {
     // ------------------------------------------------------------------
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
-        if ((arg == "-o" || arg == "--output") && i + 1 < argc) {
-            output_format = argv[++i];
+        // A short option may carry its value attached ("-j4" for "-j 4",
+        // "-ostats"), the way getopt(3) and most command lines allow.  Only the
+        // options that take a value are expanded.
+        std::string glued;
+        if (arg.size() > 2 && arg[0] == '-' && arg[1] != '-' &&
+            (arg[1] == 'o' || arg[1] == 'j' || arg[1] == 'n' ||
+             arg[1] == 'm' || arg[1] == 's')) {
+            glued = arg.substr(2);
+            arg = arg.substr(0, 2);
+        }
+        if ((arg == "-o" || arg == "--output") && (glued.size() || i + 1 < argc)) {
+            output_format = glued.size() ? glued : argv[++i];
             if (output_format == "text") { color_mode = 0; }
             else if (output_format == "textcolor") { color_mode = 2; }
         } else if (arg == "-c" || arg == "--compact") {
@@ -396,34 +406,34 @@ int main(int argc, char* argv[]) {
             no_graph = true;
         } else if ((arg == "--title") && i + 1 < argc) {
             custom_title = argv[++i];
-        } else if ((arg == "-n" || arg == "--max-files") && i + 1 < argc) {
+        } else if ((arg == "-n" || arg == "--max-files") && (glued.size() || i + 1 < argc)) {
             // Keep only the N most recently modified files in a directory scan.
             try {
-                max_files = std::stoi(argv[++i]);
+                max_files = std::stoi(glued.size() ? glued : argv[++i]);
             } catch (const std::exception&) {
                 std::cerr << "Error: invalid value for " << arg << " (expected integer)\n";
                 return 1;
             }
             if (max_files < 0) max_files = 0;
-        } else if ((arg == "-m" || arg == "--mtime") && i + 1 < argc) {
+        } else if ((arg == "-m" || arg == "--mtime") && (glued.size() || i + 1 < argc)) {
             try {
-                mtime_days = std::stoi(argv[++i]);
+                mtime_days = std::stoi(glued.size() ? glued : argv[++i]);
             } catch (const std::exception&) {
                 std::cerr << "Error: invalid value for " << arg << " (expected integer)\n";
                 return 1;
             }
             if (mtime_days < 0) mtime_days = 0;
-        } else if ((arg == "-j" || arg == "--jobs") && i + 1 < argc) {
+        } else if ((arg == "-j" || arg == "--jobs") && (glued.size() || i + 1 < argc)) {
             try {
-                jobs = std::stoi(argv[++i]);
+                jobs = std::stoi(glued.size() ? glued : argv[++i]);
             } catch (const std::exception&) {
                 std::cerr << "Error: invalid value for " << arg << " (expected integer)\n";
                 return 1;
             }
             if (jobs < 1) { std::cerr << "Error: " << arg << " must be >= 1\n"; return 1; }
-        } else if ((arg == "-s" || arg == "--section") && i + 1 < argc) {
+        } else if ((arg == "-s" || arg == "--section") && (glued.size() || i + 1 < argc)) {
             enabled_sections.erase("all");
-            std::string val = argv[++i];
+            std::string val = glued.size() ? glued : argv[++i];
             std::istringstream iss(val);
             std::string tok;
             while (std::getline(iss, tok, ',')) {

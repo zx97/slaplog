@@ -1,0 +1,7 @@
+2026-08-05T10:00:00.000000Z h slapd[100]: @(#) $OpenLDAP: slapd 2.6.7 (Mar 14 2025 12:00:00) $ root@build:/build/openldap-2.6.7/servers/slapd
+2026-08-05T10:00:01.000000Z h slapd[100]: slapd starting
+2026-08-05T10:00:02.000000Z h slapd[100]: conn=1 fd=8 ACCEPT from IP=192.0.2.1:1111 (IP=0.0.0.0:389)
+2026-08-05T10:00:03.000000Z h slapd[100]: conn=1 op=0 RESULT tag=97 err=0 qtime=0.000001 etime=0.000002 text=
+2026-08-05T10:10:00.000000Z h slapd[100]: daemon: shutdown requested and initiated.
+2026-08-05T10:20:00.000000Z h slapd[200]: slapd starting
+2026-08-05T10:20:01.000000Z h slapd[200]: conn=2 fd=9 ACCEPT from IP=192.0.2.2:2222 (IP=0.0.0.0:389)

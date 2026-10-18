@@ -1,0 +1,1 @@
+2026-08-05T10:00:00.000000Z h slapd[1]: conn=1 op=1 SRCH base="cn=slapd 2.6 (test)" scope=0 deref=0 filter="(objectClass=*)"

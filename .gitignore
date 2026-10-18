@@ -41,6 +41,12 @@ session*.md
 /wasm/web/slaplog.js
 /wasm/web/slaplog.wasm
 
+# === Tests ===
+# The deny-all rule above would hide the whole suite; jsdom is a local
+# dependency and is not tracked.
+!/tests/
+/tests/node_modules/
+
 # === Working notes (local only) ===
 # HANDOFF.md is this checkout's session handoff — a working note, not project
 # documentation.  *.md is whitelisted above, so it needs its own rule; keep this

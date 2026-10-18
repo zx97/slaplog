@@ -1,0 +1,8 @@
+{
+  "name": "slaplog-tests",
+  "private": true,
+  "description": "UI harnesses for slaplog (jsdom). Run with `make test-ui`.",
+  "devDependencies": {
+    "jsdom": "^24.0.0"
+  }
+}

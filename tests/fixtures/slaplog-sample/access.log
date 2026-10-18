@@ -1,0 +1,82 @@
+6a734745.00000001 0x7f9c1e33a700 slapd starting
+6a734745.00000002 0x7f9c1e33a700 conn=1000 fd=12 ACCEPT from IP=192.0.2.10:34567 (IP=0.0.0.0:389)
+6a734745.00000003 0x7f9c1e33a700 conn=1000 op=0 BIND dn="cn=admin,dc=example,dc=com" method=128
+6a734745.00000004 0x7f9c1e33a700 conn=1000 op=0 RESULT tag=97 err=0 qtime=0 etime=1 text=
+6a734745.00000005 0x7f9c1e33a700 conn=1000 op=1 SRCH base="dc=example,dc=com" scope=2 deref=0 filter="(objectClass=*)"
+6a734745.00000006 0x7f9c1e33a700 conn=1000 op=1 SEARCH RESULT tag=101 err=0 qtime=0 etime=2 nentries=42 text=
+6a734745.00000007 0x7f9c1e33a700 conn=1000 op=2 SRCH base="dc=example,dc=com" scope=2 deref=0 filter="(&(objectClass=person)(uid=alice))" attrs="uid,cn,mail"
+6a734745.00000008 0x7f9c1e33a700 conn=1000 op=2 SEARCH RESULT tag=101 err=0 qtime=0 etime=1 nentries=1 text=
+6a734745.00000009 0x7f9c1e33a700 conn=1000 op=2 UNBIND
+6a734745.0000000a 0x7f9c1e33a700 conn=1000 fd=12 closed
+6a734745.0000000b 0x7f9c1e33a700 conn=1001 fd=13 ACCEPT from IP=192.0.2.11:45678 (IP=0.0.0.0:389)
+6a734745.0000000c 0x7f9c1e33a700 conn=1001 op=0 BIND dn="uid=alice,ou=people,dc=example,dc=com" method=128
+6a734745.0000000d 0x7f9c1e33a700 conn=1001 op=0 RESULT tag=97 err=0 qtime=0 etime=1 text=
+6a734745.0000000e 0x7f9c1e33a700 conn=1001 op=1 SRCH base="ou=people,dc=example,dc=com" scope=2 deref=0 filter="(uid=*)" attrs="uid,cn,mail"
+6a734745.0000000f 0x7f9c1e33a700 conn=1001 op=1 SEARCH RESULT tag=101 err=0 qtime=0 etime=15 nentries=1024 text=
+6a734745.00000010 0x7f9c1e33a700 conn=1001 op=2 ADD dn="uid=bob,ou=people,dc=example,dc=com"
+6a734745.00000011 0x7f9c1e33a700 conn=1001 op=2 RESULT tag=105 err=0 qtime=0 etime=1 text=
+6a734745.00000012 0x7f9c1e33a700 conn=1001 op=3 MOD dn="uid=bob,ou=people,dc=example,dc=com"
+6a734745.00000013 0x7f9c1e33a700 conn=1001 op=3 RESULT tag=103 err=0 qtime=0 etime=1 text=
+6a734745.00000014 0x7f9c1e33a700 conn=1001 op=4 DEL dn="uid=bob,ou=people,dc=example,dc=com"
+6a734745.00000015 0x7f9c1e33a700 conn=1001 op=4 RESULT tag=107 err=32 qtime=0 etime=0 text=No such object
+6a734745.00000016 0x7f9c1e33a700 conn=1001 op=5 MODRDN dn="uid=carol,ou=people,dc=example,dc=com" newrdn="uid=carol2"
+6a734745.00000017 0x7f9c1e33a700 conn=1001 op=5 RESULT tag=109 err=0 qtime=0 etime=2 text=
+6a734745.00000018 0x7f9c1e33a700 conn=1001 op=6 SRCH base="dc=example,dc=com" scope=2 deref=0 filter="(cn=*smith*)"
+6a734745.00000019 0x7f9c1e33a700 conn=1001 op=6 SEARCH RESULT tag=101 err=0 qtime=1 etime=320 nentries=7 text=
+6a734745.0000001a 0x7f9c1e33a700 conn=1001 op=7 ABANDON msgid=8
+6a734745.0000001b 0x7f9c1e33a700 conn=1001 op=8 CMP dn="uid=alice,ou=people,dc=example,dc=com"
+6a734745.0000001c 0x7f9c1e33a700 conn=1001 op=8 RESULT tag=111 err=5 qtime=0 etime=0 text=Compare False
+6a734745.0000001d 0x7f9c1e33a700 conn=1001 op=9 EXT oid=1.3.6.1.4.1.4203.1.11.3
+6a734745.0000001e 0x7f9c1e33a700 conn=1001 op=9 RESULT oid=1.3.6.1.4.1.4203.1.11.3 err=0 qtime=0 etime=1 text=
+6a734745.0000001f 0x7f9c1e33a700 conn=1001 op=9 UNBIND
+6a734745.00000020 0x7f9c1e33a700 conn=1001 fd=13 closed
+6a734745.00000021 0x7f9c1e33a700 conn=1002 fd=14 ACCEPT from IP=192.0.2.12:56789 (IP=0.0.0.0:389)
+6a734745.00000022 0x7f9c1e33a700 conn=1002 op=0 BIND anonymous method=128
+6a734745.00000023 0x7f9c1e33a700 conn=1002 op=0 RESULT tag=97 err=53 qtime=0 etime=0 text=unwilling to perform
+6a734745.00000024 0x7f9c1e33a700 conn=1002 op=1 SRCH base="" scope=0 deref=0 filter="(objectClass=*)"
+6a734745.00000025 0x7f9c1e33a700 conn=1002 op=1 SEARCH RESULT tag=101 err=0 qtime=0 etime=0 nentries=0 text=
+6a734745.00000026 0x7f9c1e33a700 conn=1002 fd=14 closed
+6a734745.00000027 0x7f9c1e33a700 conn=1003 fd=15 ACCEPT from IP=192.0.2.13:61111 (IP=0.0.0.0:389)
+6a734745.00000028 0x7f9c1e33a700 conn=1003 op=0 BIND dn="cn=replicator,dc=example,dc=com" method=128
+6a734745.00000029 0x7f9c1e33a700 conn=1003 op=0 RESULT tag=97 err=0 qtime=0 etime=1 text=
+6a734745.0000002a 0x7f9c1e33a700 conn=1003 op=1 SRCH base="dc=example,dc=com" scope=2 deref=0 filter="(objectClass=*)"
+6a734745.0000002b 0x7f9c1e33a700 conn=1003 op=1 SEARCH RESULT tag=101 err=0 qtime=3 etime=1200 nentries=5000 text=
+6a734745.0000002c 0x7f9c1e33a700 conn=1003 op=1 UNBIND
+6a734745.0000002d 0x7f9c1e33a700 conn=1003 fd=15 closed
+6a734745.0000002e 0x7f9c1e33a700 daemon: shutdown requested and initiated.
+6a734745.0000002f 0x7f9c1e33a700 slapd shutdown: waiting for 3 operations/tasks to finish
+Aug  5 14:23:01 ldap01 slapd[1234]: conn=2000 fd=20 ACCEPT from IP=198.51.100.20:40000 (IP=0.0.0.0:389)
+Aug  5 14:23:01 ldap01 slapd[1234]: conn=2000 fd=20 TLS established tls_ssf=256 ssf=256
+Aug  5 14:23:02 ldap01 slapd[1234]: conn=2000 op=0 BIND dn="cn=admin,dc=example,dc=com" method=128
+Aug  5 14:23:02 ldap01 slapd[1234]: conn=2000 op=0 RESULT tag=97 err=0 qtime=0 etime=1 text=
+Aug  5 14:23:03 ldap01 slapd[1234]: conn=2000 op=1 SRCH base="dc=example,dc=com" scope=2 deref=0 filter="(uid=nobody)"
+Aug  5 14:23:03 ldap01 slapd[1234]: conn=2000 op=1 SEARCH RESULT tag=101 err=0 qtime=0 etime=3 nentries=0 text=
+Aug  5 14:23:04 ldap01 slapd[1234]: conn=2000 op=2 SRCH base="dc=example,dc=com" scope=2 deref=0 filter="(uid=?)"
+Aug  5 14:23:04 ldap01 slapd[1234]: conn=2000 op=2 SEARCH RESULT tag=101 err=0 qtime=0 etime=1 nentries=0 text=
+Aug  5 14:23:05 ldap01 slapd[1234]: conn=2000 op=3 SRCH base="dc=example,dc=com" scope=2 deref=0 filter="(mail=?)"
+Aug  5 14:23:06 ldap01 slapd[1234]: conn=2000 op=3 SEARCH RESULT tag=101 err=0 qtime=0 etime=1 nentries=0 text=
+Aug  5 14:23:07 ldap01 slapd[1234]: conn=2000 op=4 UNBIND
+Aug  5 14:23:07 ldap01 slapd[1234]: conn=2000 fd=20 closed
+2026-08-05T14:23:01.123456Z ldap01 slapd[1234]: conn=3000 fd=30 ACCEPT from IP=203.0.113.30:50000 (IP=0.0.0.0:389)
+2026-08-05T14:23:02.000001Z ldap01 slapd[1234]: conn=3000 op=0 BIND dn="uid=dave,ou=people,dc=example,dc=com" method=128
+2026-08-05T14:23:02.000002Z ldap01 slapd[1234]: conn=3000 op=0 RESULT tag=97 err=49 qtime=0 etime=0 text=Invalid credentials
+2026-08-05T14:23:03.000003Z ldap01 slapd[1234]: conn=3000 op=1 SRCH base="ou=people,dc=example,dc=com" scope=2 deref=0 filter="(&(objectClass=inetOrgPerson)(mail=*))" attrs="mail,cn"
+2026-08-05T14:23:03.500000Z ldap01 slapd[1234]: conn=3000 op=1 SEARCH RESULT tag=101 err=0 qtime=2 etime=450 nentries=250 text=
+2026-08-05T14:23:04.000004Z ldap01 slapd[1234]: conn=3000 op=2 UNBIND
+2026-08-05T14:23:04.100000Z ldap01 slapd[1234]: conn=3000 fd=30 closed
+2026-08-05T14:23:10.000005Z ldap01 slapd[1234]: conn=3001 fd=31 ACCEPT from IP=203.0.113.31:50005 (IP=0.0.0.0:389)
+2026-08-05T14:23:10.100000Z ldap01 slapd[1234]: conn=3001 op=0 BIND dn="cn=replicator,dc=example,dc=com" method=128
+2026-08-05T14:23:10.200000Z ldap01 slapd[1234]: conn=3001 op=0 RESULT tag=97 err=0 qtime=0 etime=1 text=
+2026-08-05T14:23:10.300000Z ldap01 slapd[1234]: conn=3001 op=1 EXT oid=1.3.6.1.4.1.4203.1.11.1
+2026-08-05T14:23:10.400000Z ldap01 slapd[1234]: conn=3001 op=1 RESULT oid=1.3.6.1.4.1.4203.1.11.1 err=0 qtime=0 etime=1 text=
+2026-08-05T14:23:10.500000Z ldap01 slapd[1234]: conn=3001 op=2 UNBIND
+2026-08-05T14:23:10.600000Z ldap01 slapd[1234]: conn=3001 fd=31 closed
+2026-08-05T14:24:00.000000Z ldap01 slapd[1234]: slapd starting
+2026-08-05T14:25:00.000000Z ldap01 slapd[1234]: [IP=10.99.0.5 NAME=webapp USERNAME=uid=erin,ou=people,dc=example,dc=com] conn=4000 fd=40 ACCEPT from IP=203.0.113.40:50010 (IP=0.0.0.0:389)
+2026-08-05T14:25:01.000000Z ldap01 slapd[1234]: conn=4000 op=0 BIND dn="uid=erin,ou=people,dc=example,dc=com" method=128
+2026-08-05T14:25:01.100000Z ldap01 slapd[1234]: conn=4000 op=0 RESULT tag=97 err=0 qtime=0 etime=1 text=
+2026-08-05T14:25:02.000000Z ldap01 slapd[1234]: conn=4000 op=1 SRCH base="dc=example,dc=com" scope=2 deref=0 filter="(cn=VeryLongSearchThatTakesTime)"
+2026-08-05T14:25:05.000000Z ldap01 slapd[1234]: conn=4000 op=1 SEARCH RESULT tag=101 err=0 qtime=5 etime=3000 nentries=99999 text=
+2026-08-05T14:25:05.100000Z ldap01 slapd[1234]: conn=4000 op=2 UNBIND
+2026-08-05T14:25:05.200000Z ldap01 slapd[1234]: conn=4000 fd=40 closed
+2026-08-05T14:26:00.000000Z ldap01 slapd[1234]: slapd shutdown: waiting for 0 operations/tasks to finish
