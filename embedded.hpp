@@ -1013,6 +1013,11 @@ The *debug* log format names no host, so it contributes nothing here and the
 section is absent — that format describes one server, and there is nothing to
 split.
 
+Each server's own coverage is also part of this picture: the parser keeps the
+earliest and the latest timestamped line seen from each host, the report prints
+them as the **coverage lanes** under the two time-series charts, and the JSON
+carries them as `time_by_server` next to `load_by_server`.
+
 ### Operation Counts
 
 Counts per operation type: BIND, BIND ANONYMOUS, EXT, ADD, DEL, MOD, MODRDN,
@@ -1216,7 +1221,13 @@ Standalone HTML page with embedded CSS featuring:
   - *Simultaneous Connections*: how many connections were open across the
     analysed time range, with a marker on every server start/stop event, a
     shaded band over each downtime period, and an orange marker for a restart
-    that had no shutdown before it (a likely crash);
+    that had no shutdown before it (a likely crash).  Under the time axis sits
+    one **lane per server**: the faint track is the window the chart plots and
+    the coloured span is the window that server's own log actually covers, so a
+    curve that steps up and then falls off a cliff is read as the end of a file
+    instead of the end of a heavy operation.  A single server gets no lane — its
+    window *is* the chart's — and the key under the chart names each server with
+    the window it covers;
   - *Errors Over Time*: **failing** results only — informational codes (success,
     both Compare answers, a referral) are not plotted, so the curve is not
     inflated by operations that did what they were asked.  The curve is
@@ -1229,7 +1240,9 @@ Standalone HTML page with embedded CSS featuring:
     a flat colour, and its legend swatch carries the same hatch.  A peak in one
     colour is one problem; a rise spread over several is a general one.  The
     legend under the chart names each band and its share, and hovering a slice
-    lists the codes it is made of;
+    lists the codes it is made of.  It carries the same per-server coverage
+    lanes as *Simultaneous Connections*, since a fall at the edge of one
+    server's file is exactly what this curve invites misreading as a recovery;
   - *Response Time Distribution*: how many operations fall into each etime
     bucket, each bar labelled with its exact count and share — the latency tail
     at a glance.  A cumulative share curve with its own 0-100 % axis used to run

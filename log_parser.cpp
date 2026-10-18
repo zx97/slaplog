@@ -459,16 +459,26 @@ void set_replay_ops_limit(long long limit) {
  *
  * Maintains agg.firsttime (earliest) and agg.lasttime (latest) timestamps
  * by comparing sort keys derived via ts_sort_key().
+ *
+ * When `host` is not empty the same comparison also widens that server's own
+ * coverage window (agg.time_by_server), which is what lets the charts show
+ * where one server's log starts and the next one's stops.  That window keeps
+ * its sort keys, so this costs one map lookup and two short string compares
+ * per line rather than a regex match.
  */
-void update_time_bounds(Aggregator& agg, const std::string& ts) {
+void update_time_bounds(Aggregator& agg, const std::string& ts, const std::string& host) {
         if (ts.empty()) return;
-        std::string key = ts_sort_key(ts);
+        const std::string key = ts_sort_key(ts);
         if (agg.firsttime.empty() || key < ts_sort_key(agg.firsttime)) {
             agg.firsttime = ts;
         }
         if (agg.lasttime.empty() || key > ts_sort_key(agg.lasttime)) {
             agg.lasttime = ts;
         }
+        if (host.empty()) return;
+        auto& w = agg.time_by_server[host];
+        if (w.first_key.empty() || key < w.first_key) { w.first_key = key; w.first = ts; }
+        if (key > w.last_key) { w.last_key = key; w.last = ts; }
     }
 
 // ---------------------------------------------------------------------------
@@ -1747,8 +1757,9 @@ void update_aggregator(Aggregator& agg, const Event& ev,
     // Time Bounds
     // ------------------------------------------------------------------
     // Every line with a valid timestamp expands the overall time range
-    // (agg.firsttime / agg.lasttime) tracked by the Aggregator.
-    if (!ev.ts.empty()) update_time_bounds(agg, ev.ts);
+    // (agg.firsttime / agg.lasttime) tracked by the Aggregator, and — when the
+    // line names its host — that server's own coverage window as well.
+    if (!ev.ts.empty()) update_time_bounds(agg, ev.ts, ev.host);
     agg.stats.lines++;
 
     int cid = ev.conn.value_or(-1);
@@ -2619,6 +2630,22 @@ void merge_aggregators(Aggregator& dest, const Aggregator& src) {
         dest.firsttime = src.firsttime;
     if (!src.lasttime.empty() && (dest.lasttime.empty() || src.lasttime > dest.lasttime))
         dest.lasttime = src.lasttime;
+
+    // --- Per-server time coverage (widen each server's own window) ---
+    // Compared on the sort keys the parser already kept, not on the raw text:
+    // a host may be read from files of different formats, whose timestamps do
+    // not share an ordering.
+    for (const auto& [host, w] : src.time_by_server) {
+        auto& d = dest.time_by_server[host];
+        if (d.first_key.empty() || w.first_key < d.first_key) {
+            d.first_key = w.first_key;
+            d.first = w.first;
+        }
+        if (w.last_key > d.last_key) {
+            d.last_key = w.last_key;
+            d.last = w.last;
+        }
+    }
 
     // --- Slowest operation (keep the larger etime) ---
     if (src.maxetime.has_value()) {
