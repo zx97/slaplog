@@ -640,9 +640,15 @@ void print_text_report(const Aggregator& agg, double processing_time, bool compa
                 code_str = c + code_str + COLOR_RESET;
                 name = c + name + COLOR_RESET;
             }
-            // Include error text if available
-            std::string text = agg.error_text.count(code) ? agg.error_text.at(code) : "";
-            error_rows.push_back({code_str, name, fmt_int(count), text});
+            // Include all error texts with their counts
+            std::string text_col;
+            if (agg.error_texts.count(code)) {
+                for (const auto& [msg, msg_cnt] : agg.error_texts.at(code)) {
+                    if (!text_col.empty()) text_col += " | ";
+                    text_col += fmt_int(msg_cnt) + "x: " + msg;
+                }
+            }
+            error_rows.push_back({code_str, name, fmt_int(count), text_col});
         }
         if (!normal.empty())
             std::cout << "  Not errors (informational): " << normal << "\n";
@@ -675,7 +681,22 @@ void print_text_report(const Aggregator& agg, double processing_time, bool compa
                 err_rows.push_back({app_name, code_str, name, fmt_int(cnt)});
             }
         }
-        print_table({"App", "Code", "Name", "Count"}, err_rows);
+        // Add Error Text column with all messages and counts
+        std::vector<std::vector<std::string>> err_rows_with_text;
+        err_rows_with_text.reserve(err_rows.size());
+        for (const auto& row : err_rows) {
+            int code = std::stoi(row[1].substr(row[1].find_first_not_of("\033[")));
+            std::string text_col;
+            if (agg.error_texts.count(code)) {
+                for (const auto& [msg, msg_cnt] : agg.error_texts.at(code)) {
+                    if (!text_col.empty()) text_col += " | ";
+                    text_col += fmt_int(msg_cnt) + "x: " + msg;
+                }
+            }
+            std::vector<std::string> new_row = {row[0], row[1], row[2], row[3], text_col};
+            err_rows_with_text.push_back(std::move(new_row));
+        }
+        print_table({"App", "Code", "Name", "Count", "Error Text"}, err_rows_with_text);
     }
 
     // Paged searches
@@ -1366,11 +1387,17 @@ void print_html_report(const Aggregator& agg, double duration, bool /*compact*/,
               << ".</p>\n";
     std::cout << "<table>\n<tr><th>Code</th><th>Name</th><th>Count</th><th>Error Text</th></tr>\n";
     for (const auto& [code, count] : error_sorted) {
-        std::string text = agg.error_text.count(code) ? agg.error_text.at(code) : "";
+        std::string text_col;
+        if (agg.error_texts.count(code)) {
+            for (const auto& [msg, msg_cnt] : agg.error_texts.at(code)) {
+                if (!text_col.empty()) text_col += " | ";
+                text_col += fmt_int(msg_cnt) + "x: " + html_escape(msg);
+            }
+        }
         std::cout << "<tr><td style=\"" << err_color(code) << "\">" << code << "</td>"
                   << "<td style=\"" << err_color(code) << "\">" << ldap_error_name(code) << "</td>"
                   << "<td>" << count << "</td>"
-                  << "<td>" << html_escape(text) << "</td></tr>\n";
+                  << "<td>" << text_col << "</td></tr>\n";
     }
     std::cout << "</table>\n";
     // Right under the table it belongs to: every code, successful ones included,
@@ -1389,11 +1416,18 @@ void print_html_report(const Aggregator& agg, double duration, bool /*compact*/,
             for (const auto& [code, cnt] : sorted_errs) {
                 auto it = LDAP_ERRORS.find(code);
                 std::string name = (it != LDAP_ERRORS.end()) ? it->second : "unknown";
-                std::string text = agg.error_text.count(code) ? agg.error_text.at(code) : "";
-                std::cout << "<tr><td>"
+                std::string text_col;
+                if (agg.error_texts.count(code)) {
+                    for (const auto& [msg, msg_cnt] : agg.error_texts.at(code)) {
+                        if (!text_col.empty()) text_col += " | ";
+                        text_col += fmt_int(msg_cnt) + "x: " + html_escape(msg);
+                    }
+                }
+                std::cout << "<tr><td>" << app_name << "</td>"
                           << "<td style=\"" << err_color(code) << "\">" << code << "</td>"
                           << "<td style=\"" << err_color(code) << "\">" << name << "</td>"
-                          << "<td>" << cnt << "</td>" << "<td>" << html_escape(text) << "</td></tr>\n";
+                          << "<td>" << cnt << "</td>"
+                          << "<td>" << text_col << "</td></tr>\n";
             }
         }
         std::cout << "</table>\n";
@@ -1936,13 +1970,19 @@ void print_json_report(const Aggregator& agg, double duration, bool /*compact*/,
 
     // Error counts
     // Object keyed by numeric error code string, each containing a
-    // human-readable "name" and the "count".
+    // human-readable "name", the "count", and an array of "texts" with
+    // each unique error message and its occurrence count.
     json errors = json::object();
     for (const auto& [code, count] : agg.error_count) {
         auto it = LDAP_ERRORS.find(code);
         std::string name = (it != LDAP_ERRORS.end()) ? it->second : "unknown";
-                std::string text = agg.error_text.count(code) ? agg.error_text.at(code) : "";
-        errors[std::to_string(code)] = {{"name", name}, {"count", count}, {"text", text}};
+        json texts = json::array();
+        if (agg.error_texts.count(code)) {
+            for (const auto& [msg, msg_cnt] : agg.error_texts.at(code)) {
+                texts.push_back({{"text", msg}, {"count", msg_cnt}});
+            }
+        }
+        errors[std::to_string(code)] = {{"name", name}, {"count", count}, {"texts", texts}};
     }
     report["error_counts"] = errors;
 

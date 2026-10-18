@@ -2240,9 +2240,9 @@ void update_aggregator(Aggregator& agg, const Event& ev,
             op.err = ev.err;
             agg.error_count[*ev.err]++;
             agg.error_per_app[who][*ev.err]++;
-            // Store the error text message for this error code (keep the last one seen)
+            // Store the error text message for this error code, counting occurrences
             if (!ev.text.empty()) {
-                agg.error_text[*ev.err] = ev.text;
+                agg.error_texts[*ev.err][ev.text]++;
             }
             // Only the *failing* codes feed the "errors over time" chart: a
             // Compare answers compareFalse / compareTrue as its normal result, a
@@ -2326,9 +2326,9 @@ void update_aggregator(Aggregator& agg, const Event& ev,
             op.err = ev.err;
             agg.error_count[*ev.err]++;
             agg.error_per_app[who][*ev.err]++;
-            // Store the error text message for this error code (keep the last one seen)
+            // Store the error text message for this error code, counting occurrences
             if (!ev.text.empty()) {
-                agg.error_text[*ev.err] = ev.text;
+                agg.error_texts[*ev.err][ev.text]++;
             }
             // Only the *failing* codes feed the "errors over time" chart: a
             // Compare answers compareFalse / compareTrue as its normal result, a
@@ -2741,9 +2741,11 @@ void merge_aggregators(Aggregator& dest, const Aggregator& src) {
         for (const auto& [code, cnt] : errs)
             dest.error_per_app[app][code] += cnt;
     }
-    // Merge error text messages (keep the non-empty one if both have it)
-    for (const auto& [code, text] : src.error_text) {
-        if (!text.empty()) dest.error_text[code] = text;
+    // Merge error text messages (sum the counts for each unique message)
+    for (const auto& [code, texts] : src.error_texts) {
+        for (const auto& [text, cnt] : texts) {
+            if (!text.empty()) dest.error_texts[code][text] += cnt;
+        }
     }
 
     // --- Extended operations and global control OIDs ---

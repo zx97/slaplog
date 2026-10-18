@@ -736,7 +736,11 @@
       if (!isNaN(lim)) args.push("--replay-limit", String(lim));
     }
     const titleVal = $("title").value.trim();
-    if (titleVal) args.push("--title", titleVal);
+    if (titleVal) {
+      // Quote the title if it contains spaces to prevent whitespace splitting in WASM
+      const escaped = titleVal.includes(" ") ? '"' + titleVal.replace(/"/g, '\\"') + '"' : titleVal;
+      args.push("--title", escaped);
+    }
     return args.join(" ");
   }
 
