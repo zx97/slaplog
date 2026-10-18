@@ -31,6 +31,30 @@ v3.0 (AGPL-3.0)** — see the [LICENSE](LICENSE) file for the full text.
   no `conn=`, so it is attributed to the next line that names one).  The shape
   is a match, not a proof: an application that repeats one search and then stops
   has the same shape, so the count is an upper bound.
+- **Cluster aggregation and the load split per server.**  The logs of several
+  servers — the same period, or periods that overlap — are analysed into one
+  global report, and a new *Load by Server* section splits that picture back
+  across the servers the lines name: operations, share, cumulative etime,
+  connections and results per server, plus a donut of each one's share.  A
+  connection's identity is now **(server, conn)**, not the connection number
+  alone: every server in a cluster numbers its connections from 1, so `conn=1`
+  on two servers used to be merged into one, which corrupted the per-connection
+  figures (top connections, session correlation, paged runs) and would have
+  attributed one node's search to another node's binding identity.  When the log
+  names more than one server the *Top Connections* table gains a server column;
+  a single-server log keeps the narrower table it always had.  The *debug*
+  format names no host, so it contributes nothing here and the section is absent.
+- **Bind usage.**  A new *Bind Usage* section, from the `BIND` request lines:
+  the **method** slapd decoded (simple, SASL, anonymous when a simple bind
+  carries an empty DN), the **transport** the connection was on at that moment —
+  `ldaps` (implicit TLS), `ldap + StartTLS` (TLS after a STARTTLS operation), or
+  plain `ldap` — and the **SASL mechanism** (`EXTERNAL`, `PLAIN`, …).  It also
+  counts the bind requests that carried the session-tracking control.  On the
+  1 GiB reference log it reads: 818 415 simple and 2 900 anonymous binds against
+  32 SASL, all but 677 of them over implicit ldaps, and 354 connections that
+  negotiated TLS in band with StartTLS.
+- **Two more charts, *Load by Server* and *Bind Usage***, in the two sections
+  above.
 - **An eighth chart, *Response Time Density***: the same etime distribution as
   *Response Time Distribution*, but with logarithmically spaced bins (×1.58 per
   step) and an x window that follows the data.  The eleven fixed buckets cannot
@@ -66,6 +90,12 @@ v3.0 (AGPL-3.0)** — see the [LICENSE](LICENSE) file for the full text.
 
 ### Changed
 
+- **The floating section index marks the section the reader is in.**  The link
+  of the last heading whose top has passed the offset is highlighted, kept up to
+  date on scroll, so the index doubles as a position indicator.
+- **The *Statistics* table spans the full report width.**  It had been capped at
+  960 px when it was laid out two metrics per row, which made the section read
+  narrower than every other one.
 - **The HTML *Statistics* table is laid out two metrics per row.**  The section
   carries little data, and a single column made it far taller than it needed to
   be; it now reads as two label/value pairs side by side.  The metrics are

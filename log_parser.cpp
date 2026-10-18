@@ -860,14 +860,18 @@ std::string format_epoch_seconds(long long t) {
     // Aggregator Helper Functions
 // =========================================================================
 
+    // A connection's identity in a cluster is (server, conn): every server
+    // numbers its own connections from 1.
+    using ConnKey = std::pair<std::string, int>;
+
 /**
  * ensure_conn: Return a reference to the ConnState for a given connection ID.
  *
  * The operator[] on the map will default-construct a new ConnState if
  * the connection ID has not been seen before.
  */
-    ConnState& ensure_conn(Aggregator& agg, int cid) {
-        return agg.conn_state[cid];
+    ConnState& ensure_conn(Aggregator& agg, const std::string& server, int cid) {
+        return agg.conn_state[ConnKey{server, cid}];
     }
 
 /**
@@ -875,8 +879,8 @@ std::string format_epoch_seconds(long long t) {
  *
  * Also default-constructs the ConnState for cid if necessary.
  */
-    OpState& ensure_op(Aggregator& agg, int cid, int opid) {
-        return agg.conn_state[cid].ops[opid];
+    OpState& ensure_op(Aggregator& agg, const std::string& server, int cid, int opid) {
+        return agg.conn_state[ConnKey{server, cid}].ops[opid];
     }
 
 /**
@@ -888,8 +892,8 @@ std::string format_epoch_seconds(long long t) {
  * guard prevents double-counting when multiple log lines refer to the
  * same operation (e.g. SRCH followed by SEARCH RESULT).
  */
-    void ensure_total_counted(Aggregator& agg, int cid, int opid) {
-        auto& conn = agg.conn_state[cid];
+    void ensure_total_counted(Aggregator& agg, const std::string& server, int cid, int opid) {
+        auto& conn = agg.conn_state[ConnKey{server, cid}];
         auto& op = conn.ops[opid];
         if (op.counted) return;
         op.counted = true;
@@ -907,8 +911,8 @@ std::string format_epoch_seconds(long long t) {
  *   5. conn.app (explicitly set app name)
  *   6. "unknown" (fallback)
  */
-    std::string app_for_conn(const Aggregator& agg, int cid) {
-        auto it = agg.conn_state.find(cid);
+    std::string app_for_conn(const Aggregator& agg, const std::string& server, int cid) {
+        auto it = agg.conn_state.find(ConnKey{server, cid});
         if (it == agg.conn_state.end()) return "unknown";
         const auto& conn = it->second;
         if (!conn.binddn.empty()) return conn.binddn;
@@ -919,6 +923,43 @@ std::string format_epoch_seconds(long long t) {
         if (itn != conn.track.end() && !itn->second.empty()) return itn->second;
         if (!conn.app.empty()) return conn.app;
         return "unknown";
+    }
+
+    // ------------------------------------------------------------------------
+    // Bind usage
+    // ------------------------------------------------------------------------
+    // Classify one BIND request for the Bind Usage section.  The method is the
+    // decoded LDAP authentication choice slapd logs: 128 (0x80) is the simple
+    // method, 163 (0xa3) is SASL, 0 is what the anonymous-demotion line carries.
+    // A simple bind with an empty DN is an anonymous bind, which is what most
+    // clients mean by "no credentials".  The transport is the connection's
+    // state at that moment, so it is the transport the bind actually ran over.
+    void track_bind_usage(Aggregator& agg, const ConnState& conn, const Event& ev) {
+        std::string method = "other";
+        if (ev.method.has_value()) {
+            switch (*ev.method) {
+                case 128:  // simple
+                    method = dequote(ev.dn).empty() ? "anonymous" : "simple";
+                    break;
+                case 163:  // SASL
+                    method = "SASL";
+                    break;
+                case 0:    // anonymous demotion
+                    method = "anonymous";
+                    break;
+                default:
+                    method = "other";
+                    break;
+            }
+        }
+        const std::string transport = conn.tls_established
+                                          ? (conn.starttls ? "ldap + StartTLS" : "ldaps")
+                                          : "ldap";
+        agg.bind_method_count[method]++;
+        agg.bind_transport_count[transport]++;
+        agg.bind_total++;
+        if (!ev.session_ip.empty() || !ev.session_name.empty() || !ev.session_username.empty())
+            agg.bind_session_control++;
     }
 
     // ------------------------------------------------------------------------
@@ -1059,10 +1100,12 @@ std::string format_epoch_seconds(long long t) {
     // are discarded, so that ops with no RESULT line (ABANDON, UNBIND, or an
     // abandoned search) still produce a replay row.
     void flush_inflight_ops(Aggregator& agg) {
-        for (auto& [cid, conn] : agg.conn_state) {
-            std::string who = app_for_conn(agg, cid);
+        for (auto& [key, conn] : agg.conn_state) {
+            const std::string& server = key.first;
+            const int cid = key.second;
+            std::string who = app_for_conn(agg, server, cid);
             for (auto& [opid, op] : conn.ops) {
-                write_replay_row(TopOpRow{op.etime.value_or(0.0), cid, opid, op.type, who,
+                write_replay_row(TopOpRow{op.etime.value_or(0.0), server, cid, opid, op.type, who,
                                           op.base, op.filter, op.attrs, op.scope, op.deref,
                                           conn.binddn, op.authcid, op.authzid, op.nentries,
                                           op.err, op.qtime, op.text, op.timestamp});
@@ -1080,8 +1123,8 @@ std::string format_epoch_seconds(long long t) {
  *   3. Adds a TopConnRow to the top-100 list (sorted by total_etime).
  *   4. Updates maxconnetime if this connection had the highest total etime.
  */
-    void finalize_connection(Aggregator& agg, int cid, const std::string& reason) {
-        auto it = agg.conn_state.find(cid);
+    void finalize_connection(Aggregator& agg, const std::string& server, int cid, const std::string& reason) {
+        auto it = agg.conn_state.find(ConnKey{server, cid});
         if (it == agg.conn_state.end()) return;
         auto& conn = it->second;
 
@@ -1089,9 +1132,9 @@ std::string format_epoch_seconds(long long t) {
         // so close it (and count it if it had the paged shape).
         close_search_run(agg, conn, true);
 
-        std::string who = app_for_conn(agg, cid);
+        std::string who = app_for_conn(agg, server, cid);
         long long ops_cnt = conn.completed_ops + conn.ops.size();
-        agg.top_conns.push_back({conn.total_etime, cid, who, conn.src, ops_cnt, conn.binddn, reason});
+        agg.top_conns.push_back({conn.total_etime, server, cid, who, conn.src, ops_cnt, conn.binddn, reason});
         if (agg.top_conns.size() > 100) {
             std::sort(agg.top_conns.begin(), agg.top_conns.end(), top_conn_before);
             agg.top_conns.resize(100);
@@ -1711,6 +1754,11 @@ void update_aggregator(Aggregator& agg, const Event& ev,
     int cid = ev.conn.value_or(-1);
     int opid = ev.op.value_or(-1);
 
+    // The server this line belongs to (empty for the debug format).  A
+    // connection's identity is (server, conn): a cluster's servers all number
+    // their connections from 1.
+    const std::string& server = ev.host;
+
     // Every parsed line that names a server contributes it to the source set;
     // the "debug" format has no hostname, so nothing is invented.
     if (!ev.host.empty()) agg.servers.insert(ev.host);
@@ -1720,7 +1768,7 @@ void update_aggregator(Aggregator& agg, const Event& ev,
     // that asked for the control.  Until that line arrives it waits in
     // pending_paged.
     if (cid >= 0 && agg.pending_paged > 0) {
-        const std::string who = app_for_conn(agg, cid);
+        const std::string who = app_for_conn(agg, server, cid);
         agg.paged_search_count += agg.pending_paged;
         agg.paged_search_by_app[who] += agg.pending_paged;
         agg.pending_paged = 0;
@@ -1747,6 +1795,7 @@ void update_aggregator(Aggregator& agg, const Event& ev,
     if (ev.kind == "ACCEPT") {
         agg.stats.fd_open++;
         agg.stats.conn_count++;
+        if (!server.empty()) agg.conn_by_server[server]++;
         agg.active_connections++;
         if (g_collect_graph_data) {
             if (auto t = ts_epoch_seconds(ev.ts)) agg.conn_timeline.push_back({*t, +1});
@@ -1755,12 +1804,12 @@ void update_aggregator(Aggregator& agg, const Event& ev,
             agg.peak_active_connections = agg.active_connections;
         }
         if (cid >= 0) {
-            auto& conn = ensure_conn(agg, cid);
+            auto& conn = ensure_conn(agg, server, cid);
             conn.fd = ev.fd;
             conn.src = ev.src;
-            agg.src_by_conn[cid] = ev.src;
+            agg.src_by_conn[ConnKey{server, cid}] = ev.src;
             // Update session correlation accept_ip
-            std::pair<int,int> sc_key{agg.restart_count, cid};
+            std::tuple<std::string,int,int> sc_key{server, agg.restart_count, cid};
             auto scit = agg.session_correlations.find(sc_key);
             if (scit != agg.session_correlations.end() && scit->second.accept_ip.empty()) {
                 scit->second.accept_ip = ev.src;
@@ -1779,13 +1828,16 @@ void update_aggregator(Aggregator& agg, const Event& ev,
             if (auto t = ts_epoch_seconds(ev.ts)) agg.conn_timeline.push_back({*t, -1});
         }
         if (agg.active_connections > 0) agg.active_connections--;
-        if (cid >= 0) finalize_connection(agg, cid, ev.reason);
+        if (cid >= 0) finalize_connection(agg, server, cid, ev.reason);
         return;
     }
 
     // --- TLS (TLS established on connection) ---
     if (ev.kind == "TLS") {
         agg.operation_count["TLS"]++;
+        // Record the handshake on the connection so a later BIND can say which
+        // transport it ran over (implicit TLS vs StartTLS vs none).
+        if (cid >= 0) ensure_conn(agg, server, cid).tls_established = true;
         return;
     }
 
@@ -1799,7 +1851,7 @@ void update_aggregator(Aggregator& agg, const Event& ev,
     // override the "app" (application name) for this connection.
     if (ev.kind == "TRACK") {
         if (cid >= 0) {
-            auto& conn = ensure_conn(agg, cid);
+            auto& conn = ensure_conn(agg, server, cid);
             conn.track = ev.track;
             if (conn.track.count("USERNAME") && !conn.track["USERNAME"].empty()) {
                 conn.app = conn.track["USERNAME"];
@@ -1862,6 +1914,9 @@ void update_aggregator(Aggregator& agg, const Event& ev,
     }
     if (ev.kind == "STARTTLS") {
         agg.operation_count["STARTTLS"]++;
+        // The connection negotiated TLS in band: a later BIND on it therefore
+        // ran over "ldap + StartTLS" rather than implicit ldaps.
+        if (cid >= 0) ensure_conn(agg, server, cid).starttls = true;
         return;
     }
     if (ev.kind == "DO_BIND_INVALID") {
@@ -1919,9 +1974,9 @@ void update_aggregator(Aggregator& agg, const Event& ev,
         return;
     }
 
-    auto& conn = ensure_conn(agg, cid);
-    auto& op = ensure_op(agg, cid, opid);
-    std::string who = app_for_conn(agg, cid);
+    auto& conn = ensure_conn(agg, server, cid);
+    auto& op = ensure_op(agg, server, cid, opid);
+    std::string who = app_for_conn(agg, server, cid);
 
     // A non-search operation breaks a run of consecutive searches: the paged
     // heuristic needs the pages back to back.  Search completions arrive as
@@ -1952,16 +2007,17 @@ void update_aggregator(Aggregator& agg, const Event& ev,
         if (!ev.session_name.empty()) conn.session_name = ev.session_name;
         if (!ev.session_username.empty()) conn.session_username = ev.session_username;
 
-        // Create/update correlation entry — keyed by (restart_epoch, cid)
-        std::pair<int,int> sc_key{agg.restart_count, cid};
+        // Create/update correlation entry — keyed by (server, restart_epoch, cid)
+        std::tuple<std::string,int,int> sc_key{server, agg.restart_count, cid};
         auto& entry = agg.session_correlations[sc_key];
+        entry.server = server;
         entry.restart = agg.restart_count;
         entry.conn = cid;
         if (entry.ts.empty()) entry.ts = ev.ts;
         entry.real_ip = conn.session_ip;
         entry.name = conn.session_name;
         entry.username = conn.session_username;
-        auto src_it = agg.src_by_conn.find(cid);
+        auto src_it = agg.src_by_conn.find(ConnKey{server, cid});
         if (src_it != agg.src_by_conn.end()) entry.accept_ip = src_it->second;
     }
 
@@ -1984,17 +2040,17 @@ void update_aggregator(Aggregator& agg, const Event& ev,
     if (ev.kind == "BIND_AUTH") {
         agg.operation_count["BIND"]++;
         agg.read_write_stats.read++;
-        ensure_total_counted(agg, cid, opid);
+        ensure_total_counted(agg, server, cid, opid);
         op.type = "BIND";
         op.authcid = ev.authcid;
         op.authzid = ev.authzid;
         if (!ev.authzid.empty() && op.binddn.empty()) op.binddn = ev.authzid;
-        op.who = app_for_conn(agg, cid);
+        op.who = app_for_conn(agg, server, cid);
         if (!ev.authcid.empty()) conn.authcid = ev.authcid;
-        if (!ev.authzid.empty()) { conn.binddn = ev.authzid; agg.binddn_by_conn[cid] = ev.authzid; }
+        if (!ev.authzid.empty()) { conn.binddn = ev.authzid; agg.binddn_by_conn[ConnKey{server, cid}] = ev.authzid; }
         if (conn.app.empty() || conn.app == "unknown") conn.app = ev.authzid.empty() ? ev.authcid : ev.authzid;
         // Update session correlation binddn
-        std::pair<int,int> sc_key{agg.restart_count, cid};
+        std::tuple<std::string,int,int> sc_key{server, agg.restart_count, cid};
         auto scit = agg.session_correlations.find(sc_key);
         if (scit != agg.session_correlations.end() && scit->second.binddn.empty()) {
             scit->second.binddn = conn.binddn;
@@ -2010,13 +2066,17 @@ void update_aggregator(Aggregator& agg, const Event& ev,
         if (op.type.empty()) op.type = "BIND";
         if (op.dn.empty()) op.dn = dn;
         if (op.binddn.empty()) op.binddn = dn;
-        if (op.who.empty()) op.who = app_for_conn(agg, cid);
+        if (op.who.empty()) op.who = app_for_conn(agg, server, cid);
+        // "SIMPLE" and "implicit" are how slapd names the simple method and the
+        // anonymous demotion; only a real SASL mechanism is worth its own row.
+        if (!ev.mech.empty() && ev.mech != "SIMPLE" && ev.mech != "implicit")
+            agg.bind_mech_count[ev.mech]++;
         if (!dn.empty()) {
             conn.binddn = dn;
-            agg.binddn_by_conn[cid] = dn;
+            agg.binddn_by_conn[ConnKey{server, cid}] = dn;
             if (conn.app.empty() || conn.app == "unknown") conn.app = dn;
             // Update session correlation binddn
-            std::pair<int,int> sc_key{agg.restart_count, cid};
+            std::tuple<std::string,int,int> sc_key{server, agg.restart_count, cid};
             auto scit = agg.session_correlations.find(sc_key);
             if (scit != agg.session_correlations.end() && scit->second.binddn.empty()) {
                 scit->second.binddn = dn;
@@ -2030,10 +2090,11 @@ void update_aggregator(Aggregator& agg, const Event& ev,
     if (ev.kind == "BIND_ANON") {
         agg.operation_count["BIND ANONYMOUS"]++;
         agg.read_write_stats.read++;
-        ensure_total_counted(agg, cid, opid);
+        ensure_total_counted(agg, server, cid, opid);
         op.type = "BIND";
         op.method = ev.method;
-        op.who = app_for_conn(agg, cid);
+        op.who = app_for_conn(agg, server, cid);
+        track_bind_usage(agg, conn, ev);
         return;
     }
 
@@ -2044,17 +2105,17 @@ void update_aggregator(Aggregator& agg, const Event& ev,
     if (ev.kind == "BIND") {
         agg.operation_count["BIND"]++;
         agg.read_write_stats.read++;
-        ensure_total_counted(agg, cid, opid);
+        ensure_total_counted(agg, server, cid, opid);
         op.type = "BIND";
         op.who = who;
         std::string binddn = ev.binddn.empty() ? dequote(ev.dn) : ev.binddn;
         if (!binddn.empty()) {
             op.binddn = binddn;
             conn.binddn = binddn;
-            agg.binddn_by_conn[cid] = binddn;
+            agg.binddn_by_conn[ConnKey{server, cid}] = binddn;
             if (conn.app.empty() || conn.app == "unknown") conn.app = binddn;
             // Update session correlation binddn
-            std::pair<int,int> sc_key{agg.restart_count, cid};
+            std::tuple<std::string,int,int> sc_key{server, agg.restart_count, cid};
             auto scit = agg.session_correlations.find(sc_key);
             if (scit != agg.session_correlations.end() && scit->second.binddn.empty()) {
                 scit->second.binddn = binddn;
@@ -2067,6 +2128,7 @@ void update_aggregator(Aggregator& agg, const Event& ev,
         if (!ev.authzid.empty()) op.authzid = ev.authzid;
         if (ev.method.has_value()) op.method = ev.method;
         if (!ev.dn.empty()) op.dn = ev.dn;
+        track_bind_usage(agg, conn, ev);
         return;
     }
 
@@ -2078,7 +2140,7 @@ void update_aggregator(Aggregator& agg, const Event& ev,
     if (ev.kind == "SRCH") {
         agg.operation_count["SRCH"]++;
         agg.read_write_stats.read++;
-        ensure_total_counted(agg, cid, opid);
+        ensure_total_counted(agg, server, cid, opid);
         op.type = "SRCH";
         op.who = who;
         op.base = ev.base.empty() ? "" : normalize_filter(ev.base);
@@ -2175,6 +2237,12 @@ void update_aggregator(Aggregator& agg, const Event& ev,
 
         double etime = ev.etime.value_or(0.0);
 
+        if (!server.empty()) {
+            agg.ops_by_server[server]++;
+            agg.results_by_server[server]++;
+            agg.etime_by_server[server] += etime;
+        }
+
         if (!op.base.empty()) agg.base_stats[op.base].etime_total += etime;
 
         if (!op.filter.empty()) {
@@ -2191,7 +2259,7 @@ void update_aggregator(Aggregator& agg, const Event& ev,
             agg.app_stats[who].etime_total += etime;
         }
 
-        add_top_op(agg, TopOpRow{etime, cid, opid, op.type, who, op.base, op.filter,
+        add_top_op(agg, TopOpRow{etime, server, cid, opid, op.type, who, op.base, op.filter,
                                   op.attrs, op.scope, op.deref, conn.binddn, op.authcid,
                                   op.authzid, op.nentries, op.err, op.qtime, op.text,
                                   op.timestamp});
@@ -2252,6 +2320,12 @@ void update_aggregator(Aggregator& agg, const Event& ev,
         double etime = ev.etime.value_or(0.0);
         bool is_search = (op.type == "SRCH");
 
+        if (!server.empty()) {
+            agg.ops_by_server[server]++;
+            agg.results_by_server[server]++;
+            agg.etime_by_server[server] += etime;
+        }
+
         if (is_search && !op.base.empty())
             agg.base_stats[op.base].etime_total += etime;
 
@@ -2269,7 +2343,7 @@ void update_aggregator(Aggregator& agg, const Event& ev,
             agg.app_stats[who].etime_total += etime;
         }
 
-        add_top_op(agg, TopOpRow{etime, cid, opid, op.type, who, op.base, op.filter,
+        add_top_op(agg, TopOpRow{etime, server, cid, opid, op.type, who, op.base, op.filter,
                                   op.attrs, op.scope, op.deref, conn.binddn, op.authcid,
                                   op.authzid, op.nentries, op.err, op.qtime, op.text,
                                   op.timestamp});
@@ -2288,7 +2362,7 @@ void update_aggregator(Aggregator& agg, const Event& ev,
     if (ev.kind == "EXT") {
         agg.operation_count["EXT"]++;
         agg.read_write_stats.read++;
-        ensure_total_counted(agg, cid, opid);
+        ensure_total_counted(agg, server, cid, opid);
         op.type = "EXT";
         op.who = who;
         if (!ev.oid.empty()) {
@@ -2302,7 +2376,7 @@ void update_aggregator(Aggregator& agg, const Event& ev,
     if (ev.kind == "ADD") {
         agg.operation_count["ADD"]++;
         agg.read_write_stats.write++;
-        ensure_total_counted(agg, cid, opid);
+        ensure_total_counted(agg, server, cid, opid);
         op.type = "ADD";
         op.who = who;
         if (!ev.dn.empty()) op.base = dequote(ev.dn);
@@ -2313,7 +2387,7 @@ void update_aggregator(Aggregator& agg, const Event& ev,
     if (ev.kind == "DEL") {
         agg.operation_count["DEL"]++;
         agg.read_write_stats.write++;
-        ensure_total_counted(agg, cid, opid);
+        ensure_total_counted(agg, server, cid, opid);
         op.type = "DEL";
         op.who = who;
         if (!ev.dn.empty()) op.base = dequote(ev.dn);
@@ -2326,7 +2400,7 @@ void update_aggregator(Aggregator& agg, const Event& ev,
     if (ev.kind == "MOD") {
         agg.operation_count["MOD"]++;
         agg.read_write_stats.write++;
-        ensure_total_counted(agg, cid, opid);
+        ensure_total_counted(agg, server, cid, opid);
         op.type = "MOD";
         op.who = who;
         if (!ev.dn.empty()) op.base = dequote(ev.dn);
@@ -2346,7 +2420,7 @@ void update_aggregator(Aggregator& agg, const Event& ev,
     if (ev.kind == "MODRDN") {
         agg.operation_count["MODRDN"]++;
         agg.read_write_stats.write++;
-        ensure_total_counted(agg, cid, opid);
+        ensure_total_counted(agg, server, cid, opid);
         op.type = "MODRDN";
         op.who = who;
         if (!ev.dn.empty()) op.base = dequote(ev.dn);
@@ -2357,7 +2431,7 @@ void update_aggregator(Aggregator& agg, const Event& ev,
     if (ev.kind == "CMP") {
         agg.operation_count["CMP"]++;
         agg.read_write_stats.read++;
-        ensure_total_counted(agg, cid, opid);
+        ensure_total_counted(agg, server, cid, opid);
         op.type = "CMP";
         op.who = who;
         if (!ev.dn.empty()) op.base = dequote(ev.dn);
@@ -2370,7 +2444,7 @@ void update_aggregator(Aggregator& agg, const Event& ev,
     if (ev.kind == "COMPARE") {
         agg.operation_count["COMPARE"]++;
         agg.read_write_stats.read++;
-        ensure_total_counted(agg, cid, opid);
+        ensure_total_counted(agg, server, cid, opid);
         op.type = "COMPARE";
         op.who = who;
         if (!ev.dn.empty()) op.base = dequote(ev.dn);
@@ -2385,12 +2459,12 @@ void update_aggregator(Aggregator& agg, const Event& ev,
     // replay_ldap.groovy), so we store ev.msgid there.
     if (ev.kind == "ABANDON") {
         agg.operation_count["ABANDON"]++;
-        ensure_total_counted(agg, cid, opid);
+        ensure_total_counted(agg, server, cid, opid);
         op.type = "ABANDON";
         op.who = who;
         if (ev.msgid.has_value()) op.filter = std::to_string(*ev.msgid);
         if (!ev.ts.empty()) op.timestamp = ev.ts;
-        write_replay_row(TopOpRow{0.0, cid, opid, op.type, who, op.base, op.filter,
+        write_replay_row(TopOpRow{0.0, server, cid, opid, op.type, who, op.base, op.filter,
                                   op.attrs, op.scope, op.deref, conn.binddn, op.authcid,
                                   op.authzid, op.nentries, op.err, op.qtime, op.text,
                                   op.timestamp});
@@ -2405,11 +2479,11 @@ void update_aggregator(Aggregator& agg, const Event& ev,
     // (the replayer stops issuing further ops on that connection).
     if (ev.kind == "UNBIND") {
         agg.operation_count["UNBIND"]++;
-        ensure_total_counted(agg, cid, opid);
+        ensure_total_counted(agg, server, cid, opid);
         op.type = "UNBIND";
         op.who = who;
         if (!ev.ts.empty()) op.timestamp = ev.ts;
-        write_replay_row(TopOpRow{0.0, cid, opid, op.type, who, op.base, op.filter,
+        write_replay_row(TopOpRow{0.0, server, cid, opid, op.type, who, op.base, op.filter,
                                   op.attrs, op.scope, op.deref, conn.binddn, op.authcid,
                                   op.authzid, op.nentries, op.err, op.qtime, op.text,
                                   op.timestamp});
@@ -2679,6 +2753,15 @@ void merge_aggregators(Aggregator& dest, const Aggregator& src) {
     }
     if (dest.openldap_version.empty()) dest.openldap_version = src.openldap_version;
     for (const auto& s : src.servers) dest.servers.insert(s);
+    for (const auto& [srv, n] : src.ops_by_server) dest.ops_by_server[srv] += n;
+    for (const auto& [srv, t] : src.etime_by_server) dest.etime_by_server[srv] += t;
+    for (const auto& [srv, n] : src.conn_by_server) dest.conn_by_server[srv] += n;
+    for (const auto& [srv, n] : src.results_by_server) dest.results_by_server[srv] += n;
+    for (const auto& [k, n] : src.bind_method_count) dest.bind_method_count[k] += n;
+    for (const auto& [k, n] : src.bind_transport_count) dest.bind_transport_count[k] += n;
+    for (const auto& [k, n] : src.bind_mech_count) dest.bind_mech_count[k] += n;
+    dest.bind_total += src.bind_total;
+    dest.bind_session_control += src.bind_session_control;
     dest.paged_search_count += src.paged_search_count;
     for (const auto& [app, n] : src.paged_search_by_app) dest.paged_search_by_app[app] += n;
 

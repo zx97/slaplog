@@ -840,6 +840,22 @@ void print_account_chart(const Aggregator& agg) {
                 std::move(rows), by_etime);
 }
 
+// Load split across the servers the log names.  The same share donut as the
+// other charts; only drawn when the log carries a hostname (syslog/rfc3339),
+// which the debug format does not.  A cluster's logs are aggregated, and this
+// is the one chart that says which server carried which part of it.
+void print_server_chart(const Aggregator& agg) {
+    std::vector<Slice> rows;
+    for (const auto& [server, n] : agg.ops_by_server) {
+        if (n <= 0) continue;
+        rows.push_back({server, static_cast<double>(n),
+                        std::to_string(n) + " operation(s)", ""});
+    }
+    if (rows.empty()) return;
+    print_donut("Load by Server", "share of the operations each server handled",
+                std::move(rows), false);
+}
+
 void print_optype_chart(const Aggregator& agg) {
     std::vector<Slice> rows;
     for (const auto& [op, count] : agg.operation_count) {
@@ -847,6 +863,27 @@ void print_optype_chart(const Aggregator& agg) {
     }
     if (rows.empty()) return;
     print_donut("Operation Types", "share of each operation type", std::move(rows), false);
+}
+
+// How clients authenticated, as a share of the BIND requests.  The detail line
+// carries the transport split, because a reader who sees "simple" wants to know
+// whether that simple bind ran in the clear or under TLS.
+void print_bind_chart(const Aggregator& agg) {
+    std::vector<Slice> rows;
+    for (const auto& [method, count] : agg.bind_method_count) {
+        if (count <= 0) continue;
+        rows.push_back({method, static_cast<double>(count),
+                        std::to_string(count) + " bind(s)", ""});
+    }
+    if (rows.empty()) return;
+    long long over_tls = 0;
+    for (const auto& [transport, n] : agg.bind_transport_count) {
+        if (transport != "ldap") over_tls += n;
+    }
+    print_donut("Bind Usage", "share of each authentication method",
+                std::move(rows), false,
+                std::to_string(over_tls) + " of " + std::to_string(agg.bind_total) +
+                    " bind(s) ran over TLS (ldaps or ldap + StartTLS)");
 }
 
 // The donut answers "of what failed, what failed how?", so it holds the failing
@@ -1329,8 +1366,16 @@ void print_html_chart(const Aggregator& agg, HtmlChart which) {
             print_account_chart(agg);
             break;
 
+        case HtmlChart::LoadByServer:
+            print_server_chart(agg);
+            break;
+
         case HtmlChart::OperationTypes:
             print_optype_chart(agg);
+            break;
+
+        case HtmlChart::BindMethod:
+            print_bind_chart(agg);
             break;
 
         case HtmlChart::ResultCodeBreakdown:
