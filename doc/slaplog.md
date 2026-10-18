@@ -234,6 +234,7 @@ slaplog --unknown-lines unknown.txt /var/log/slapd/access.log
 | `--unknown-lines FILE` | Write unrecognised lines to FILE, then generate the full report |
 | `--unknown-lines-only FILE` | Like `--unknown-lines` but skip the report |
 | `--no-graph` | Omit the charts from the `html` report (they are drawn by default) |
+| `--title TITLE` | Custom report subtitle (appended after default, separated by ` - `) |
 | `-d, --debug` | Print debug information (file count, parsing details, per-file traces) |
 | `-D, --documentation` | Print full documentation to stdout |
 | `-h, --help` | Show help message |
