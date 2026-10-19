@@ -17,6 +17,7 @@ The project is distributed under the **AGPL-3.0** license — see [LICENSE](LICE
 - Spans no server's log covers are shaded on both time charts, keyed *no log*, with a tooltip.
 - `--title` option (native CLI and WASM `slaplog_set_title()`).
 - `--no-version`: the report footer names neither the engine nor its version.
+- Clickable table headers: sort any report table by a column (arrow, `aria-sort`, keyboard); the *show more* fold follows the sorted order.
 - Error `text=` field shown in *LDAP Result Codes* and *Errors per Application* (text, HTML, JSON).
 - JSON key `error_counts_by_app`.
 - Progress bar based on measured compression ratios.

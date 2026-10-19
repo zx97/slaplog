@@ -1151,6 +1151,12 @@ void print_html_report(const Aggregator& agg, double duration, bool /*compact*/,
     std::cout << "font-size:0.85em; color:#34495e; background:#fff; border:1px solid #c8d0da; ";
     std::cout << "border-radius:5px; cursor:pointer; }\n";
     std::cout << "  .sl-more:hover { background:#eef2f7; border-color:#3498db; color:#2980b9; }\n";
+    // Sortable column headers: a click sorts by that column, the arrow shows the
+    // direction.  Only tables whose first row is a header row are sortable (the
+    // Statistics table is label/value pairs and has none).
+    std::cout << "  th.sl-sortable { cursor:pointer; user-select:none; }\n";
+    std::cout << "  th.sl-sortable:hover { color:#2980b9; }\n";
+    std::cout << "  .sl-sort-arrow { font-size:0.8em; color:#2980b9; }\n";
     // Explanatory line under a section heading (e.g. result codes that are
     // informational rather than failures).
     std::cout << "  .note { color:#7f8c8d; font-size:0.85em; margin:-4px 0 10px; }\n";
@@ -1724,23 +1730,94 @@ void print_html_report(const Aggregator& agg, double duration, bool /*compact*/,
     std::cout << R"HTML(<script>
 (function(){
   var LIMIT = 25;
+
+  function cellText(tr, c) {
+    var td = tr.querySelectorAll('td');
+    return td[c] ? td[c].textContent.trim() : '';
+  }
+  // A plain number, optionally with the unit the report prints beside it
+  // ("0.012 s", "91.28%", "12 ops").  A DN or an ISO date does not parse, and is
+  // sorted as text; localeCompare with numeric:true keeps "user2" before
+  // "user10".
+  function asNumber(s) {
+    var m = s.match(/^(-?[\d\s.,]+)\s*(s|ms|%|x|ops|bytes)?$/);
+    if (!m) return null;
+    var v = parseFloat(m[1].replace(/[\s,]/g, ''));
+    return isNaN(v) ? null : v;
+  }
+
   var tables = document.querySelectorAll('table');
   for (var i = 0; i < tables.length; i++) { (function(t){
-    var rows = [], trs = t.querySelectorAll('tr');
-    for (var j = 0; j < trs.length; j++) if (trs[j].querySelector('td')) rows.push(trs[j]);
-    if (rows.length <= LIMIT) return;
-    var rest = rows.slice(LIMIT);
-    for (var k = 0; k < rest.length; k++) rest[k].style.display = 'none';
-    var b = document.createElement('button');
-    b.className = 'sl-more';
-    b.textContent = 'show ' + rest.length + ' more row(s)';
-    b.onclick = function(){
-      var hidden = rest[0].style.display === 'none';
-      for (var m = 0; m < rest.length; m++) rest[m].style.display = hidden ? '' : 'none';
-      b.textContent = hidden ? ('hide ' + rest.length + ' row(s)')
-                             : ('show ' + rest.length + ' more row(s)');
-    };
-    t.parentNode.insertBefore(b, t.nextSibling);
+    var rows = [], head = null, trs = t.querySelectorAll('tr');
+    for (var j = 0; j < trs.length; j++) {
+      if (trs[j].querySelector('td')) rows.push(trs[j]);
+      else if (!head && trs[j].querySelector('th')) head = trs[j];
+    }
+    if (!rows.length) return;
+
+    // --- fold the tail of a long table ---------------------------------
+    var more = null, showAll = false, folded = rows.length > LIMIT;
+    function fold() {
+      if (!folded) return;
+      for (var k = 0; k < rows.length; k++)
+        rows[k].style.display = (k < LIMIT || showAll) ? '' : 'none';
+      if (more) more.textContent = showAll
+        ? ('hide ' + (rows.length - LIMIT) + ' row(s)')
+        : ('show ' + (rows.length - LIMIT) + ' more row(s)');
+    }
+    if (folded) {
+      more = document.createElement('button');
+      more.className = 'sl-more';
+      more.onclick = function(){ showAll = !showAll; fold(); };
+      t.parentNode.insertBefore(more, t.nextSibling);
+      fold();
+    }
+
+    // --- sort on a header click ----------------------------------------
+    if (!head) return;
+    var ths = head.querySelectorAll('th');
+    if (ths.length < 2 || rows.length < 2) return;
+    var sortCol = -1, sortDir = 'asc';
+
+    function applySort(c, dir) {
+      var vals = rows.map(function(r){ return cellText(r, c); });
+      var allNumeric = vals.every(function(v){ return asNumber(v) !== null; });
+      rows.sort(function(x, y){
+        var a = cellText(x, c), b = cellText(y, c), r;
+        if (allNumeric) r = asNumber(a) - asNumber(b);
+        else r = a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' });
+        return dir === 'asc' ? r : -r;
+      });
+      for (var k = 0; k < rows.length; k++) t.appendChild(rows[k]);   // moves them
+      for (var h = 0; h < ths.length; h++) {
+        var old = ths[h].querySelector('.sl-sort-arrow');
+        if (old) old.parentNode.removeChild(old);
+        ths[h].setAttribute('aria-sort', 'none');
+      }
+      var arrow = document.createElement('span');
+      arrow.className = 'sl-sort-arrow';
+      arrow.textContent = dir === 'asc' ? ' \u25B2' : ' \u25BC';
+      ths[c].appendChild(arrow);
+      ths[c].setAttribute('aria-sort', dir === 'asc' ? 'ascending' : 'descending');
+      fold();          // the first LIMIT rows are the ones shown, whatever the order
+    }
+    for (var c = 0; c < ths.length; c++) { (function(c){
+      ths[c].className += (ths[c].className ? ' ' : '') + 'sl-sortable';
+      ths[c].title = 'click to sort';
+      ths[c].tabIndex = 0;                    // reachable without a pointer
+      ths[c].setAttribute('aria-sort', 'none');
+      ths[c].addEventListener('keydown', function(ev){
+        if (ev.key === 'Enter' || ev.key === ' ' || ev.key === 'Spacebar') {
+          ev.preventDefault();
+          this.click();
+        }
+      });
+      ths[c].addEventListener('click', function(){
+        sortDir = (sortCol === c && sortDir === 'asc') ? 'desc' : 'asc';
+        sortCol = c;
+        applySort(c, sortDir);
+      });
+    })(c); }
   })(tables[i]); }
 
   // Floating section index: built from the h2[id] elements, so it lists exactly
