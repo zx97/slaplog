@@ -401,7 +401,11 @@ inline bool top_op_before(const TopOpRow& a, const TopOpRow& b) {
     if (a.err != b.err) return a.err < b.err;
     if (a.qtime != b.qtime) return a.qtime < b.qtime;
     if (a.text != b.text) return a.text < b.text;
-    return a.timestamp < b.timestamp;
+    if (a.timestamp != b.timestamp) return a.timestamp < b.timestamp;
+    // The server was missing here: two servers logging the same operation
+    // compared equal, so the top-100 cut kept a set that depended on merge
+    // order (worker threads, or a state file resumed later).
+    return a.server < b.server;
 }
 
 inline bool top_conn_before(const TopConnRow& a, const TopConnRow& b) {
@@ -411,7 +415,8 @@ inline bool top_conn_before(const TopConnRow& a, const TopConnRow& b) {
     if (a.src != b.src) return a.src < b.src;
     if (a.ops_count != b.ops_count) return a.ops_count < b.ops_count;
     if (a.binddn != b.binddn) return a.binddn < b.binddn;
-    return a.reason < b.reason;
+    if (a.reason != b.reason) return a.reason < b.reason;
+    return a.server < b.server;   // see top_op_before(): ties must be total
 }
 
 // ---- graph aggregates ------------------------------------------------------

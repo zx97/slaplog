@@ -1228,12 +1228,20 @@ std::string format_epoch_seconds(long long t) {
             agg.top_conns.resize(100);
         }
 
-        if (!agg.maxconnetime.has_value() || conn.total_etime > *agg.maxconnetime) {
-            agg.maxconnetime = conn.total_etime;
-            agg.maxconnetimeusr = who;
+        // Keep the slowest connection.  On an exact tie, order the winner on
+        // (user, description): the merge order (worker threads, or a state
+        // resumed later) must not decide what the report shows.
+        const bool tie = agg.maxconnetime.has_value() && conn.total_etime == *agg.maxconnetime;
+        if (!agg.maxconnetime.has_value() || conn.total_etime > *agg.maxconnetime || tie) {
             std::ostringstream desc;
             desc << "conn=" << cid << " src=" << conn.src << " reason=" << reason;
-            agg.maxconnopdesc = desc.str();
+            const std::string d = desc.str();
+            if (!tie || who < agg.maxconnetimeusr ||
+                (who == agg.maxconnetimeusr && d < agg.maxconnopdesc)) {
+                agg.maxconnetime = conn.total_etime;
+                agg.maxconnetimeusr = who;
+                agg.maxconnopdesc = d;
+            }
         }
     }
 
@@ -2309,14 +2317,21 @@ void update_aggregator(Aggregator& agg, const Event& ev,
             op.etime = ev.etime;
             agg.etime_total += *ev.etime;
             conn.total_etime += *ev.etime;
-            if (!agg.maxetime.has_value() || *ev.etime > *agg.maxetime) {
-                agg.maxetime = ev.etime;
-                agg.maxetimeusr = who;
+            // Slowest operation; on an exact tie the winner is ordered on
+            // (user, description) so merge order cannot change the report.
+            const bool tie = agg.maxetime.has_value() && *ev.etime == *agg.maxetime;
+            if (!agg.maxetime.has_value() || *ev.etime > *agg.maxetime || tie) {
                 std::ostringstream desc;
                 desc << "conn=" << cid << " op=" << opid << " type=" << op.type
                     << " base=" << op.base << " filter=" << op.filter
                     << " err=" << (op.err.has_value() ? std::to_string(*op.err) : "");
-                agg.maxopdesc = desc.str();
+                const std::string d = desc.str();
+                if (!tie || who < agg.maxetimeusr ||
+                    (who == agg.maxetimeusr && d < agg.maxopdesc)) {
+                    agg.maxetime = ev.etime;
+                    agg.maxetimeusr = who;
+                    agg.maxopdesc = d;
+                }
             }
         }
         if (ev.qtime.has_value()) {
@@ -2395,14 +2410,21 @@ void update_aggregator(Aggregator& agg, const Event& ev,
             op.etime = ev.etime;
             agg.etime_total += *ev.etime;
             conn.total_etime += *ev.etime;
-            if (!agg.maxetime.has_value() || *ev.etime > *agg.maxetime) {
-                agg.maxetime = ev.etime;
-                agg.maxetimeusr = who;
+            // Slowest operation; on an exact tie the winner is ordered on
+            // (user, description) so merge order cannot change the report.
+            const bool tie = agg.maxetime.has_value() && *ev.etime == *agg.maxetime;
+            if (!agg.maxetime.has_value() || *ev.etime > *agg.maxetime || tie) {
                 std::ostringstream desc;
                 desc << "conn=" << cid << " op=" << opid << " type=" << op.type
                     << " base=" << op.base << " filter=" << op.filter
                     << " err=" << (op.err.has_value() ? std::to_string(*op.err) : "");
-                agg.maxopdesc = desc.str();
+                const std::string d = desc.str();
+                if (!tie || who < agg.maxetimeusr ||
+                    (who == agg.maxetimeusr && d < agg.maxopdesc)) {
+                    agg.maxetime = ev.etime;
+                    agg.maxetimeusr = who;
+                    agg.maxopdesc = d;
+                }
             }
         }
         if (ev.qtime.has_value()) {
@@ -2735,7 +2757,12 @@ void merge_aggregators(Aggregator& dest, const Aggregator& src) {
 
     // --- Slowest operation (keep the larger etime) ---
     if (src.maxetime.has_value()) {
-        if (!dest.maxetime.has_value() || *src.maxetime > *dest.maxetime) {
+        // Same order as the parser's update: a tie is broken on (user,
+        // description), never on which worker or state file came first.
+        if (!dest.maxetime.has_value() || *src.maxetime > *dest.maxetime ||
+            (*src.maxetime == *dest.maxetime &&
+             (src.maxetimeusr < dest.maxetimeusr ||
+              (src.maxetimeusr == dest.maxetimeusr && src.maxopdesc < dest.maxopdesc)))) {
             dest.maxetime = src.maxetime;
             dest.maxetimeusr = src.maxetimeusr;
             dest.maxopdesc = src.maxopdesc;
@@ -2744,7 +2771,11 @@ void merge_aggregators(Aggregator& dest, const Aggregator& src) {
 
     // --- Slowest connection (keep the larger total_etime) ---
     if (src.maxconnetime.has_value()) {
-        if (!dest.maxconnetime.has_value() || *src.maxconnetime > *dest.maxconnetime) {
+        if (!dest.maxconnetime.has_value() || *src.maxconnetime > *dest.maxconnetime ||
+            (*src.maxconnetime == *dest.maxconnetime &&
+             (src.maxconnetimeusr < dest.maxconnetimeusr ||
+              (src.maxconnetimeusr == dest.maxconnetimeusr &&
+               src.maxconnopdesc < dest.maxconnopdesc)))) {
             dest.maxconnetime = src.maxconnetime;
             dest.maxconnetimeusr = src.maxconnetimeusr;
             dest.maxconnopdesc = src.maxconnopdesc;

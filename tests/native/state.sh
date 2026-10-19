@@ -68,4 +68,30 @@ check "two reports on stdout are refused" 1 "$rc"
 check "with a message that names the fix" 1 \
     "$(grep -c 'give the others a file' "$SCRATCH/e3" || true)"
 
+# 6. exact ties.  Two logs identical except the server name and the base suffix:
+#    the top lists and the "slowest" fields have nothing to order the rows on, so
+#    the report must not depend on worker order — nor on whether the run went
+#    through a state file.  (Ties used to be settled by whichever thread merged
+#    last, which made two runs of one command disagree.)
+sed -e 's/dc=europa,dc=eu/o=cec.eu.int/g' -e 's/digiameudspp41/digiameudspp42/g' "$A" \
+    > "$SCRATCH/twin.log"
+check "the twin log fixture is still transformable" 1 \
+    "$(cmp -s "$SCRATCH/twin.log" "$A" && echo 0 || echo 1)"
+
+"$BIN" -q -o json "$SCRATCH/twin.log" "$A" 2>/dev/null | norm > "$SCRATCH/tie1.json"
+"$BIN" -q -o json "$SCRATCH/twin.log" "$A" 2>/dev/null | norm > "$SCRATCH/tie2.json"
+check "two runs over perfectly tied rows agree" 0 \
+    "$(diff -q "$SCRATCH/tie1.json" "$SCRATCH/tie2.json" > /dev/null 2>&1; echo $?)"
+
+"$BIN" -q -o json --save-state "$SCRATCH/twin.to" "$SCRATCH/twin.log" > /dev/null 2>&1
+"$BIN" -q -o json --resume "$SCRATCH/twin.to" "$A" 2>/dev/null | norm > "$SCRATCH/tie3.json"
+check "and the state-split run agrees with them" 0 \
+    "$(diff -q "$SCRATCH/tie1.json" "$SCRATCH/tie3.json" > /dev/null 2>&1; echo $?)"
+
+"$BIN" -q -o text --resume "$SCRATCH/twin.to" "$A" 2>/dev/null > "$SCRATCH/tie.txt"
+check "the resumed report names o=cec.eu.int" 1 \
+    "$([ "$(grep -c 'o=cec.eu.int' "$SCRATCH/tie.txt")" -ge 1 ] && echo 1 || echo 0)"
+check "the resumed report names dc=europa,dc=eu" 1 \
+    "$([ "$(grep -c 'dc=europa,dc=eu' "$SCRATCH/tie.txt")" -ge 1 ] && echo 1 || echo 0)"
+
 exit $fail
