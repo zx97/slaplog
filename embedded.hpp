@@ -985,7 +985,9 @@ to select specific sections:
 ### Statistics
 
 Shows processing performance, total/unknown lines, connection counts, peak
-active connections, time range, total etime/qtime, and read/write balance.  The
+active connections (for a run that mixes several servers, the peak of their
+*sum* — the busiest moment — not the busiest server), time range, total
+etime/qtime, and read/write balance.  The
 **server(s)** the log lines name are listed too — read from the syslog/rfc3339
 header prefix, so a log taken with the *debug* format (which names no host)
 carries none and the row is simply absent.  The HTML report lays these metrics

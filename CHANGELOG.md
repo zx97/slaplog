@@ -31,6 +31,7 @@ The project is distributed under the **AGPL-3.0** license — see [LICENSE](LICE
 
 ### Fixed
 
+- Peak active connections: a multi-server run reported the busiest server, not the peak of the sum; it is recomputed from the merged timeline, which is now collected even with `--no-graph`.
 - `-o json --title` failed outright; JSON and replay ignore `--title` by design.
 - WASM title truncated at the first space or hyphen; quoted-string and JS quoting fixed.
 - `-s server` and `-s wildcards` selected nothing.

@@ -809,6 +809,10 @@ int main(int argc, char* argv[]) {
     final_agg.binddn_by_conn.clear();
     final_agg.src_by_conn.clear();
 
+    // The run's own concurrent-connection peak; the merge can only keep the
+    // larger of the per-file peaks (see finalize_connection_counts()).
+    finalize_connection_counts(final_agg);
+
     // ------------------------------------------------------------------
     // Unknown lines output.
     //

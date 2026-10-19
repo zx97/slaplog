@@ -757,6 +757,10 @@ void flush_inflight_ops(Aggregator& agg);
 // from multiple files processed in parallel.
 void merge_aggregators(Aggregator& dest, const Aggregator& src);
 
+// Recompute the concurrent-connection peak from the merged timeline.  Needed
+// for runs that mix several servers: see the definition in log_parser.cpp.
+void finalize_connection_counts(Aggregator& agg);
+
 // Process a single file by auto-detecting its compression type (plain,
 // gzip, bzip2, xz) and calling the appropriate handler.  Uses an atomic
 // progress counter for reporting.

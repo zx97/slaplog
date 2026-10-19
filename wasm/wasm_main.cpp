@@ -276,6 +276,9 @@ int emit_report() {
     s.total.binddn_by_conn.clear();
     s.total.src_by_conn.clear();
 
+    // The run's own concurrent-connection peak (see finalize_connection_counts).
+    finalize_connection_counts(s.total);
+
     const Options& o = s.opts;
     try {
         if (o.output_format == "json") {

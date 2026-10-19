@@ -1886,9 +1886,10 @@ void update_aggregator(Aggregator& agg, const Event& ev,
         agg.stats.conn_count++;
         if (!server.empty()) agg.conn_by_server[server]++;
         agg.active_connections++;
-        if (g_collect_graph_data) {
-            if (auto t = ts_epoch_seconds(ev.ts)) agg.conn_timeline.push_back({*t, +1});
-        }
+        // Always collected: the concurrent-connection peak of a multi-server
+        // run is derived from this timeline, and that is a statistic, not a
+        // drawing (--no-graph must not change it).
+        if (auto t = ts_epoch_seconds(ev.ts)) agg.conn_timeline.push_back({*t, +1});
         if (agg.active_connections > agg.peak_active_connections) {
             agg.peak_active_connections = agg.active_connections;
         }
@@ -1913,9 +1914,8 @@ void update_aggregator(Aggregator& agg, const Event& ev,
     // (e.g. "connection lost") is passed through to finalize_connection().
     if (ev.kind == "CLOSED") {
         agg.stats.fd_close++;
-        if (g_collect_graph_data) {
-            if (auto t = ts_epoch_seconds(ev.ts)) agg.conn_timeline.push_back({*t, -1});
-        }
+        // Always collected (see the ACCEPT branch).
+        if (auto t = ts_epoch_seconds(ev.ts)) agg.conn_timeline.push_back({*t, -1});
         if (agg.active_connections > 0) agg.active_connections--;
         if (cid >= 0) finalize_connection(agg, server, cid, ev.reason);
         return;
@@ -2939,6 +2939,32 @@ void merge_aggregators(Aggregator& dest, const Aggregator& src) {
 // because rotated logs may have date suffixes or non-standard
 // naming (e.g. slapd.log.07.bz2_2026-03-01).
 // ------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// finalize_connection_counts — the concurrent-connection peak of a merged run
+// ---------------------------------------------------------------------------
+// update_aggregator() tracks the open/peak connection count for the file it is
+// reading, and merge_aggregators() can only keep the larger of two peaks.  For
+// a cluster that reports the busiest *server*, not the busiest *moment*: two
+// nodes with 3 connections open at the same time read as 3, not 6.  The merged
+// connection timeline holds every ACCEPT and CLOSED, so replaying it in log
+// order — the rule the connection chart already uses — gives the run's own
+// peak.  Called once after the last merge, and only when the logs name more
+// than one server (a single server is already exact).
+void finalize_connection_counts(Aggregator& agg) {
+    if (agg.servers.size() < 2 || agg.conn_timeline.empty()) return;
+    std::vector<ConnEvent> ev = agg.conn_timeline;
+    std::stable_sort(ev.begin(), ev.end(),
+                     [](const ConnEvent& a, const ConnEvent& b) { return a.t < b.t; });
+    long long running = 0, peak = 0;
+    for (const ConnEvent& e : ev) {
+        running += e.delta;
+        if (running < 0) running = 0;       // tolerate logs with missing closes
+        if (running > peak) peak = running;
+    }
+    agg.peak_active_connections = peak;
+    agg.active_connections = running;
+}
 
 void process_file(const std::string& filename, Aggregator& agg,
                   std::atomic<size_t>& progress,
