@@ -949,7 +949,7 @@ slaplog --unknown-lines unknown.txt /var/log/slapd/access.log
 | `--no-version` | Omit the engine name and version from the `html` report footer |
 | `--title TITLE` | Custom subtitle for the rendered reports (text, HTML), appended after the default one, separated by ` - `.  Ignored by `json` and `replay`, whose schemas are fixed. |
 | `--save-state FILE` | Write the analysis state to FILE (xz-compressed), for a later `--resume` |
-| `--resume FILE` | Start from a state written by `--save-state`; the logs given are merged into it |
+| `--resume FILE` | Start from a state written by `--save-state`; the logs given are merged into it, and must name only the servers that state holds |
 | `-d, --debug` | Print debug information (file count, parsing details, per-file traces) |
 | `-D, --documentation` | Print full documentation to stdout |
 | `-h, --help` | Show help message |
@@ -1442,6 +1442,14 @@ into it, exactly as if every log had been analysed at once:
 ```text
 A + B (one run)   ==   A -> save -> resume + B
 ```
+
+**The same servers.**  A state records the servers it was built from, and a
+resume accepts logs from those servers only: a file naming any other host is
+refused — nothing is merged, nothing is written — rather than mixing two
+networks into one report.  A resume may cover only part of them (a day where
+one server's log was not copied is still a resume), but it cannot add one: that
+is a new analysis, whose state is built from the full set.  A state written from
+a debug-format log records no hostname, so there is nothing to check.
 
 `--resume` with no input file re-displays what the state holds, which is how an
 earlier analysis is rendered again without the logs.  `--save-state` may be

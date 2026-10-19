@@ -191,6 +191,10 @@ struct Session {
     Aggregator total;            // accumulates the merged per-file results
     Aggregator current;          // working aggregator for the input in progress
     bool input_open = false;     // true between input_begin() and input_end()
+    // Servers the state being resumed holds: a log naming any other host means
+    // this is not a resume, and the file is dropped instead of mixed in.
+    std::set<std::string> resume_servers;
+    std::string mismatch;        // set once such a log has been seen
     std::atomic<size_t> progress{0};   // bytes consumed so far
     std::chrono::system_clock::time_point start;
 };
@@ -228,6 +232,7 @@ bool start_session(Options opts) {
             teardown_session();
             return false;
         }
+        g_session->resume_servers = g_session->total.servers;
     }
     return true;
 }
@@ -242,9 +247,25 @@ void begin_input() {
     g_session->input_open = true;
 }
 
-// Close the current input and fold it into the total.
+// Close the current input and fold it into the total.  A file naming a server
+// the resumed state does not hold is dropped: folding it in would mix two
+// networks, and the caller learns about it from the non-zero return of
+// slaplog_input_end()/slaplog_add_file() (and from slaplog_end()).
 void end_input() {
     if (!g_session->input_open) return;
+    const std::vector<std::string> foreign =
+        servers_not_in(g_session->current, g_session->resume_servers);
+    if (!foreign.empty()) {
+        if (g_session->mismatch.empty()) {
+            std::string m = "the logs name ";
+            for (size_t k = 0; k < foreign.size(); ++k)
+                m += (k ? ", '" : "'") + foreign[k] + "'";
+            g_session->mismatch = m;
+        }
+        g_session->current = Aggregator{};
+        g_session->input_open = false;
+        return;
+    }
     merge_aggregators(g_session->total, g_session->current);
     g_session->current = Aggregator{};
     g_session->input_open = false;
@@ -276,12 +297,29 @@ size_t feed_text(const char* data, size_t len) {
         g_session->progress += line.size() + 1;
         ++lines;
     }
+    // Stop as soon as the chunk names a server the state does not hold: the
+    // file is dropped, and the caller stops sending its chunks.
+    if (!servers_not_in(g_session->current, g_session->resume_servers).empty())
+        end_input();
     return lines;
 }
 
 int emit_report() {
     end_input();   // fold the last input in, if the caller forgot
     Session& s = *g_session;
+    if (!s.mismatch.empty()) {
+        std::string held;
+        size_t shown = 0;
+        for (const std::string& server : s.resume_servers) {
+            if (shown++) held += ", ";
+            held += shown > 8 ? "..." : server;
+            if (shown > 8) break;
+        }
+        std::cerr << "slaplog(wasm): not a resume: " << s.mismatch
+                  << ", while the state holds the logs of " << held << "\n";
+        teardown_session();
+        return 1;
+    }
     auto end_time = std::chrono::system_clock::now();
     double duration =
         std::chrono::duration_cast<std::chrono::milliseconds>(end_time - s.start)
@@ -347,6 +385,8 @@ extern "C" EMSCRIPTEN_KEEPALIVE int slaplog_resume(const char* path) {
         std::cerr << "slaplog(wasm): cannot resume: " << err << "\n";
         return 1;
     }
+    g_session->resume_servers.insert(g_session->total.servers.begin(),
+                                     g_session->total.servers.end());
     return 0;
 }
 
@@ -362,7 +402,7 @@ extern "C" EMSCRIPTEN_KEEPALIVE int slaplog_input_begin(void) {
 extern "C" EMSCRIPTEN_KEEPALIVE int slaplog_input_end(void) {
     if (!g_session) return -1;
     end_input();
-    return 0;
+    return g_session->mismatch.empty() ? 0 : 1;   // 1: not a resume
 }
 
 // Process one whole file (plain, .gz, .bz2 or .xz — detected from its magic
@@ -372,7 +412,7 @@ extern "C" EMSCRIPTEN_KEEPALIVE int slaplog_add_file(const char* path) {
     begin_input();
     process_file(path, g_session->current, g_session->progress, nullptr, nullptr);
     end_input();
-    return 0;
+    return g_session->mismatch.empty() ? 0 : 1;   // 1: not a resume
 }
 
 // Process a chunk of plain text, held in the caller-allocated WASM heap block
@@ -383,7 +423,7 @@ extern "C" EMSCRIPTEN_KEEPALIVE int slaplog_add_file(const char* path) {
 extern "C" EMSCRIPTEN_KEEPALIVE int slaplog_add_text(const char* data, int len) {
     if (!g_session || !data || len <= 0) return -1;
     feed_text(data, static_cast<size_t>(len));
-    return 0;
+    return g_session->mismatch.empty() ? 0 : 1;   // 1: stop sending this file
 }
 
 // Emit the aggregated report to stdout and close the session.

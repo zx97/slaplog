@@ -90,7 +90,7 @@ Options:
   --unknown-lines-only FILE  Like above but skip report
   --save-state FILE          Write the analysis state to FILE (xz-compressed)
   --resume FILE              Start from a state written by --save-state;
-                             the logs given are merged into it
+                             the logs given are merged into it (same servers)
   -D, --documentation        Print full documentation
   -l, --licence              Print AGPLv3 license
   -d, --debug                Verbose diagnostics
