@@ -1358,6 +1358,12 @@ void print_html_report(const Aggregator& agg, double duration, bool /*compact*/,
 
 
     // Operation counts
+    // Response time opens the operation-level sections: it is the first number a
+    // reader looks for, before the counts.
+    std::cout << "<h2 id=\"sec-latency\">Response Time</h2>\n";
+    print_html_chart(agg, HtmlChart::Latency);
+    print_html_chart(agg, HtmlChart::LatencyDensity);
+
     std::cout << "<h2 id=\"sec-operations\">Operation Counts</h2>\n";
     std::cout << "<table>\n<tr><th>Operation</th><th>Count</th></tr>\n";
     for (const auto& [op, count] : agg.operation_count) {
@@ -1718,12 +1724,14 @@ void print_html_report(const Aggregator& agg, double duration, bool /*compact*/,
     }
     std::cout << "</table>\n";
 
-    print_html_chart(agg, HtmlChart::Latency);
-    print_html_chart(agg, HtmlChart::LatencyDensity);
-
     // Top connections
     // Connections sorted by cumulative elapsed time.
     std::cout << "<h2 id=\"sec-top-conns\">Top Connections by Cumulative etime</h2>\n";
+    // The two drawings come first in this tab: how many connections were open
+    // over time (with the downtime bands and restart markers), then who consumed
+    // the most connection time.  The table follows.
+    print_html_chart(agg, HtmlChart::Connections);
+    print_html_chart(agg, HtmlChart::Accounts);
     // A cluster's logs all number their connections from 1: the server column is
     // what keeps two conn=1 apart.  A single-server log does not need it.
     const bool multi_server = agg.servers.size() > 1;
@@ -1737,11 +1745,6 @@ void print_html_report(const Aggregator& agg, double duration, bool /*compact*/,
                   << "</td><td>" << r.src << "</td><td>" << r.ops_count << "</td></tr>\n";
     }
     std::cout << "</table>\n";
-    // Both charts belong to this tab: how many connections were open over time
-    // (with the downtime bands and restart markers) and who consumed the most
-    // connection time.
-    print_html_chart(agg, HtmlChart::Connections);
-    print_html_chart(agg, HtmlChart::Accounts);
 
     // Footer
     if (g_show_version)
@@ -1855,10 +1858,10 @@ void print_html_report(const Aggregator& agg, double duration, bool /*compact*/,
       ['Server',         ['sec-load', 'sec-csn']],
       ['Process',        ['sec-server-events']],
       ['Connections',    ['sec-top-conns']],
-      ['Operations',     ['sec-operations', 'sec-top-ops', 'sec-result-codes']],
-      ['Authentication', ['sec-bind', 'sec-session', 'sec-errors-app',
-                          'sec-top-applications-by-count', 'sec-top-applications-by-etime',
+      ['Operations',     ['sec-latency', 'sec-operations', 'sec-top-ops', 'sec-result-codes',
                           'sec-ext', 'sec-gc']],
+      ['Authentication', ['sec-bind', 'sec-session', 'sec-errors-app',
+                          'sec-top-applications-by-count', 'sec-top-applications-by-etime']],
       ['Search',         ['sec-top-search-bases-by-count', 'sec-top-search-bases-by-etime',
                           'sec-top-filters-by-count', 'sec-top-filters-by-etime',
                           'sec-top-filters-nentries1', 'sec-top-filters-nentries0',

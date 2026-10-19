@@ -44,8 +44,9 @@ enum class HtmlChart {
                           //                                    (right after the table)
     ResultCodes,          // failing result codes only          (after LDAP Result Codes)
     ErrorsOverTime,       // errors over time                   (after LDAP Result Codes)
-    Latency,              // etime distribution                 (after Top Long Operations)
+    Latency,              // etime distribution                 (Response Time section)
     LatencyDensity,       // the shape of that distribution, on a log scale
+                          //                                    (same section)
     Accounts,             // resource consumers per bind DN     (after Top Connections)
 };
 
