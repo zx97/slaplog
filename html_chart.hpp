@@ -36,7 +36,7 @@
 #include "log_parser.hpp"
 
 enum class HtmlChart {
-    Connections,          // simultaneous connections over time  (after Statistics)
+    Connections,          // simultaneous connections over time  (after Top Connections)
     LoadByServer,         // load split across the log's servers   (after Statistics)
     OperationTypes,       // operation mix                      (after Operation Counts)
     BindMethod,           // authentication method mix          (after Bind Usage)
@@ -46,7 +46,7 @@ enum class HtmlChart {
     ErrorsOverTime,       // errors over time                   (after LDAP Result Codes)
     Latency,              // etime distribution                 (after Top Long Operations)
     LatencyDensity,       // the shape of that distribution, on a log scale
-    Accounts,             // resource consumers per bind DN     (after Top Applications)
+    Accounts,             // resource consumers per bind DN     (after Top Connections)
 };
 
 // True when at least one chart will be drawn, so the report can skip the chart

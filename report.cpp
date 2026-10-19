@@ -899,6 +899,11 @@ void print_text_report(const Aggregator& agg, double processing_time, bool compa
     // cause of poor search performance).
     if (has_section("index")) {
         print_separator("Indexing Diagnostics");
+        // Say why this section is usually empty: the backend only writes the
+        // "not indexed" line at trace/filter loglevel.
+        std::cout << "  Note: the backend writes `mdb_search: (<filter>) not indexed` only at "
+                     "loglevel trace (or filter); a log taken at stats records none, so this "
+                     "section usually reads 0.\n";
         print_kv("Not indexed occurrences", fmt_int(agg.not_indexed_count));
         print_string_count_map("Not indexed attributes", "Attribute", agg.not_indexed_attr, limit);
     }
@@ -1351,9 +1356,6 @@ void print_html_report(const Aggregator& agg, double duration, bool /*compact*/,
         print_html_chart(agg, HtmlChart::LoadByServer);
     }
 
-    // Each chart is emitted under the section whose data it draws; the first
-    // one therefore sits right after the Statistics table.
-    print_html_chart(agg, HtmlChart::Connections);
 
     // Operation counts
     std::cout << "<h2 id=\"sec-operations\">Operation Counts</h2>\n";
@@ -1571,7 +1573,6 @@ void print_html_report(const Aggregator& agg, double duration, bool /*compact*/,
     // Top applications
     print_h_count_table("Top Applications (by count)", "Application", agg.app_stats);
     print_h_double_table("Top Applications (by etime)", "Application", agg.app_stats);
-    print_html_chart(agg, HtmlChart::Accounts);
 
     // Filters per application
     // HTML version of the per-app filter table; count cells are coloured
@@ -1644,7 +1645,12 @@ void print_html_report(const Aggregator& agg, double duration, bool /*compact*/,
     std::cout << "</table>\n";
 
     // Indexing diagnostics
-    std::cout << "<h2 id=\"sec-indexing\">Indexing Diagnostics</h2>\n<table>\n";
+    std::cout << "<h2 id=\"sec-indexing\">Indexing Diagnostics</h2>\n";
+    std::cout << "<p class=\"note\">The backend writes <code>mdb_search: (&hellip;) not indexed</code> "
+                 "only at loglevel <code>trace</code> (or <code>filter</code>).  A log taken at "
+                 "<code>stats</code> records none, so this section usually reads 0; when the line "
+                 "is present, the table names the search terms that could not use an index.</p>\n";
+    std::cout << "<table>\n";
     std::cout << "<tr><td style=\"font-weight:600\">Not indexed occurrences</td><td>" << agg.not_indexed_count << "</td></tr>\n";
     std::cout << "</table>\n";
     print_h_count_table("Not indexed attributes", "Attribute", agg.not_indexed_attr);
@@ -1731,6 +1737,11 @@ void print_html_report(const Aggregator& agg, double duration, bool /*compact*/,
                   << "</td><td>" << r.src << "</td><td>" << r.ops_count << "</td></tr>\n";
     }
     std::cout << "</table>\n";
+    // Both charts belong to this tab: how many connections were open over time
+    // (with the downtime bands and restart markers) and who consumed the most
+    // connection time.
+    print_html_chart(agg, HtmlChart::Connections);
+    print_html_chart(agg, HtmlChart::Accounts);
 
     // Footer
     if (g_show_version)
@@ -1840,18 +1851,21 @@ void print_html_report(const Aggregator& agg, double duration, bool /*compact*/,
   // report and a deep link can select the tab that holds its section.
   if (document.body.classList.contains('sl-tabbed')) { (function(){
     var TABS = [
-      ['Overview',    ['sec-statistics', 'sec-load', 'sec-server-events']],
-      ['Operations',  ['sec-operations', 'sec-top-ops', 'sec-top-conns', 'sec-indexing']],
-      ['Errors',      ['sec-result-codes', 'sec-errors-app', 'sec-paged']],
-      ['Searches',    ['sec-top-search-bases-by-count', 'sec-top-search-bases-by-etime',
-                       'sec-top-filters-by-count', 'sec-top-filters-by-etime',
-                       'sec-top-filters-nentries1', 'sec-top-filters-nentries0',
-                       'sec-top-wildcard-filters', 'sec-top-requested-attributes',
-                       'sec-filters-app', 'sec-qmark',
-                       'sec-question-mark-filter-attributes']],
-      ['Clients',     ['sec-top-applications-by-count', 'sec-top-applications-by-etime',
-                       'sec-session', 'sec-bind']],
-      ['Replication', ['sec-csn', 'sec-ext', 'sec-gc']]
+      ['Overview',       ['sec-statistics']],
+      ['Server',         ['sec-load', 'sec-csn']],
+      ['Process',        ['sec-server-events']],
+      ['Connections',    ['sec-top-conns']],
+      ['Operations',     ['sec-operations', 'sec-top-ops', 'sec-result-codes']],
+      ['Authentication', ['sec-bind', 'sec-session', 'sec-errors-app',
+                          'sec-top-applications-by-count', 'sec-top-applications-by-etime',
+                          'sec-ext', 'sec-gc']],
+      ['Search',         ['sec-top-search-bases-by-count', 'sec-top-search-bases-by-etime',
+                          'sec-top-filters-by-count', 'sec-top-filters-by-etime',
+                          'sec-top-filters-nentries1', 'sec-top-filters-nentries0',
+                          'sec-top-wildcard-filters', 'sec-top-requested-attributes',
+                          'sec-filters-app', 'sec-qmark',
+                          'sec-question-mark-filter-attributes',
+                          'sec-paged', 'sec-indexing']]
     ];
     var group = {};
     for (var g = 0; g < TABS.length; g++)
