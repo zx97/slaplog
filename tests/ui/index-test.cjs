@@ -45,7 +45,9 @@ fs.writeFileSync(LOG, [
 const html = execFileSync(SLA, ["-o", "html", "-q", LOG], { encoding: "utf8", maxBuffer: 1 << 28 });
 
 // --- the fake layout ------------------------------------------------------
-const HEAD_H = 28, ROW_H = 22, ROWS = 19, PAD = 12;
+const HEAD_H = 28, ROW_H = 22, PAD = 12;
+// Derived from the report: adding a section must not require a change here.
+const ROWS = (html.match(/<h2 id=/g) || []).length;
 const rect = (l, t_, r, b) => ({
   left: l, top: t_, right: r, bottom: b, x: l, y: t_,
   width: r - l, height: b - t_, toJSON() { return this; },
