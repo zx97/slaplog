@@ -1,13 +1,17 @@
 // state_io.cpp — the --save-state / --resume file.
 //
-// The file is one xz stream (liblzma is already linked for .xz logs) whose
-// payload is the Aggregator in a fixed, versioned order:
+// The file is a clear magic followed by one xz stream (liblzma is already
+// linked for .xz logs) whose payload is the Aggregator in a fixed, versioned
+// order:
 //
-//   magic(8) | schema(u32) | tool version(string) | ... fields ...
+//   "SLAPSTAT" (clear) | xz( schema(u32) | tool version | ... fields ... )
 //
-// Every value is little-endian and strings are length-prefixed, so the file is
-// portable across the machines slaplog runs on.  Maps are written in their
-// (sorted) iteration order, so the same state always yields the same file.
+// The magic is deliberately outside the compressed stream: the CLI, the WASM
+// session and the browser page all tell a state file from a log by its first
+// eight bytes, without decompressing anything.  Every value is little-endian
+// and strings are length-prefixed, so the file is portable across the machines
+// slaplog runs on.  Maps are written in their (sorted) iteration order, so the
+// same state always yields the same file.
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
@@ -38,6 +42,14 @@ struct Writer {
     bool open(const std::string& path) {
         f = std::fopen(path.c_str(), "wb");
         if (!f) return false;
+        // The magic goes in the clear, before the compressed stream, so a reader
+        // (or a browser page) can tell a state file from a log — and from any
+        // other xz stream — by its first bytes, without decompressing anything.
+        if (std::fwrite(MAGIC, 1, sizeof MAGIC, f) != sizeof MAGIC) {
+            std::fclose(f);
+            f = nullptr;
+            return false;
+        }
         if (lzma_easy_encoder(&strm, 6, LZMA_CHECK_CRC64) != LZMA_OK) {
             std::fclose(f);
             f = nullptr;
@@ -90,10 +102,26 @@ struct Reader {
     bool ok = false;
     bool eof = false;
 
-    bool open(const std::string& path) {
+    // Returns false and fills `err`: "cannot open" and "not a state file" are
+    // different mistakes and deserve different messages.
+    bool open(const std::string& path, std::string& err) {
         f = std::fopen(path.c_str(), "rb");
-        if (!f) return false;
+        if (!f) {
+            err = "cannot open " + path;
+            return false;
+        }
+        char magic[8] = {};
+        if (std::fread(magic, 1, sizeof magic, f) != sizeof magic ||
+            std::memcmp(magic, MAGIC, sizeof magic) != 0) {
+            err = path +
+                  " is not a slaplog state file (no 'SLAPSTAT' header): analyse it "
+                  "as a log instead of giving it to --resume";
+            std::fclose(f);
+            f = nullptr;
+            return false;
+        }
         if (lzma_stream_decoder(&strm, UINT64_MAX, 0) != LZMA_OK) {
+            err = "cannot initialise the xz decoder for " + path;
             std::fclose(f);
             f = nullptr;
             return false;
@@ -287,7 +315,6 @@ void r_map_info(Reader& r, std::map<std::string, T>& m) {
 namespace {
 
 void write_payload(Writer& w, const Aggregator& a) {
-    w_bytes(w, MAGIC, sizeof MAGIC);
     w_u32(w, SCHEMA);
     w_str(w, SLAPLOG_VERSION);
 
@@ -471,13 +498,11 @@ void write_payload(Writer& w, const Aggregator& a) {
 }
 
 bool read_payload(Reader& r, Aggregator& a, std::string& err) {
-    char magic[8] = {};
-    r_bytes(r, magic, sizeof magic);
-    if (!r.ok || std::memcmp(magic, MAGIC, sizeof magic) != 0) {
-        err = "not a slaplog state file";
+    const uint32_t schema = r_u32(r);
+    if (!r.ok) {   // a header cut short reads as zeros: say what happened
+        err = "state file is truncated or corrupt";
         return false;
     }
-    const uint32_t schema = r_u32(r);
     if (schema != SCHEMA) {
         err = "state written by schema " + std::to_string(schema) + ", this build reads " +
               std::to_string(SCHEMA);
@@ -749,10 +774,7 @@ bool save_state(const Aggregator& agg, const std::string& path, std::string& err
 
 bool load_state(Aggregator& agg, const std::string& path, std::string& err) {
     Reader r;
-    if (!r.open(path)) {
-        err = "cannot open " + path;
-        return false;
-    }
+    if (!r.open(path, err)) return false;
     const bool ok = read_payload(r, agg, err);
     if (!r.close() && ok) {
         err = path + " is truncated";

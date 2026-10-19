@@ -46,6 +46,8 @@ function* chunksByLine(bytes, target) {
   execFileSync(SL.BIN, ["-q", "-o", "json", "--save-state", STATE, A],
     { maxBuffer: 1 << 28 });
   check("the native build wrote a state file", fs.existsSync(STATE) && fs.statSync(STATE).size > 0);
+  check("with its magic in the clear",
+        fs.readFileSync(STATE).subarray(0, 8).toString("latin1") === "SLAPSTAT");
 
   const module = await createSlaplog({ print: (l) => out.push(l), printErr: (l) => out.push(l),
                                        locateFile: (p) => path.join(SL.WASM_DIR, p) });

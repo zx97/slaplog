@@ -1469,12 +1469,16 @@ combined with `--resume`, so each run extends the state it read.
 The file is the aggregate, xz-compressed, behind a versioned header:
 
 ```text
-"SLAPSTAT" | schema (u32) | tool version | counters, maps, top lists
+"SLAPSTAT" (clear) | xz( schema (u32) | tool version | counters, maps, top lists )
 ```
 
-A file from another schema is refused, naming both versions; one from another
-tool version of the same schema is loaded with a note.  The payload is handled
-as a stream, so the file is never held twice in memory.
+The magic sits in the clear, before the compressed stream, so a state file is
+recognised by its first eight bytes — by the binary, by the WebAssembly session,
+and by the page, which routes one dropped in the log area to the resume field
+instead of parsing it as a log.  A file from another schema is refused, naming
+both versions; one from another tool version of the same schema is loaded with a
+note.  The payload is handled as a stream, so the file is never held twice in
+memory.
 
 **Size.**  A state stores the *distinct* values in the logs — filters, bases,
 connections, error texts — not the lines, so the file is a small fraction of the
@@ -1489,8 +1493,10 @@ run writes, so it can be resumed as HTML later; only `--no-graph`, which asks to
 skip the chart work, leaves them out.
 
 **In the browser.**  The WebAssembly build uses the same schema, so the page can
-both read and write these files: *Resume a previous analysis* loads one before
-the logs, and *Download state* produces one after a run.  The module holds the
+both read and write these files: *Resume a previous analysis* takes one or more
+state files (they are merged, and together set the servers the logs may name)
+before the logs, and *Download state* produces one after a run.  A state file
+dropped in the log area is recognised by its header and moved to that field.  The module holds the
 whole aggregate in memory, so the state and the logs added in the same session
 must fit together in its 4 GiB; a state written by the command-line build is
 how a browser session continues an analysis that started on a server.
