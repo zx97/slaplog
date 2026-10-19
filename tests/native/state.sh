@@ -23,6 +23,12 @@ check() { # <label> <expected> <actual>
     else echo "state: $1 = $3 (expected $2) FAIL"; fail=1; fi
 }
 
+# 0. the file carries its magic in the clear, so it can be told from a log
+"$BIN" -q -o json --save-state "$SCRATCH/magic.to" "$ROOT/tests/fixtures/logsmall/a.log" \
+    > /dev/null 2>&1
+check "the state file starts with the SLAPSTAT magic" "SLAPSTAT" \
+    "$(head -c 8 "$SCRATCH/magic.to")"
+
 # 1. split == single
 "$BIN" -q -o json "$A" "$B" 2>/dev/null | norm > "$SCRATCH/all.json"
 "$BIN" -q -o json --save-state "$SCRATCH/a.to" "$A" > /dev/null 2>&1
@@ -44,6 +50,10 @@ check "resume + save + resume == A + B" 0 \
 
 # 4. bad files are refused, with a message that says which case it is
 printf 'hello' > "$SCRATCH/bad.to"
+rc=0; "$BIN" -q -o json --resume "$A" > /dev/null 2>"$SCRATCH/e0" || rc=$?
+check "a log given to --resume is refused" 1 "$rc"
+check "and the message says so" 1 "$(grep -c 'not a slaplog state file' "$SCRATCH/e0" || true)"
+
 rc=0; "$BIN" -q -o json --resume "$SCRATCH/bad.to" "$A" > /dev/null 2>"$SCRATCH/e1" || rc=$?
 check "a foreign file is refused" 1 "$rc"
 check "and named as such" 1 "$(grep -c 'not a slaplog state file' "$SCRATCH/e1" || true)"

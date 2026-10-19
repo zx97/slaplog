@@ -45,12 +45,22 @@ const mkGz = (name, n) => {
   const b = new Uint8Array(n); b[0] = 0x1f; b[1] = 0x8b;
   return { name, size: n, arrayBuffer: async () => b.buffer };
 };
+const mkState = (name, n) => {
+  const b = new Uint8Array(n);
+  b.set(enc.encode("SLAPSTAT"));
+  return {
+    name, size: n, lastModified: 1,
+    slice: (a, z) => ({ arrayBuffer: async () => b.slice(a, z).buffer }),
+    arrayBuffer: async () => b.buffer,
+  };
+};
 function dropFiles(list) {
   const ev = new window.Event("drop", { bubbles: true });
   ev.dataTransfer = { files: list };
   $("drop").dispatchEvent(ev);
 }
 const setFmt = (v) => { $("output").value = v; fire($("output"), "change"); };
+const filesCount = () => count("#filelist .f");
 
 const results = [];
 const ok = (n, c) => results.push((c ? "PASS  " : "FAIL  ") + n);
@@ -186,6 +196,24 @@ const ok = (n, c) => results.push((c ? "PASS  " : "FAIL  ") + n);
   $("nograph").checked = false;
   ok("O6. report iframe allows scripts but not same-origin",
      /sandbox",\s*"allow-scripts"/.test(html) && !/allow-same-origin/.test(html));
+
+  // --- state files are recognised and routed -------------------------
+  // The checks above have already put logs in the list: count the delta.
+  const before = filesCount();
+  dropFiles([mkState("week1.slapstate", 64)]);
+  await sleep(50);
+  ok("R1. a state file dropped in the log area is not added as a log",
+     filesCount() === before && /state file/i.test($("status").textContent));
+  ok("R2. it makes the run possible on its own (resume selected)",
+     $("run").disabled === false);
+  dropFiles([mkFile("access.log", "conn=1 ACCEPT\n")]);
+  await sleep(50);
+  ok("R3. a log dropped afterwards goes to the log list",
+     filesCount() === before + 1);
+  $("resume-clear").dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+  await sleep(20);
+  ok("R4. clearing the state leaves the log in place",
+     filesCount() === before + 1);
 
   // --- static layout ------------------------------------------------
   ok("AE. CSS no longer caps width at 1080px", !/max-width:\s*1080px/.test(html));

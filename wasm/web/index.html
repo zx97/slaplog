@@ -194,7 +194,8 @@
       recursively, which is how the logs of several servers are gathered in one
       gesture (<code>logs/*/access.log</code>). Selections add up, and
       the files are analysed sequentially into a single report.
-      Plain, .gz, .bz2 and .xz are all supported.
+      Plain, .gz, .bz2 and .xz are all supported. A state file dropped here is
+      routed to <b>Resume a previous analysis</b> automatically.
     </div>
     <div class="pickers">
       <button class="preset" type="button" id="pick-files">Choose files…</button>
@@ -350,6 +351,8 @@
   let module = null;         // the Emscripten module instance
   let moduleBroken = false;  // set when the module aborted (32-bit OOM)
   let files = [];            // the user's selected File objects
+  let routedStates = [];     // state files dropped in the log area, when the
+                             // browser does not let us write into the field
   let captured = [];         // stdout lines captured during a run
 
   // Plain logs are fed to the parser in chunks of this size so the progress
@@ -449,12 +452,30 @@
     updateWarning();
   }
   outputEl.addEventListener("change", syncFormatPanels);
-  $("resume-state").addEventListener("change", () => {
-    if (module) runBtn.disabled = (files.length === 0 && !hasResume()) || moduleBroken;
+  $("resume-state").addEventListener("change", async () => {
+    const input = $("resume-state");
+    const bad = [];
+    for (const f of input.files) if (!(await looksLikeState(f))) bad.push(f.name);
+    if (bad.length) {
+      statusEl.textContent =
+        `${bad.join(", ")} — not a state file (it does not start with 'SLAPSTAT'). ` +
+        `State files are written by --save-state; a log belongs in the log area above.`;
+      statusEl.className = "status err";
+    } else if (hasResume()) {
+      const n = resumeFiles().length;
+      statusEl.textContent = n === 1
+        ? `Resuming from ${resumeFiles()[0].name}.`
+        : `Resuming from ${n} merged state files.`;
+      statusEl.className = "status";
+    }
+    if (module) syncRunButton();
   });
   $("resume-clear").addEventListener("click", () => {
     $("resume-state").value = "";
-    if (module) runBtn.disabled = (files.length === 0 && !hasResume()) || moduleBroken;
+    routedStates = [];
+    statusEl.textContent = "State cleared.";
+    statusEl.className = "status";
+    if (module) syncRunButton();
   });
   $("nograph").addEventListener("change", updateWarning);
   syncFormatPanels();
@@ -470,7 +491,7 @@
       locateFile: (path) => path,
     }).then((m) => {
       module = m;
-      runBtn.disabled = files.length === 0 && !hasResume();
+      syncRunButton();
       statusEl.textContent = files.length ? "Ready. Click “Analyze locally”."
                                           : "Ready. Drop one or more log files to begin.";
       statusEl.className = "status";
@@ -527,7 +548,7 @@
     });
     renderFileList();
     updateWarning();
-    if (module) runBtn.disabled = (files.length === 0 && !hasResume()) || moduleBroken;
+    if (module) syncRunButton();
     const total = files.reduce((a, f) => a + f.size, 0);
     statusEl.textContent = files.length
       ? `${files.length} file(s) ready (${fmtSize(total)}). Click “Analyze locally”.`
@@ -703,17 +724,64 @@
     return out.length ? out : Array.from(dt.files || []);
   }
 
+  // A state file (--save-state) starts with a clear "SLAPSTAT" magic, so the
+  // page can tell it from a log before decompressing anything.  Without this,
+  // dropping one here would feed its xz stream to the log parser as text.
+  function isStateFile(bytes) {
+    if (!bytes || bytes.length < 8) return false;
+    for (let i = 0; i < 8; i++) if (bytes[i] !== STATE_MAGIC.charCodeAt(i)) return false;
+    return true;
+  }
+
+  async function looksLikeState(f) {
+    try {
+      if (typeof f.slice !== "function") return false;
+      return isStateFile(new Uint8Array(await f.slice(0, 8).arrayBuffer()));
+    } catch (e) { return false; }
+  }
+
+  function syncRunButton() {
+    runBtn.disabled = !module || moduleBroken || (files.length === 0 && !hasResume());
+  }
+
   // Every entry point adds to the list rather than replacing it, so the logs of
   // several folders can be gathered one gesture at a time; picking the same
   // folder twice is a no-op (see the dedup key in setFiles).
-  function addFiles(list) { if (list && list.length) setFiles(files.concat(list)); }
+  async function addFiles(list) {
+    if (!list || !list.length) return;
+    // Route state files to their own field: they are not logs, and the resume
+    // field is where the run reads them from.
+    const logs = [], states = [];
+    for (const f of list) (await looksLikeState(f) ? states : logs).push(f);
+    if (states.length) {
+      const input = $("resume-state");
+      try {
+        // Mirror the drop into the field, so there is one visible list of states.
+        const dt = new DataTransfer();
+        for (const f of input.files) dt.items.add(f);
+        for (const f of states) dt.items.add(f);
+        input.files = dt.files;
+        routedStates = [];
+      } catch (e) {
+        // Some browsers refuse a programmatic FileList: keep them aside, they
+        // feed the run just the same (see resumeFiles()).
+        routedStates = routedStates.concat(states);
+      }
+      statusEl.textContent = states.length === 1
+        ? `${states[0].name} looks like a state file: added to "Resume a previous analysis".`
+        : `${states.length} state files added to "Resume a previous analysis".`;
+      statusEl.className = "status";
+      syncRunButton();
+    }
+    if (logs.length) setFiles(files.concat(logs));
+  }
 
   function pick(folder) {
     const inp = document.createElement("input");
     inp.type = "file";
     inp.multiple = true;
     if (folder) { inp.webkitdirectory = true; inp.setAttribute("directory", ""); }
-    inp.onchange = () => addFiles(Array.from(inp.files));
+    inp.onchange = () => { void addFiles(Array.from(inp.files)); };
     inp.click();
   }
 
@@ -736,24 +804,34 @@
     dropEl.addEventListener(ev, (e) => { e.preventDefault(); dropEl.classList.remove("hover"); }));
   dropEl.addEventListener("drop", async (e) => {
     const found = await filesFromDrop(e.dataTransfer);
-    if (found.length) addFiles(found);
+    if (found.length) void addFiles(found);
   });
 
   // ------------------------------------------------------------------
   // Argument string handed to slaplog_begin().  No positional input: files
   // are added through the session API so progress can be reported.
   // ------------------------------------------------------------------
+  // A state file begins with this clear magic (see state_io.cpp).
+  const STATE_MAGIC = "SLAPSTAT";
+
   // A resume continues the analysis of the servers the state holds; a log
   // naming any other host is refused rather than mixed into the report.
   const NOT_A_RESUME =
     "this is not a resume: the logs name a server the state does not hold " +
     "(use logs from the same servers, or no state file)";
 
-  // A state file is optional; with one, the run may even have no log at all.
-  function hasResume() {
+  // The state files of this run: those chosen in the field, plus any dropped in
+  // the log area that the browser would not let us mirror into it.
+  function resumeFiles() {
+    const out = [];
     const el = $("resume-state");
-    return !!(el && el.files && el.files[0]);
+    if (el && el.files) for (const f of el.files) out.push(f);
+    for (const f of routedStates) out.push(f);
+    return out;
   }
+
+  // A state file is optional; with one, the run may even have no log at all.
+  function hasResume() { return resumeFiles().length > 0; }
 
   function selectedSections() {
     if (allBox().checked) return ["all"];
@@ -872,8 +950,8 @@
       // it exactly as the command-line build does with --resume.
       // Several state files may be given: each is folded into the analysis, and
       // together they define the servers the logs may name.
-      const rsel = $("resume-state").files;
-      for (let k = 0; k < (rsel ? rsel.length : 0); k++) {
+      const rsel = resumeFiles();
+      for (let k = 0; k < rsel.length; k++) {
         const rbytes = new Uint8Array(await rsel[k].arrayBuffer());
         const rpath = "/work/resume" + k + ".state";
         module.FS.writeFile(rpath, rbytes);
@@ -883,7 +961,10 @@
         } finally {
           try { module.FS.unlink(rpath); } catch (e) { /* ignore */ }
         }
-        if (rrc !== 0) throw new Error("a state file could not be read");
+        if (rrc !== 0) {
+          const why = captured.slice().reverse().find((l) => /^slaplog\(wasm\)/.test(l));
+          throw new Error(why || "a state file could not be read");
+        }
       }
 
       for (let i = 0; i < files.length; i++) {
@@ -966,7 +1047,7 @@
       try { module.ccall("slaplog_end", "number", [], []); } catch (e) { /* ignore */ }
     } finally {
       if (bufPtr) { module._free(bufPtr); bufPtr = 0; bufCap = 0; }
-      runBtn.disabled = (files.length === 0 && !hasResume()) || moduleBroken;
+      syncRunButton();
       clearBtn.disabled = false;
     }
   });
