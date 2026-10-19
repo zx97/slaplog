@@ -212,6 +212,7 @@
         <label for="output">Format</label>
         <select id="output">
           <option value="html" selected>html — standalone report</option>
+          <option value="tabhtml">tabhtml — report with tabs</option>
           <option value="text">text — plain</option>
           <option value="json">json — machine readable</option>
           <option value="replay">replay — jMeter / LoadRunner</option>
@@ -508,7 +509,7 @@
 
   // Safe input size for the current options (see MEM_CEILING above).
   function warnLimit() {
-    const charts = outputEl.value === "html" && !$("nograph").checked;
+    const charts = (outputEl.value === "html" || outputEl.value === "tabhtml") && !$("nograph").checked;
     return Math.floor(MEM_CEILING / ((charts ? 1.12 : 1.02) * 1.30));
   }
 
@@ -525,7 +526,7 @@
 
   function updateWarning() {
     const total = files.reduce((a, f) => a + f.size, 0);
-    const charts = outputEl.value === "html" && !$("nograph").checked;
+    const charts = (outputEl.value === "html" || outputEl.value === "tabhtml") && !$("nograph").checked;
     const limit = warnLimit();
     if (total <= limit) { warnEl.style.display = "none"; return; }
 
@@ -729,7 +730,7 @@
       const secs = selectedSections();
       if (!(secs.length === 1 && secs[0] === "all")) args.push("-s", secs.join(","));
     }
-    if (out === "html" && $("nograph").checked) args.push("--no-graph");
+    if ((out === "html" || out === "tabhtml") && $("nograph").checked) args.push("--no-graph");
     if (out === "replay") {
       args.push("--replay-separator", $("sep").value);
       const lim = parseInt($("limit").value, 10);
@@ -922,7 +923,7 @@
       ? (first.replace(/\.[A-Za-z0-9]+$/, "") || "report")
       : "slaplog-report";
 
-    if (fmt === "html") {
+    if (fmt === "html" || fmt === "tabhtml") {
       const frame = document.createElement("iframe");
       // allow-scripts only: the report's inline tooltip script needs to run,
       // but it must not be able to reach the page that embeds it.

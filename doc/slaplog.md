@@ -232,7 +232,7 @@ slaplog --unknown-lines unknown.txt /var/log/slapd/access.log
 
 | Option | Description |
 |--------|-------------|
-| `-o, --output FORMAT` | Output format: `text` (plain), `textcolor` (ANSI, default), `html`, `json`, `replay` |
+| `-o, --output FORMAT` | Output format: `text` (plain), `textcolor` (ANSI, default), `html`, `tabhtml` (same report in tabs), `json`, `replay` |
 | `-c, --compact` | Show top 5 instead of top 20 for ranked sections |
 | `-r, --recursive` | Recurse into directories when collecting log files |
 | `-q, --quiet` | Suppress the progress bar on stderr (useful for batch / cron runs) |
@@ -628,6 +628,25 @@ Standalone HTML page with embedded CSS featuring:
   All are interactive — a tooltip follows the mouse and shows the exact value
   under the cursor.
 - The OpenLDAP version, when the startup banner is present in the log.
+
+### Tabbed HTML (`-o tabhtml`)
+
+The same standalone HTML report, with its sections gathered into six tabs —
+*Overview*, *Operations*, *Errors*, *Searches*, *Clients*, *Replication* —
+instead of one long page.  The bar sits above the panels; a click selects a
+tab, the arrow keys move between them, and `aria-selected` follows.
+
+It is a **presentation** change only:
+
+- every section stays in the DOM, so the page is still one self-contained file
+  and `@media print` shows the whole report;
+- `#sec-…` in the URL selects the tab that holds that section, and so does a
+  link to any heading;
+- the floating section index is hidden (the bar replaces it);
+- without JavaScript every panel is simply visible, as with `-o html`.
+
+`-o tab-html` is accepted as an alias.  None of this applies to `-o html`,
+which is unchanged.
 
 ### JSON (`-o json`)
 

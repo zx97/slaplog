@@ -37,7 +37,7 @@ make
 
 ## Features
 
-- **4 output formats**: text/ANSI color, HTML (standalone with CSS), JSON, replay (for jMeter/LoadRunner)
+- **5 output formats**: text/ANSI color, HTML (standalone with CSS), tabbed HTML, JSON, replay (for jMeter/LoadRunner)
 - **Parallel processing**: bounded worker pool (`-j`, capped at the file count), each worker merging its file under one mutex
 - **Compressed logs**: `.gz`, `.bz2`, `.xz` transparently handled
 - **Session tracking**: correlates NAT'd IPs to real clients via `[IP=... NAME=... USERNAME=...]`
