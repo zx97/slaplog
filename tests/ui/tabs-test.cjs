@@ -74,6 +74,10 @@ const click = (el, dom) => el.dispatchEvent(new dom.window.MouseEvent("click", {
   const countH2 = (h) => (h.match(/<h2 id=/g) || []).length;
   check("the tabbed report holds every section", countH2(tabbed) === countH2(plain),
         `tabhtml=${countH2(tabbed)} html=${countH2(plain)}`);
+  const inPanels = doc.body.querySelectorAll(".sl-tabpanel h2").length;
+  check("every section sits inside a panel (none left behind)",
+        inPanels === doc.body.querySelectorAll("h2").length,
+        `${inPanels} in panels / ${doc.body.querySelectorAll("h2").length} total`);
   check("printing reveals every panel",
         /@media print \{ body\.sl-tabbed \.sl-tabs \{ display:none !important; \}/.test(tabbed) &&
         /body\.sl-tabbed \.sl-tabpanel \{ display:block !important; \}/.test(tabbed));

@@ -1847,7 +1847,8 @@ void print_html_report(const Aggregator& agg, double duration, bool /*compact*/,
                        'sec-top-filters-by-count', 'sec-top-filters-by-etime',
                        'sec-top-filters-nentries1', 'sec-top-filters-nentries0',
                        'sec-top-wildcard-filters', 'sec-top-requested-attributes',
-                       'sec-filters-app', 'sec-qmark']],
+                       'sec-filters-app', 'sec-qmark',
+                       'sec-question-mark-filter-attributes']],
       ['Clients',     ['sec-top-applications-by-count', 'sec-top-applications-by-etime',
                        'sec-session', 'sec-bind']],
       ['Replication', ['sec-csn', 'sec-ext', 'sec-gc']]
@@ -1868,11 +1869,20 @@ void print_html_report(const Aggregator& agg, double duration, bool /*compact*/,
       moving.push(n);
     }
 
+    // Which panels are actually needed?  A section the map does not name goes
+    // to "Other", so a report that gains a section can never break the page.
+    var needed = {};
+    for (var m0 = 0; m0 < moving.length; m0++)
+      if (moving[m0].nodeType === 1 && moving[m0].tagName === 'H2' && moving[m0].id)
+        needed[group[moving[m0].id] || 'Other'] = true;
+
     var nav = document.createElement('div');
     nav.className = 'sl-tabs';
     nav.setAttribute('role', 'tablist');
     body.insertBefore(nav, first);
 
+    // Every panel is created BEFORE anything is moved: once the first section
+    // has left <body>, `first` is no longer a child and insertBefore() throws.
     var panels = [], byName = {};
     function newPanel(name) {
       var p = document.createElement('div');
@@ -1885,15 +1895,15 @@ void print_html_report(const Aggregator& agg, double duration, bool /*compact*/,
       byName[name] = p;
       return p;
     }
-    for (var g2 = 0; g2 < TABS.length; g2++) newPanel(TABS[g2][0]);
+    for (var g2 = 0; g2 < TABS.length; g2++)
+      if (needed[TABS[g2][0]]) newPanel(TABS[g2][0]);
+    if (needed.Other) newPanel('Other');
 
     var cur = null;
     for (var m = 0; m < moving.length; m++) {
       var node = moving[m];
-      if (node.nodeType === 1 && node.tagName === 'H2' && node.id) {
-        var name = group[node.id] || 'Other';
-        cur = byName[name] || newPanel(name);
-      }
+      if (node.nodeType === 1 && node.tagName === 'H2' && node.id)
+        cur = byName[group[node.id] || 'Other'];
       if (cur) cur.appendChild(node);            // moves it into the panel
     }
 
