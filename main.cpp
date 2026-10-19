@@ -33,6 +33,7 @@
 #include "log_parser.hpp"
 // report.hpp         -- Report printers: print_text_report(), print_json_report(), print_html_report()
 #include "report.hpp"
+#include "state_io.hpp"
 // utils.hpp          -- Shared utility functions (merge_aggregators, etc.)
 #include "utils.hpp"
 // embedded.hpp       -- Embedded LICENSE and documentation text
@@ -282,6 +283,7 @@ static void usage(const char* prog) {
     std::cerr << "Usage: " << prog << " [options] <logfile|directory> [file|dir ...]\n";
     std::cerr << "Options:\n";
     std::cerr << "  -o, --output FORMAT        Output format: text | textcolor | html | tabhtml | json | replay\n";
+    std::cerr << "                             Repeatable: FORMAT=FILE writes that report to a file\n";
     std::cerr << "  -c, --compact              Compact output (top 5 instead of top 20)\n";
     std::cerr << "  -r, --recursive            Recurse into directories\n";
     std::cerr << "  -q, --quiet                Suppress the progress bar (batch mode)\n";
@@ -307,6 +309,8 @@ static void usage(const char* prog) {
     std::cerr << "  --no-graph                 Omit the charts from the html report\n";
     std::cerr << "  --no-version               Omit the engine version from the report footer\n";
     std::cerr << "  --title TITLE              Custom report title (appended after default, separated by \" - \")\n";
+    std::cerr << "  --save-state FILE          Write the analysis state to FILE (xz-compressed)\n";
+    std::cerr << "  --resume FILE              Start from a state written by --save-state\n";
     std::cerr << "  -D, --documentation        Print documentation to stdout\n";
     std::cerr << "  -l, --licence              Print license to stdout\n";
     std::cerr << "  -d, --debug                Enable debug mode with verbose traces\n";
@@ -338,12 +342,10 @@ int main(int argc, char* argv[]) {
     //
     // inputs              -- positional arguments (files / directories)
     // recursive           -- whether to traverse directories recursively
-    // output_format       -- "text", "textcolor" (default), "html", "json", "replay"
     // compact_mode        -- if true, show top 5 instead of top 20
     // unknown_lines_file  -- path for writing unparseable lines (empty = disabled)
     // unknown_lines_only  -- if true, skip the final report after writing unknowns
     // debug               -- enable extra diagnostic output on stderr
-    // color_mode          -- 0 = plain text, 2 = ANSI color (derived from output_format)
     // enabled_sections    -- set of report sections; defaults to {"all"}
     // log_format          -- input log format
     // output_date_format  -- desired date format in reports
@@ -353,7 +355,6 @@ int main(int argc, char* argv[]) {
     // ------------------------------------------------------------------
     std::vector<std::string> inputs;
     bool recursive = false;
-    std::string output_format = "textcolor";
     bool compact_mode = false;
     std::string unknown_lines_file;
     bool unknown_lines_only = false;
@@ -366,13 +367,17 @@ int main(int argc, char* argv[]) {
     int max_files = 0;
     int mtime_days = 0;
     int jobs = 0;
-    int color_mode = 2;
     std::set<std::string> enabled_sections = {"all"};
     std::string log_format_str = "auto";
     std::string output_date_format = "rfc3339";
     std::string replay_separator = "|";
     int replay_limit = 1000000;
     std::string custom_title;
+    std::string resume_file;
+    std::string save_state_file;
+    // One entry per -o: the format and, when given as FORMAT=FILE, its file.
+    struct OutputSpec { std::string format; std::string path; };
+    std::vector<OutputSpec> outputs;
 
     // ------------------------------------------------------------------
     // Argument parsing loop.
@@ -395,9 +400,16 @@ int main(int argc, char* argv[]) {
             arg = arg.substr(0, 2);
         }
         if ((arg == "-o" || arg == "--output") && (glued.size() || i + 1 < argc)) {
-            output_format = glued.size() ? glued : argv[++i];
-            if (output_format == "text") { color_mode = 0; }
-            else if (output_format == "textcolor") { color_mode = 2; }
+            const std::string spec = glued.size() ? glued : argv[++i];
+            const size_t eq = spec.find('=');
+            OutputSpec o;
+            o.format = (eq == std::string::npos) ? spec : spec.substr(0, eq);
+            if (eq != std::string::npos) o.path = spec.substr(eq + 1);
+            outputs.push_back(o);
+        } else if ((arg == "--resume") && i + 1 < argc) {
+            resume_file = argv[++i];
+        } else if ((arg == "--save-state") && i + 1 < argc) {
+            save_state_file = argv[++i];
         } else if (arg == "-c" || arg == "--compact") {
             compact_mode = true;
         } else if (arg == "-r" || arg == "--recursive") {
@@ -500,21 +512,36 @@ int main(int argc, char* argv[]) {
     if (!isatty(STDERR_FILENO) && !quiet) {
         quiet = true;
     }
-    if (!isatty(STDOUT_FILENO) && output_format == "textcolor") {
-        output_format = "text";
-        color_mode = 0;
+    // ------------------------------------------------------------------
+    // Reports: one per -o, at most one of them to stdout.
+    // ------------------------------------------------------------------
+    if (outputs.empty()) outputs.push_back({"textcolor", ""});   // the default report
+    for (auto& o : outputs)
+        if (o.format == "tab-html") o.format = "tabhtml";   // accepted alias
+    {
+        int to_stdout = 0;
+        for (const auto& o : outputs) if (o.path.empty()) ++to_stdout;
+        if (to_stdout > 1) {
+            std::cerr << "Error: only one report can go to stdout; give the others a "
+                         "file (-o FORMAT=FILE)\n";
+            return 1;
+        }
     }
-    if (output_format == "replay") {
-        color_mode = 0;
-    }
+    // A textcolor report bound for a non-terminal loses its colours, exactly as
+    // the single-output form always did; one bound for a file keeps them.
+    if (!isatty(STDOUT_FILENO))
+        for (auto& o : outputs)
+            if (o.path.empty() && o.format == "textcolor") o.format = "text";
 
-    // The HTML report's charts need extra data collected while parsing (a
-    // connection timeline and per-bind-account totals).  Skip that work
-    // entirely unless the charts will actually be drawn.
-    // "tab-html" is accepted as an alias of "tabhtml".
-    if (output_format == "tab-html") output_format = "tabhtml";
-
-    set_collect_graph_data((output_format == "html" || output_format == "tabhtml") && !no_graph);
+    bool want_replay = false;
+    for (const auto& o : outputs)
+        if (o.format == "replay") want_replay = true;
+    // The charts need extra data collected while parsing (per-bind-account
+    // totals, the error timeline).  Collect it even when no chart is drawn this
+    // run: it costs no measurable time, and a state file written here must
+    // support a later HTML report (see --save-state).  Only --no-graph, which
+    // explicitly asks to skip the chart work, turns it off.
+    set_collect_graph_data(!no_graph);
     // The footer names the engine version unless --no-version was given.
     set_show_version(!no_version);
 
@@ -533,8 +560,8 @@ int main(int argc, char* argv[]) {
     // ------------------------------------------------------------------
     // Validate input: at least one file or directory must be provided.
     // ------------------------------------------------------------------
-    if (inputs.empty()) {
-        std::cerr << "Error: No input files specified\n";
+    if (inputs.empty() && resume_file.empty()) {
+        std::cerr << "Error: No input files specified (or use --resume STATE)\n";
         return 1;
     }
 
@@ -542,7 +569,9 @@ int main(int argc, char* argv[]) {
     // File collection: expand directories into individual log files.
     // ------------------------------------------------------------------
     auto files = collect_input_files(inputs, recursive, max_files, mtime_days);
-    if (files.empty()) {
+    // A run may legitimately have no new log: --resume alone re-displays what
+    // the state holds, and a state plus no file is the round-trip test.
+    if (files.empty() && resume_file.empty()) {
         std::cerr << "Error: No valid log files found\n";
         return 1;
     }
@@ -614,12 +643,19 @@ int main(int argc, char* argv[]) {
     // cleared on every merge so they only live for one file at a time.
     // ------------------------------------------------------------------
     Aggregator final_agg;
+    if (!resume_file.empty()) {
+        std::string err;
+        if (!load_state(final_agg, resume_file, err)) {
+            std::cerr << "Error: cannot resume from " << resume_file << ": " << err << "\n";
+            return 1;
+        }
+    }
     std::mutex merge_mtx;
     std::atomic<size_t> progress(0);
     std::atomic<size_t> files_done(0);
     auto start_time = std::chrono::system_clock::now();
 
-    if (output_format == "replay") {
+    if (want_replay) {
         init_replay_tempfile();
         set_replay_ops_limit(replay_limit);
     }
@@ -825,7 +861,7 @@ int main(int argc, char* argv[]) {
     // that ops with no RESULT line (ABANDON, UNBIND, abandoned searches)
     // still produce a replay row.
     // ------------------------------------------------------------------
-    if (output_format == "replay") {
+    if (want_replay) {
         flush_inflight_ops(final_agg);
     }
     final_agg.conn_state.clear();
@@ -835,6 +871,14 @@ int main(int argc, char* argv[]) {
     // The run's own concurrent-connection peak; the merge can only keep the
     // larger of the per-file peaks (see finalize_connection_counts()).
     finalize_connection_counts(final_agg);
+
+    if (!save_state_file.empty()) {
+        std::string err;
+        if (!save_state(final_agg, save_state_file, err)) {
+            std::cerr << "Error: cannot write the state file: " << err << "\n";
+            return 1;
+        }
+    }
 
     // ------------------------------------------------------------------
     // Unknown lines output.
@@ -891,18 +935,34 @@ int main(int argc, char* argv[]) {
     //   - replay     -> print_replay_report() for jMeter/LoadRunner
     // ------------------------------------------------------------------
     try {
-        if (output_format == "textcolor") {
-            print_text_report(final_agg, duration, compact_mode, 2, enabled_sections, output_date_format, custom_title);
-        } else if (output_format == "json") {
-            print_json_report(final_agg, duration, compact_mode, output_date_format, custom_title);
-        } else if (output_format == "html") {
-            print_html_report(final_agg, duration, compact_mode, output_date_format, custom_title);
-        } else if (output_format == "tabhtml") {
-            print_html_report(final_agg, duration, compact_mode, output_date_format, custom_title, true);
-        } else if (output_format == "replay") {
-            print_replay_report(final_agg, duration, output_date_format, replay_separator);
-        } else {
-            print_text_report(final_agg, duration, compact_mode, color_mode, enabled_sections, output_date_format, custom_title);
+        for (const auto& spec : outputs) {
+            std::ofstream out_file;
+            std::streambuf* saved = nullptr;
+            if (!spec.path.empty()) {
+                out_file.open(spec.path, std::ios::binary | std::ios::trunc);
+                if (!out_file) {
+                    std::cerr << "Error: cannot open " << spec.path << " for writing\n";
+                    cleanup_replay_tempfile();
+                    return 1;
+                }
+                std::cout.flush();
+                saved = std::cout.rdbuf(out_file.rdbuf());
+            }
+            const std::string& f = spec.format;
+            if (f == "textcolor") {
+                print_text_report(final_agg, duration, compact_mode, 2, enabled_sections, output_date_format, custom_title);
+            } else if (f == "json") {
+                print_json_report(final_agg, duration, compact_mode, output_date_format, custom_title);
+            } else if (f == "html") {
+                print_html_report(final_agg, duration, compact_mode, output_date_format, custom_title);
+            } else if (f == "tabhtml") {
+                print_html_report(final_agg, duration, compact_mode, output_date_format, custom_title, true);
+            } else if (f == "replay") {
+                print_replay_report(final_agg, duration, output_date_format, replay_separator);
+            } else {
+                print_text_report(final_agg, duration, compact_mode, 0, enabled_sections, output_date_format, custom_title);
+            }
+            if (saved) { std::cout.flush(); std::cout.rdbuf(saved); }
         }
     } catch (const std::exception& e) {
         std::cerr << "\nFatal error during report generation: " << e.what()

@@ -703,10 +703,11 @@ struct Aggregator {
     struct UserInfo { long long count = 0; double etime_total = 0.0; };
     std::map<std::string, UserInfo> user_stats;
 
-    // -- Connection timeline (opt-in, see set_collect_graph_data) --
+    // -- Connection timeline --
     // One entry per ACCEPT (+1) or CLOSED (-1) event, used by the HTML
-    // report's "simultaneous connections" chart.  Kept empty unless timeline
-    // collection is enabled, so no other output format pays for it.
+    // report's "simultaneous connections" chart.  Always collected: it is what
+    // makes a multi-server peak active-connection count correct, and it is
+    // saved in a state file (see state_io.cpp).
     std::vector<ConnEvent> conn_timeline;
 
     // -- Operation-time distribution (opt-in) --

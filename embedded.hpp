@@ -729,10 +729,11 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 5. [Command-Line Options](#command-line-options)
 6. [Report Sections](#report-sections)
 7. [Output Formats](#output-formats)
-8. [Session Tracking](#session-tracking)
-9. [Architecture](#architecture)
-10. [File-by-File Guide](#file-by-file-guide)
-11. [Extending the Parser](#extending-the-parser)
+8. [Resuming an Analysis](#resuming-an-analysis)
+9. [Session Tracking](#session-tracking)
+10. [Architecture](#architecture)
+11. [File-by-File Guide](#file-by-file-guide)
+12. [Extending the Parser](#extending-the-parser)
 
 ---
 
@@ -930,7 +931,7 @@ slaplog --unknown-lines unknown.txt /var/log/slapd/access.log
 
 | Option | Description |
 |--------|-------------|
-| `-o, --output FORMAT` | Output format: `text` (plain), `textcolor` (ANSI, default), `html`, `tabhtml` (same report in tabs), `json`, `replay` |
+| `-o, --output FORMAT` | Output format: `text` (plain), `textcolor` (ANSI, default), `html`, `tabhtml` (same report in tabs), `json`, `replay`. Repeatable: `-o html=report.html` writes that report to a file, so several formats come out of one run. At most one report may go to stdout. |
 | `-c, --compact` | Show top 5 instead of top 20 for ranked sections |
 | `-r, --recursive` | Recurse into directories when collecting log files |
 | `-q, --quiet` | Suppress the progress bar on stderr (useful for batch / cron runs) |
@@ -947,6 +948,8 @@ slaplog --unknown-lines unknown.txt /var/log/slapd/access.log
 | `--no-graph` | Omit the charts from the `html` report (they are drawn by default) |
 | `--no-version` | Omit the engine name and version from the `html` report footer |
 | `--title TITLE` | Custom subtitle for the rendered reports (text, HTML), appended after the default one, separated by ` - `.  Ignored by `json` and `replay`, whose schemas are fixed. |
+| `--save-state FILE` | Write the analysis state to FILE (xz-compressed), for a later `--resume` |
+| `--resume FILE` | Start from a state written by `--save-state`; the logs given are merged into it |
 | `-d, --debug` | Print debug information (file count, parsing details, per-file traces) |
 | `-D, --documentation` | Print full documentation to stdout |
 | `-h, --help` | Show help message |
@@ -1421,6 +1424,57 @@ A complete jMeter run, with the options combined:
 slaplog -o replay --replay-separator comma --output-date-format epoch \
   --replay-limit 500000 --log-format auto -q /var/log/slapd/access.log > jmeter_replay.csv
 ```
+
+## Resuming an Analysis
+
+A **state file** holds the analysis itself — every counter, map and top list —
+not the log lines.  Several runs can therefore be folded into a single report:
+
+```bash
+slaplog -o html --save-state monday.slapstate -r /var/log/slapd/monday/ > monday.html
+slaplog -o html --resume monday.slapstate --save-state week.slapstate \
+        -r /var/log/slapd/tuesday/ > tuesday.html
+```
+
+`--resume` loads the state as the starting point and the new files are merged
+into it, exactly as if every log had been analysed at once:
+
+```text
+A + B (one run)   ==   A -> save -> resume + B
+```
+
+`--resume` with no input file re-displays what the state holds, which is how an
+earlier analysis is rendered again without the logs.  `--save-state` may be
+combined with `--resume`, so each run extends the state it read.
+
+The file is the aggregate, xz-compressed, behind a versioned header:
+
+```text
+"SLAPSTAT" | schema (u32) | tool version | counters, maps, top lists
+```
+
+A file from another schema is refused, naming both versions; one from another
+tool version of the same schema is loaded with a note.  The payload is handled
+as a stream, so the file is never held twice in memory.
+
+**Size.**  A state stores the *distinct* values in the logs — filters, bases,
+connections, error texts — not the lines, so the file is a small fraction of the
+input: 2 MB for the 1 GiB reference log, 0.2 % of it.  The
+aggregate it rebuilds is larger — of the order of 0.1–0.2× the input — and that
+is what must fit in RAM when the state is resumed (roughly 160 MB for that log).
+Resuming is fast because nothing is re-parsed: the same report comes back in
+half a second instead of forty.
+
+A state always carries the series the charts need, whatever report format the
+run writes, so it can be resumed as HTML later; only `--no-graph`, which asks to
+skip the chart work, leaves them out.
+
+**In the browser.**  The WebAssembly build uses the same schema, so the page can
+both read and write these files: *Resume a previous analysis* loads one before
+the logs, and *Download state* produces one after a run.  The module holds the
+whole aggregate in memory, so the state and the logs added in the same session
+must fit together in its 4 GiB; a state written by the command-line build is
+how a browser session continues an analysis that started on a server.
 
 ## Session Tracking
 

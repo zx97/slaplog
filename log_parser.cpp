@@ -3063,14 +3063,12 @@ namespace {
         // Use the same chunked line splitting as bzip2/xz paths
         char buffer[65536];
         std::string line;
-        size_t bytes_read = 0;
         
         while (true) {
             size_t n = ::fread(buffer, 1, sizeof(buffer), pipe);
             if (n == 0) break;
             
             line.append(buffer, n);
-            bytes_read += n;
             
             size_t pos;
             while ((pos = line.find('\n')) != std::string::npos) {

@@ -279,6 +279,25 @@
     </div>
   </fieldset>
 
+  <!-- Optional: continue a previous analysis (slaplog --save-state). -->
+  <fieldset id="resume-fields">
+    <legend>Resume a previous analysis (optional)</legend>
+    <div class="grid">
+      <div class="field">
+        <label for="resume-state">State file written by <code>--save-state</code></label>
+        <input type="file" id="resume-state" accept=".slapstate,.state,.to,.bin">
+      </div>
+      <div class="field">
+        <label>&nbsp;</label>
+        <button class="preset" type="button" id="resume-clear">clear state</button>
+      </div>
+    </div>
+    <div class="sections-hint">
+      The state carries the previous analysis; the logs above are merged into it, so the
+      report reads as if everything had been analysed at once. Nothing is uploaded.
+    </div>
+  </fieldset>
+
   <table class="actions">
     <tr>
       <td><button class="run" id="run" disabled>Analyze locally</button></td>
@@ -428,6 +447,13 @@
     updateWarning();
   }
   outputEl.addEventListener("change", syncFormatPanels);
+  $("resume-state").addEventListener("change", () => {
+    if (module) runBtn.disabled = (files.length === 0 && !hasResume()) || moduleBroken;
+  });
+  $("resume-clear").addEventListener("click", () => {
+    $("resume-state").value = "";
+    if (module) runBtn.disabled = (files.length === 0 && !hasResume()) || moduleBroken;
+  });
   $("nograph").addEventListener("change", updateWarning);
   syncFormatPanels();
 
@@ -442,7 +468,7 @@
       locateFile: (path) => path,
     }).then((m) => {
       module = m;
-      runBtn.disabled = files.length === 0;
+      runBtn.disabled = files.length === 0 && !hasResume();
       statusEl.textContent = files.length ? "Ready. Click “Analyze locally”."
                                           : "Ready. Drop one or more log files to begin.";
       statusEl.className = "status";
@@ -499,7 +525,7 @@
     });
     renderFileList();
     updateWarning();
-    if (module) runBtn.disabled = files.length === 0 || moduleBroken;
+    if (module) runBtn.disabled = (files.length === 0 && !hasResume()) || moduleBroken;
     const total = files.reduce((a, f) => a + f.size, 0);
     statusEl.textContent = files.length
       ? `${files.length} file(s) ready (${fmtSize(total)}). Click “Analyze locally”.`
@@ -715,6 +741,12 @@
   // Argument string handed to slaplog_begin().  No positional input: files
   // are added through the session API so progress can be reported.
   // ------------------------------------------------------------------
+  // A state file is optional; with one, the run may even have no log at all.
+  function hasResume() {
+    const el = $("resume-state");
+    return !!(el && el.files && el.files[0]);
+  }
+
   function selectedSections() {
     if (allBox().checked) return ["all"];
     return otherBoxes().filter((b) => b.checked).map((b) => b.dataset.section);
@@ -793,7 +825,7 @@
   // Run
   // ------------------------------------------------------------------
   runBtn.addEventListener("click", async () => {
-    if (!module || !files.length) return;
+    if (!module || (!files.length && !hasResume())) return;
     runBtn.disabled = true;
     clearBtn.disabled = true;
     captured = [];
@@ -827,6 +859,22 @@
 
     try {
       module.ccall("slaplog_begin", "number", ["string"], [buildArgs()]);
+
+      // Fold the previous analysis in first, so the logs below are merged into
+      // it exactly as the command-line build does with --resume.
+      if (hasResume()) {
+        const rsel = $("resume-state").files[0];
+        const rbytes = new Uint8Array(await rsel.arrayBuffer());
+        const rpath = "/work/resume.state";
+        module.FS.writeFile(rpath, rbytes);
+        let rrc = 1;
+        try {
+          rrc = module.ccall("slaplog_resume", "number", ["string"], [rpath]);
+        } finally {
+          try { module.FS.unlink(rpath); } catch (e) { /* ignore */ }
+        }
+        if (rrc !== 0) throw new Error("the state file could not be read");
+      }
 
       for (let i = 0; i < files.length; i++) {
         const f = files[i];
@@ -871,13 +919,14 @@
       const rc = module.ccall("slaplog_end", "number", [], []);
       const ms = (performance.now() - t0).toFixed(0);
       setProgress(total, total, files.length, files.length,
-                  shortPath(pathOf(files[last])), t0);
+                  files.length ? shortPath(pathOf(files[last])) : "resumed state", t0);
 
       const text = captured.join("\n") + (captured.length ? "\n" : "");
       const diag = captured.filter((l) => /^slaplog\(wasm\)/.test(l)).join("\n");
       showResult(text, ms, rc, diag);
+      const what = `${files.length} file(s)` + (hasResume() ? " + resumed state" : "");
       statusEl.textContent = (rc === 0)
-        ? `Done in ${ms} ms (${files.length} file(s)).`
+        ? `Done in ${ms} ms (${what}).`
         : `Finished with errors (exit ${rc}).`;
       statusEl.className = (rc === 0) ? "status ok" : "status err";
     } catch (err) {
@@ -902,7 +951,7 @@
       try { module.ccall("slaplog_end", "number", [], []); } catch (e) { /* ignore */ }
     } finally {
       if (bufPtr) { module._free(bufPtr); bufPtr = 0; bufCap = 0; }
-      runBtn.disabled = files.length === 0 || moduleBroken;
+      runBtn.disabled = (files.length === 0 && !hasResume()) || moduleBroken;
       clearBtn.disabled = false;
     }
   });
@@ -939,12 +988,47 @@
       else if (fmt === "replay") addDownload(base + ".replay.txt", text, "text/plain");
       else addDownload(base + ".txt", text, "text/plain");
     }
+    addStateDownload(base);
     if (diag) {
       const d = document.createElement("div");
       d.className = "log"; d.textContent = diag;
       panelEl.appendChild(d);
     }
     resultEl.style.display = "block";
+  }
+
+  // The state file is written on demand: compressing a large analysis takes a
+  // moment, and most runs never ask for it.
+  function addStateDownload(base) {
+    const a = document.createElement("a");
+    a.href = "#";
+    a.textContent = "⬇ Download state (" + base + ".slapstate)";
+    a.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      const path = "/work/out.slapstate";
+      let bytes = null;
+      try {
+        if (module.ccall("slaplog_save_state", "number", ["string"], [path]) === 0) {
+          bytes = module.FS.readFile(path);
+        }
+      } finally {
+        try { module.FS.unlink(path); } catch (e) { /* ignore */ }
+      }
+      if (!bytes) {
+        statusEl.textContent = "The state file could not be written.";
+        return;
+      }
+      // Same shape as the report download, but the blob is built on demand.
+      const url = URL.createObjectURL(new Blob([bytes], { type: "application/octet-stream" }));
+      const tmp = document.createElement("a");
+      tmp.href = url;
+      tmp.download = base + ".slapstate";
+      document.body.appendChild(tmp);
+      tmp.click();
+      document.body.removeChild(tmp);
+      setTimeout(() => URL.revokeObjectURL(url), 10000);
+    });
+    dlEl.appendChild(a);
   }
 
   function addDownload(name, content, mime) {
