@@ -1854,21 +1854,20 @@ void print_html_report(const Aggregator& agg, double duration, bool /*compact*/,
   // report and a deep link can select the tab that holds its section.
   if (document.body.classList.contains('sl-tabbed')) { (function(){
     var TABS = [
-      ['Overview',       ['sec-statistics']],
-      ['Server',         ['sec-load', 'sec-csn']],
-      ['Process',        ['sec-server-events']],
-      ['Connections',    ['sec-top-conns']],
-      ['Operations',     ['sec-latency', 'sec-operations', 'sec-top-ops', 'sec-result-codes',
-                          'sec-ext', 'sec-gc']],
-      ['Authentication', ['sec-bind', 'sec-session', 'sec-errors-app',
-                          'sec-top-applications-by-count', 'sec-top-applications-by-etime']],
-      ['Search',         ['sec-top-search-bases-by-count', 'sec-top-search-bases-by-etime',
-                          'sec-top-filters-by-count', 'sec-top-filters-by-etime',
-                          'sec-top-filters-nentries1', 'sec-top-filters-nentries0',
-                          'sec-top-wildcard-filters', 'sec-top-requested-attributes',
-                          'sec-filters-app', 'sec-qmark',
-                          'sec-question-mark-filter-attributes',
-                          'sec-paged', 'sec-indexing']]
+      ['Overview',    ['sec-statistics']],
+      ['Server',      ['sec-load', 'sec-csn']],
+      ['Process',     ['sec-server-events']],
+      ['Connections', ['sec-top-conns']],
+      ['Operations',  ['sec-latency', 'sec-operations', 'sec-top-ops', 'sec-result-codes',
+                       'sec-ext', 'sec-gc', 'sec-bind', 'sec-session', 'sec-errors-app',
+                       'sec-top-applications-by-count', 'sec-top-applications-by-etime',
+                       'sec-top-search-bases-by-count', 'sec-top-search-bases-by-etime',
+                       'sec-top-filters-by-count', 'sec-top-filters-by-etime',
+                       'sec-top-filters-nentries1', 'sec-top-filters-nentries0',
+                       'sec-top-wildcard-filters', 'sec-top-requested-attributes',
+                       'sec-filters-app', 'sec-qmark',
+                       'sec-question-mark-filter-attributes',
+                       'sec-paged', 'sec-indexing']]
     ];
     var group = {};
     for (var g = 0; g < TABS.length; g++)
@@ -1912,8 +1911,9 @@ void print_html_report(const Aggregator& agg, double duration, bool /*compact*/,
       byName[name] = p;
       return p;
     }
-    for (var g2 = 0; g2 < TABS.length; g2++)
-      if (needed[TABS[g2][0]]) newPanel(TABS[g2][0]);
+    // The four tabs are always drawn, so the bar does not change with the data;
+    // a group this log has nothing for says so in its panel.
+    for (var g2 = 0; g2 < TABS.length; g2++) newPanel(TABS[g2][0]);
     if (needed.Other) newPanel('Other');
 
     var cur = null;
@@ -1929,8 +1929,13 @@ void print_html_report(const Aggregator& agg, double duration, bool /*compact*/,
     for (var p2 = 0; p2 < panels.length; p2++) {
       var panel = panels[p2];
       var hs = panel.querySelectorAll('h2[id]');
-      if (!hs.length) continue;
       for (var h2 = 0; h2 < hs.length; h2++) idTab[hs[h2].id] = live.length;
+      if (!hs.length) {
+        var none = document.createElement('p');
+        none.className = 'note';
+        none.textContent = 'No section of this analysis belongs to this tab.';
+        panel.appendChild(none);
+      }
       live.push(panel);
       var b = document.createElement('button');
       b.type = 'button';
