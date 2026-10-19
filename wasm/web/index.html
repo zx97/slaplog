@@ -284,8 +284,8 @@
     <legend>Resume a previous analysis (optional)</legend>
     <div class="grid">
       <div class="field">
-        <label for="resume-state">State file written by <code>--save-state</code></label>
-        <input type="file" id="resume-state" accept=".slapstate,.state,.to,.bin">
+        <label for="resume-state">State file(s) written by <code>--save-state</code></label>
+        <input type="file" id="resume-state" accept=".slapstate,.state,.to,.bin" multiple>
       </div>
       <div class="field">
         <label>&nbsp;</label>
@@ -294,8 +294,9 @@
     </div>
     <div class="sections-hint">
       The state carries the previous analysis; the logs above are merged into it, so the
-      report reads as if everything had been analysed at once. They must come from the same
-      servers — an unknown one is refused. Nothing is uploaded.
+      report reads as if everything had been analysed at once. Several states may be selected
+      and are merged. The logs must come from the servers the states hold — an unknown one is
+      refused. Nothing is uploaded.
     </div>
   </fieldset>
 
@@ -869,10 +870,12 @@
 
       // Fold the previous analysis in first, so the logs below are merged into
       // it exactly as the command-line build does with --resume.
-      if (hasResume()) {
-        const rsel = $("resume-state").files[0];
-        const rbytes = new Uint8Array(await rsel.arrayBuffer());
-        const rpath = "/work/resume.state";
+      // Several state files may be given: each is folded into the analysis, and
+      // together they define the servers the logs may name.
+      const rsel = $("resume-state").files;
+      for (let k = 0; k < (rsel ? rsel.length : 0); k++) {
+        const rbytes = new Uint8Array(await rsel[k].arrayBuffer());
+        const rpath = "/work/resume" + k + ".state";
         module.FS.writeFile(rpath, rbytes);
         let rrc = 1;
         try {
@@ -880,7 +883,7 @@
         } finally {
           try { module.FS.unlink(rpath); } catch (e) { /* ignore */ }
         }
-        if (rrc !== 0) throw new Error("the state file could not be read");
+        if (rrc !== 0) throw new Error("a state file could not be read");
       }
 
       for (let i = 0; i < files.length; i++) {

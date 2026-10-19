@@ -117,7 +117,7 @@ struct Options {
     std::string replay_separator = "|";
     int replay_limit = 1000000;
     std::string custom_title;
-    std::string resume;      // state file to start from (--resume)
+    std::vector<std::string> resume;   // state files to start from (--resume)
     std::vector<std::string> inputs;   // positional arguments
 };
 
@@ -139,7 +139,7 @@ Options parse_options(const std::vector<std::string>& argv) {
         } else if (arg == "--no-version") {
             o.no_version = true;
         } else if (arg == "--resume") {
-            take_value(o.resume);
+            if (i + 1 < argv.size()) o.resume.push_back(argv[++i]);
         } else if ((arg == "--title") && i + 1 < argv.size()) {
             take_value(o.custom_title);
         } else if (arg == "-s" || arg == "--section") {
@@ -225,15 +225,16 @@ bool start_session(Options opts) {
         set_replay_ops_limit(s->opts.replay_limit);
     }
     g_session = std::move(s);
-    if (!g_session->opts.resume.empty()) {
+    for (const std::string& state : g_session->opts.resume) {
         std::string err;
-        if (!load_state(g_session->total, g_session->opts.resume, err)) {
+        if (!load_state(g_session->total, state, err)) {
             std::cerr << "slaplog(wasm): cannot resume: " << err << "\n";
             teardown_session();
             return false;
         }
-        g_session->resume_servers = g_session->total.servers;
     }
+    if (!g_session->opts.resume.empty())
+        g_session->resume_servers = g_session->total.servers;
     return true;
 }
 

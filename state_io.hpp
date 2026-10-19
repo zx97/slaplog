@@ -17,7 +17,10 @@
 // `err` on failure.
 bool save_state(const Aggregator& agg, const std::string& path, std::string& err);
 
-// Read `path` into `agg`, replacing its contents.  Returns false and fills
-// `err` when the file is not a state file, was written by an incompatible
-// schema, or is truncated.
+// Read `path` and fold it into `agg`.  On an empty aggregate this simply loads
+// the state; on one that already holds a state (or a first run), the two are
+// merged, which is what makes --resume repeatable and lets two state files be
+// combined.  Returns false and fills `err` when the file is not a state file,
+// was written by an incompatible schema, or is truncated — in which case `agg`
+// is left untouched.
 bool load_state(Aggregator& agg, const std::string& path, std::string& err);
