@@ -49,8 +49,19 @@ const click = (el, dom) => el.dispatchEvent(new dom.window.MouseEvent("click", {
   await settle(d1);
   const doc = d1.window.document;
   const buttons = [...doc.querySelectorAll(".sl-tabs button")];
-  check("a tab bar was built with 6 groups", buttons.length === 6,
-        buttons.map((b) => b.textContent).join(" | "));
+  // Empty groups are dropped (one server has no "Load by Server", a log without
+  // start/stop has no "Process"): a button exists per panel that holds something.
+  const CANON = ["Overview", "Server", "Process", "Connections", "Operations",
+                 "Authentication", "Search"];
+  const labels = buttons.map((b) => b.textContent);
+  check("the bar lists the groups in the log's order",
+        labels.length >= 4 && labels.every((l, i) =>
+          CANON.indexOf(l) >= (i ? CANON.indexOf(labels[i - 1]) : 0)),
+        labels.join(" | "));
+  check("a button per non-empty panel",
+        buttons.length === doc.querySelectorAll(".sl-tabpanel").length,
+        `${buttons.length} buttons / ${doc.querySelectorAll(".sl-tabpanel").length} panels`);
+  check("Overview comes first", labels[0] === "Overview", labels.join(" | "));
   check("exactly one panel is visible",
         doc.querySelectorAll(".sl-tabpanel").length > 1 &&
         doc.querySelectorAll(".sl-tabpanel:not([hidden])").length === 1);
@@ -60,15 +71,16 @@ const click = (el, dom) => el.dispatchEvent(new dom.window.MouseEvent("click", {
         !!selectedButton(doc) && selectedButton(doc).getAttribute("aria-selected") === "true");
 
   // ---- switching --------------------------------------------------------
-  const errors = buttons.find((b) => b.textContent === "Errors");
-  check("an 'Errors' tab exists", !!errors);
-  if (errors) {
-    click(errors, d1);
+  const ops = buttons.find((b) => b.textContent === "Operations");
+  check("an 'Operations' tab exists", !!ops);
+  if (ops) {
+    click(ops, d1);
     check("clicking it shows the result-code section",
           !!visiblePanel(doc) && !!visiblePanel(doc).querySelector("#sec-result-codes"));
     check("and hides the overview", !visiblePanel(doc).querySelector("#sec-statistics"));
-    check("the bar follows the selection", selectedButton(doc) === errors);
+    check("the bar follows the selection", selectedButton(doc) === ops);
   }
+
 
   // ---- nothing is lost: every section is still in the DOM ---------------
   const countH2 = (h) => (h.match(/<h2 id=/g) || []).length;
