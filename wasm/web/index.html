@@ -749,6 +749,11 @@
   // ------------------------------------------------------------------
   // Compression is detected from the magic bytes, exactly like the C++
   // process_file() does (zlib / bzip2 / liblzma are linked into the module).
+  // The progress bar counts estimated *decompressed* bytes: a compressed file
+  // stands for far more parsing than the size it occupies.  Ratios measured on
+  // real slapd access logs at the default compressor settings.
+  const EXPANSION = { gz: 13.3, bz2: 20.6, xz: 17.7 };
+
   function compressionOf(b) {
     if (b.length >= 2 && b[0] === 0x1f && b[1] === 0x8b) return "gz";
     if (b.length >= 4 && b[0] === 0x42 && b[1] === 0x5a && b[2] === 0x68 &&
@@ -796,7 +801,17 @@
     statusEl.className = "status";
     progressEl.classList.add("shown");
 
-    const total = files.reduce((a, f) => a + f.size, 0);
+    // Compression is detected up front from the magic bytes, so the total is the
+    // estimated decompressed size.  A stub that cannot be sliced (the UI tests)
+    // counts as plain.  The memory pre-flight keeps the on-disk size.
+    const kinds = await Promise.all(files.map(async (f) => {
+      try {
+        if (typeof f.slice !== "function") return null;
+        return compressionOf(new Uint8Array(await f.slice(0, 8).arrayBuffer()));
+      } catch (e) { return null; }
+    }));
+    const expansionOf = (i) => EXPANSION[kinds[i]] || 1;
+    const total = files.reduce((a, f, i) => a + f.size * expansionOf(i), 0);
     const t0 = performance.now();
     let done = 0;
     let bufPtr = 0, bufCap = 0;
@@ -832,7 +847,7 @@
             // compressed copy so it does not pile up from file to file.
             try { module.FS.unlink(vpath); } catch (e) { /* ignore */ }
           }
-          done += f.size;
+          done += f.size * expansionOf(i);
         } else {
           // Plain text: one input, fed as line-aligned chunks so the bar moves.
           module.ccall("slaplog_input_begin", "number", [], []);

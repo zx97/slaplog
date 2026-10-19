@@ -945,6 +945,7 @@ slaplog --unknown-lines unknown.txt /var/log/slapd/access.log
 | `--unknown-lines FILE` | Write unrecognised lines to FILE, then generate the full report |
 | `--unknown-lines-only FILE` | Like `--unknown-lines` but skip the report |
 | `--no-graph` | Omit the charts from the `html` report (they are drawn by default) |
+| `--no-version` | Omit the engine name and version from the `html` report footer |
 | `--title TITLE` | Custom subtitle for the rendered reports (text, HTML), appended after the default one, separated by ` - `.  Ignored by `json` and `replay`, whose schemas are fixed. |
 | `-d, --debug` | Print debug information (file count, parsing details, per-file traces) |
 | `-D, --documentation` | Print full documentation to stdout |
@@ -1476,6 +1477,9 @@ Each log line goes through two distinct stages:
 - Merging is a single-threaded post-processing step that unions all maps and
   keeps top-N entries.
 - The progress bar runs on a dedicated thread and refreshes every 100 ms.
+  Its total is the estimated **decompressed** size: a compressed file counts
+  as its on-disk size times a measured expansion ratio (xz 17.7x, bzip2
+  20.6x, gzip 13.3x), because the counter advances by decompressed bytes.
 
 ## File-by-File Guide
 

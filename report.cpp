@@ -1022,6 +1022,11 @@ void print_text_report(const Aggregator& agg, double processing_time, bool compa
  *   > 0.1 s  → #00aaaa
  *   else     → #00aa00
  */
+// Whether the report footer names the engine version.  A report handed to a
+// third party sometimes should not advertise it (--no-version).
+static bool g_show_version = true;
+void set_show_version(bool on) { g_show_version = on; }
+
 void print_html_report(const Aggregator& agg, double duration, bool /*compact*/, const std::string& /*output_date_format*/, const std::string& custom_title) {
     // Charts are placed under the section whose data they draw; nothing is
     // emitted (not even the stylesheet) when there is no chart to draw.
@@ -1708,7 +1713,11 @@ void print_html_report(const Aggregator& agg, double duration, bool /*compact*/,
     std::cout << "</table>\n";
 
     // Footer
-    std::cout << "<div class=\"footer\">slaplog v" << SLAPLOG_VERSION << " &mdash; OpenLDAP Log Analysis Report</div>\n";
+    if (g_show_version)
+        std::cout << "<div class=\"footer\">slaplog v" << SLAPLOG_VERSION
+                  << " &mdash; OpenLDAP Log Analysis Report</div>\n";
+    else
+        std::cout << "<div class=\"footer\">OpenLDAP Log Analysis Report</div>\n";
     // Long tables are collapsed client-side: the first rows are shown, the tail
     // is revealed by a button.  Doing it generically here means every section
     // benefits without the emitters having to know about it.
