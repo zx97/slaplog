@@ -51,16 +51,17 @@ const click = (el, dom) => el.dispatchEvent(new dom.window.MouseEvent("click", {
   const buttons = [...doc.querySelectorAll(".sl-tabs button")];
   // Empty groups are dropped (one server has no "Load by Server", a log without
   // start/stop has no "Process"): a button exists per panel that holds something.
-  const CANON = ["Overview", "Server", "Process", "Connections", "Operations",
-                 "Authentication", "Search"];
+  const CANON = ["Overview", "Server", "Process", "Connections", "Operations"];
   const labels = buttons.map((b) => b.textContent);
   check("the bar lists the groups in the log's order",
         labels.length >= 4 && labels.every((l, i) =>
           CANON.indexOf(l) >= (i ? CANON.indexOf(labels[i - 1]) : 0)),
         labels.join(" | "));
-  check("a button per non-empty panel",
-        buttons.length === doc.querySelectorAll(".sl-tabpanel").length,
-        `${buttons.length} buttons / ${doc.querySelectorAll(".sl-tabpanel").length} panels`);
+  check("the five tabs are always drawn", buttons.length === 5,
+        labels.join(" | "));
+  check("an empty tab says so",
+        [...doc.querySelectorAll(".sl-tabpanel")].every((p) =>
+          p.querySelector("h2") || /No section of this analysis/.test(p.textContent)));
   check("Overview comes first", labels[0] === "Overview", labels.join(" | "));
   check("exactly one panel is visible",
         doc.querySelectorAll(".sl-tabpanel").length > 1 &&

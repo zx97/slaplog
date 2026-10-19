@@ -631,15 +631,16 @@ Standalone HTML page with embedded CSS featuring:
 
 ### Tabbed HTML (`-o tabhtml`)
 
-The same standalone HTML report, with its sections gathered into seven tabs
+The same standalone HTML report, with its sections gathered into five tabs
 that follow the log's own objects — *Overview* (Statistics), *Server* (load
-split and CSN events), *Process* (start/stop/restart events), *Connections*
-(the connection curve, the resource consumers by bind account, then the top
-connections), *Operations* (response time first, then the counts, the slowest
-operations, the result codes, the extended operations and the global
-controls), *Authentication* (bind usage, session tracking, applications,
-errors per application) and *Search* (bases, filters, attributes, paged
-searches, indexing) — instead of one long page.  The bar sits above the panels; a click selects a
+split and CSN events), *Process* (start/stop/restart events), *Connections* (the
+connection curve, the resource consumers by bind account, then the top
+connections) and *Operations* (response time first, then the operation
+counts, the bind usage, the result codes, the applications, the search
+analysis, the extended operations and the global controls) — instead of one
+long page.  All five are always drawn — a tab this log has no section for says so
+in its panel — so the bar never changes shape with the data.  The bar sits above
+the panels; a click selects a
 tab, the arrow keys move between them, and `aria-selected` follows.
 
 It is a **presentation** change only:
