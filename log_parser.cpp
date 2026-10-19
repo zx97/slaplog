@@ -2982,6 +2982,15 @@ void merge_aggregators(Aggregator& dest, const Aggregator& src) {
 // order — the rule the connection chart already uses — gives the run's own
 // peak.  Called once after the last merge, and only when the logs name more
 // than one server (a single server is already exact).
+std::vector<std::string> servers_not_in(const Aggregator& agg,
+                                        const std::set<std::string>& known) {
+    std::vector<std::string> out;
+    if (known.empty()) return out;      // nothing to compare against
+    for (const std::string& server : agg.servers)
+        if (known.find(server) == known.end()) out.push_back(server);
+    return out;
+}
+
 void finalize_connection_counts(Aggregator& agg) {
     if (agg.servers.size() < 2 || agg.conn_timeline.empty()) return;
     std::vector<ConnEvent> ev = agg.conn_timeline;

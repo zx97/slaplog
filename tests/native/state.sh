@@ -83,15 +83,37 @@ check "the twin log fixture is still transformable" 1 \
 check "two runs over perfectly tied rows agree" 0 \
     "$(diff -q "$SCRATCH/tie1.json" "$SCRATCH/tie2.json" > /dev/null 2>&1; echo $?)"
 
-"$BIN" -q -o json --save-state "$SCRATCH/twin.to" "$SCRATCH/twin.log" > /dev/null 2>&1
-"$BIN" -q -o json --resume "$SCRATCH/twin.to" "$A" 2>/dev/null | norm > "$SCRATCH/tie3.json"
-check "and the state-split run agrees with them" 0 \
+# The state is created from both servers (its perimeter), then replayed.
+"$BIN" -q -o json --save-state "$SCRATCH/twin.to" "$SCRATCH/twin.log" "$A" > /dev/null 2>&1
+"$BIN" -q -o json --resume "$SCRATCH/twin.to" 2>/dev/null | norm > "$SCRATCH/tie3.json"
+check "and the state replay agrees with them" 0 \
     "$(diff -q "$SCRATCH/tie1.json" "$SCRATCH/tie3.json" > /dev/null 2>&1; echo $?)"
 
-"$BIN" -q -o text --resume "$SCRATCH/twin.to" "$A" 2>/dev/null > "$SCRATCH/tie.txt"
-check "the resumed report names o=cec.eu.int" 1 \
+# A subset of the state's servers is a resume too.
+rc=0; "$BIN" -q -o json --resume "$SCRATCH/twin.to" "$A" > /dev/null 2>&1 || rc=$?
+check "a subset of the state's servers is accepted" 0 "$rc"
+
+"$BIN" -q -o json --resume "$SCRATCH/twin.to" 2>/dev/null > "$SCRATCH/tie.json"
+"$BIN" -q -o text --resume "$SCRATCH/twin.to" 2>/dev/null > "$SCRATCH/tie.txt"
+check "the replayed report names o=cec.eu.int" 1 \
     "$([ "$(grep -c 'o=cec.eu.int' "$SCRATCH/tie.txt")" -ge 1 ] && echo 1 || echo 0)"
-check "the resumed report names dc=europa,dc=eu" 1 \
+check "the replayed report names dc=europa,dc=eu" 1 \
     "$([ "$(grep -c 'dc=europa,dc=eu' "$SCRATCH/tie.txt")" -ge 1 ] && echo 1 || echo 0)"
+
+# 7. a resume stays on the servers the state holds.  The twin log above names
+#    another server, so folding it into A's state would mix two networks: it must
+#    be refused, and nothing may be written.
+rc=0; out=$("$BIN" -q -o json --resume "$SCRATCH/a.to" "$SCRATCH/twin.log" 2>"$SCRATCH/e4") || rc=$?
+check "a log from another server is refused" 1 "$rc"
+check "and nothing is reported for it" 0 "${#out}"
+check "the refusal says it is not a resume" 1 \
+    "$(grep -c 'not a resume' "$SCRATCH/e4" || true)"
+check "and names both sides" 1 \
+    "$(grep -c 'digiameudspp42' "$SCRATCH/e4" || true)"
+
+rc=0; "$BIN" -q -o json --resume "$SCRATCH/a.to" --save-state "$SCRATCH/never.to" \
+    "$SCRATCH/twin.log" > /dev/null 2>&1 || rc=$?
+check "no state is written from a refused resume" 0 \
+    "$([ -e "$SCRATCH/never.to" ] && echo 1 || echo 0)"
 
 exit $fail

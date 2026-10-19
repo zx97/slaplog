@@ -767,6 +767,14 @@ void merge_aggregators(Aggregator& dest, const Aggregator& src);
 // for runs that mix several servers: see the definition in log_parser.cpp.
 void finalize_connection_counts(Aggregator& agg);
 
+// The servers `agg` names that `known` does not hold, in name order.  Empty when
+// `known` is empty: a state that recorded no hostname (the debug log format)
+// cannot contradict anything.  Used by --resume: the logs folded into a state
+// must describe the servers that state already holds, otherwise it is not a
+// resume but two analyses mixed together.
+std::vector<std::string> servers_not_in(const Aggregator& agg,
+                                        const std::set<std::string>& known);
+
 // Process a single file by auto-detecting its compression type (plain,
 // gzip, bzip2, xz) and calling the appropriate handler.  Uses an atomic
 // progress counter for reporting.

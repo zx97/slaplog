@@ -650,6 +650,13 @@ int main(int argc, char* argv[]) {
             return 1;
         }
     }
+    // A resume continues the analysis of a set of servers; a log naming any
+    // other host would mix two networks into one report.  Snapshot that set and
+    // let the workers refuse a foreign file before it enters the total.
+    const std::set<std::string> resume_servers = final_agg.servers;
+    std::atomic<bool> resume_mismatch(false);
+    std::string mismatch_text;   // the first foreign file, guarded by merge_mtx
+
     std::mutex merge_mtx;
     std::atomic<size_t> progress(0);
     std::atomic<size_t> files_done(0);
@@ -673,12 +680,14 @@ int main(int argc, char* argv[]) {
     std::thread progress_thread;
     if (!quiet) {
         progress_thread = std::thread([&]() {
-            while (files_done.load() < files.size()) {
+            while (!resume_mismatch.load() && files_done.load() < files.size()) {
                 print_progress(progress, total_size, files_done, files.size());
                 std::this_thread::sleep_for(std::chrono::milliseconds(100));
             }
-            print_progress(progress, total_size, files_done, files.size());
-            std::cerr << "\n";
+            if (!resume_mismatch.load()) {
+                print_progress(progress, total_size, files_done, files.size());
+                std::cerr << "\n";
+            }
         });
     }
 
@@ -769,6 +778,7 @@ int main(int argc, char* argv[]) {
             // prevent std::terminate by swallowing it here.
             try {
             for (;;) {
+                if (resume_mismatch.load()) break;   // another worker saw a foreign log
                 size_t i = files.size();
                 try {
                     // Memory-adaptive throttling: before picking up more
@@ -795,10 +805,23 @@ int main(int argc, char* argv[]) {
                     Aggregator local_agg;
                     process_file(files[i], local_agg, progress,
                                  unknown_out, unknown_mtx_ptr);
+                    // A resume may only fold in the servers the state holds.
+                    // Check the file's own aggregate before it is merged, so a
+                    // foreign log stops the run before it costs anything more.
+                    const std::vector<std::string> foreign =
+                        servers_not_in(local_agg, resume_servers);
                     {
                         std::lock_guard<std::mutex> lock(merge_mtx);
-                        merge_aggregators(final_agg, local_agg);
+                        if (foreign.empty()) {
+                            merge_aggregators(final_agg, local_agg);
+                        } else if (!resume_mismatch.exchange(true)) {
+                            std::string m = files[i] + " names ";
+                            for (size_t k = 0; k < foreign.size(); ++k)
+                                m += (k ? ", '" : "'") + foreign[k] + "'";
+                            mismatch_text = m;
+                        }
                     }
+                    if (resume_mismatch.load()) break;
                 } catch (const std::exception& e) {
                     std::cerr << "\nError processing " << files[i] << ": "
                               << e.what()
@@ -842,6 +865,24 @@ int main(int argc, char* argv[]) {
     files_done.store(files.size());
 
     if (progress_thread.joinable()) progress_thread.join();
+
+    // ------------------------------------------------------------------
+    // A resume stays on the servers the state holds.
+    // ------------------------------------------------------------------
+    if (resume_mismatch.load()) {
+        std::string held;
+        size_t shown = 0;
+        for (const std::string& server : resume_servers) {
+            if (shown++) held += ", ";
+            held += shown > 8 ? "..." : server;
+            if (shown > 8) break;
+        }
+        std::cerr << "Error: not a resume: " << mismatch_text
+                  << ", while the state holds the logs of " << held << ".\n"
+                  << "       Nothing was written; give logs from those servers, or start a "
+                     "new analysis without --resume.\n";
+        return 1;
+    }
 
     // ------------------------------------------------------------------
     // Calculate elapsed wall-clock time for the report footer.

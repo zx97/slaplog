@@ -73,8 +73,8 @@ function* chunksByLine(bytes, target) {
       module.ccall("slaplog_input_end", "number", [], []);
     }
     if (ptr) module._free(ptr);
-    module.ccall("slaplog_end", "number", [], []);
-    return { rc, text: out.join("\n") };
+    const endRc = module.ccall("slaplog_end", "number", [], []);
+    return { rc, endRc, text: out.join("\n") };
   }
 
   const native = (args) => execFileSync(SL.BIN, ["-q", ...args], { maxBuffer: 1 << 30 }).toString();
@@ -119,6 +119,20 @@ function* chunksByLine(bytes, target) {
     const gotSaved = norm(native(["-o", "json", "-j", "1", "--resume", SAVED, B]));
     check("a state written in the browser + B == native A+B", gotSaved === refSaved);
   }
+
+  // A resume stays on the servers the state holds: a log naming another host is
+  // dropped and the report is refused, rather than mixing two networks.
+  const TWIN = path.join(SL.SCRATCH, "twin.log");
+  fs.writeFileSync(TWIN, fs.readFileSync(A, "utf8")
+    .replace(/dc=europa,dc=eu/g, "o=cec.eu.int")
+    .replace(/digiameudspp41/g, "digiameudspp42"));
+  const foreign = wasm(STATE, [TWIN], "json");
+  check("wasm: a log from another server is refused", foreign.endRc !== 0);
+  // The message names the foreign server (that is the point); what must be
+  // absent is any report content.
+  check("and nothing of it is reported",
+        !foreign.text.includes('"bind_usage"') && /not a resume/.test(foreign.text),
+        foreign.text.slice(0, 200));
 
   // A broken state must be reported, not silently ignored.
   module.FS.writeFile("/work/bad.state", new TextEncoder().encode("not a state"));
