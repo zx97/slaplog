@@ -531,6 +531,12 @@ Standalone HTML page with embedded CSS featuring:
   keyboard); the change of height is animated, and the box is clipped rather
   than rebuilt, so its width never moves.  The links are built from the page
   itself, so the index can never offer a section that is not there.
+- **Every table can be sorted by a column.**  A click on a header sorts by that
+  column and a small arrow shows the direction; a second click reverses it, and
+  only the column in use carries an arrow.  Numbers are compared as numbers
+  (counts, durations, shares), anything else as text (`user2` before `user10`),
+  and a long table's *show N more* fold follows the sorted order.  *Statistics*
+  is label/value pairs rather than columns, so it is left alone.
 - **Ten inline SVG charts**, each placed under the section it summarises —
   drawn by default, disable with `--no-graph`.  None of them carries a
   *"How to read it"* note.  A note under a drawing that needs no explaining (a
