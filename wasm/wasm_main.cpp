@@ -41,6 +41,7 @@
 
 #include "log_parser.hpp"
 #include "report.hpp"
+#include "state_io.hpp"
 #include "version.hpp"
 
 #include <emscripten.h>
@@ -116,6 +117,7 @@ struct Options {
     std::string replay_separator = "|";
     int replay_limit = 1000000;
     std::string custom_title;
+    std::string resume;      // state file to start from (--resume)
     std::vector<std::string> inputs;   // positional arguments
 };
 
@@ -136,6 +138,8 @@ Options parse_options(const std::vector<std::string>& argv) {
             o.no_graph = true;
         } else if (arg == "--no-version") {
             o.no_version = true;
+        } else if (arg == "--resume") {
+            take_value(o.resume);
         } else if ((arg == "--title") && i + 1 < argv.size()) {
             take_value(o.custom_title);
         } else if (arg == "-s" || arg == "--section") {
@@ -199,13 +203,15 @@ void teardown_session() {
     g_session.reset();
 }
 
-void start_session(Options opts) {
+bool start_session(Options opts) {
     teardown_session();   // drop any session left over from a previous run
     set_log_format(parse_log_format(opts.log_format));
-    // The html report's charts need extra data collected while parsing; skip
-    // that work unless the charts will actually be drawn.
     if (opts.output_format == "tab-html") opts.output_format = "tabhtml";
-    set_collect_graph_data((opts.output_format == "html" || opts.output_format == "tabhtml") && !opts.no_graph);
+    // The charts need extra data collected while parsing.  Collect it whatever
+    // the report format: the page can download a state file
+    // (slaplog_save_state), and that state must support a later HTML report.
+    // Only --no-graph turns the chart work off.
+    set_collect_graph_data(!opts.no_graph);
     set_show_version(!opts.no_version);
     auto s = std::make_unique<Session>();
     s->start = std::chrono::system_clock::now();
@@ -215,6 +221,15 @@ void start_session(Options opts) {
         set_replay_ops_limit(s->opts.replay_limit);
     }
     g_session = std::move(s);
+    if (!g_session->opts.resume.empty()) {
+        std::string err;
+        if (!load_state(g_session->total, g_session->opts.resume, err)) {
+            std::cerr << "slaplog(wasm): cannot resume: " << err << "\n";
+            teardown_session();
+            return false;
+        }
+    }
+    return true;
 }
 
 // Open a new input: fold any previous one into the total and start a fresh
@@ -303,7 +318,10 @@ int emit_report() {
         teardown_session();
         return 1;
     }
-    teardown_session();
+    // The session stays alive until the next slaplog_begin(), so the caller can
+    // still write its state (slaplog_save_state) after reading the report.  It
+    // is the aggregate the run already holds, not an extra copy, and the next
+    // begin() tears it down.
     return 0;
 }
 
@@ -316,7 +334,19 @@ int emit_report() {
 // Start a session from a space-separated option string.  Positional arguments
 // are accepted for symmetry but ignored: files are added with slaplog_add_*().
 extern "C" EMSCRIPTEN_KEEPALIVE int slaplog_begin(const char* args) {
-    start_session(parse_options(split_whitespace(args ? args : "")));
+    return start_session(parse_options(split_whitespace(args ? args : ""))) ? 0 : 1;
+}
+
+// Load a state file (--save-state) from the module's filesystem into the
+// running total.  The page calls this before adding the new logs, which is what
+// lets a browser session continue one that ended earlier.
+extern "C" EMSCRIPTEN_KEEPALIVE int slaplog_resume(const char* path) {
+    if (!g_session || !path) return -1;
+    std::string err;
+    if (!load_state(g_session->total, path, err)) {
+        std::cerr << "slaplog(wasm): cannot resume: " << err << "\n";
+        return 1;
+    }
     return 0;
 }
 
@@ -362,6 +392,19 @@ extern "C" EMSCRIPTEN_KEEPALIVE int slaplog_end(void) {
     return emit_report();
 }
 
+// Write the session's aggregate as a state file (--save-state), so a browser
+// session can be resumed later, or handed to the command-line build.  Called
+// after slaplog_end(), which is when the report itself is complete.
+extern "C" EMSCRIPTEN_KEEPALIVE int slaplog_save_state(const char* path) {
+    if (!g_session || !path) return -1;
+    std::string err;
+    if (!save_state(g_session->total, path, err)) {
+        std::cerr << "slaplog(wasm): cannot save the state: " << err << "\n";
+        return 1;
+    }
+    return 0;
+}
+
 // Version of the engine actually running, so the page can show it in its
 // footer instead of hard-coding a number that would drift from version.hpp.
 extern "C" EMSCRIPTEN_KEEPALIVE const char* slaplog_version(void) {
@@ -381,11 +424,11 @@ extern "C" EMSCRIPTEN_KEEPALIVE void slaplog_set_title(const char* title) {
 extern "C" EMSCRIPTEN_KEEPALIVE int slaplog_run(const char* args) {
     Options opts = parse_options(split_whitespace(args ? args : ""));
     std::vector<std::string> inputs = opts.inputs;
-    if (inputs.empty()) {
+    if (inputs.empty() && opts.resume.empty()) {
         std::cerr << "slaplog(wasm): no input file given\n";
         return 1;
     }
-    start_session(std::move(opts));
+    if (!start_session(std::move(opts))) return 1;
     for (const auto& f : inputs) {
         begin_input();
         process_file(f, g_session->current, g_session->progress, nullptr, nullptr);
@@ -401,12 +444,12 @@ int main(int argc, char** argv) {
     args.reserve(static_cast<size_t>(argc > 0 ? argc - 1 : 0));
     for (int i = 1; i < argc; ++i) args.emplace_back(argv[i]);
     Options opts = parse_options(args);
-    if (opts.inputs.empty()) {
+    if (opts.inputs.empty() && opts.resume.empty()) {
         std::cerr << "slaplog(wasm): no input file given\n";
         return 1;
     }
     std::vector<std::string> inputs = opts.inputs;
-    start_session(std::move(opts));
+    if (!start_session(std::move(opts))) return 1;
     for (const auto& f : inputs) {
         begin_input();
         process_file(f, g_session->current, g_session->progress, nullptr, nullptr);

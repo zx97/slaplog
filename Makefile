@@ -42,7 +42,7 @@ ifneq ($(shell [ "$(GCC_MAJOR)" -lt 9 ] && echo old),)
 endif
 
 # Source files
-SRCS := main.cpp log_parser.cpp report.cpp html_chart.cpp
+SRCS := main.cpp log_parser.cpp report.cpp html_chart.cpp state_io.cpp
 OBJS := $(SRCS:.cpp=.o)
 TARGET := slaplog
 
@@ -148,7 +148,8 @@ WASM_OUT  := $(WASM_DIR)/web/slaplog.js
 WASM_SRCS := $(WASM_DIR)/wasm_main.cpp \
              $(ROOT_DIR)log_parser.cpp \
              $(ROOT_DIR)report.cpp \
-             $(ROOT_DIR)html_chart.cpp
+             $(ROOT_DIR)html_chart.cpp \
+             $(ROOT_DIR)state_io.cpp
 
 WASM_FLAGS := -std=c++17 -O3 -Wall -Wextra \
               -ffp-contract=off \
@@ -163,7 +164,7 @@ WASM_FLAGS := -std=c++17 -O3 -Wall -Wextra \
               -sFORCE_FILESYSTEM=1 \
               -sWASM_BIGINT \
               -msimd128 \
-              -sEXPORTED_FUNCTIONS='["_main","_slaplog_run","_slaplog_begin","_slaplog_input_begin","_slaplog_input_end","_slaplog_add_file","_slaplog_add_text","_slaplog_end","_slaplog_version","_malloc","_free"]' \
+              -sEXPORTED_FUNCTIONS='["_main","_slaplog_run","_slaplog_begin","_slaplog_input_begin","_slaplog_input_end","_slaplog_add_file","_slaplog_add_text","_slaplog_resume","_slaplog_save_state","_slaplog_end","_slaplog_version","_malloc","_free"]' \
               -sEXPORTED_RUNTIME_METHODS='["ccall","cwrap","FS","HEAPU8"]' \
               -DSLAPLOG_WASM
 

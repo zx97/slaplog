@@ -67,7 +67,8 @@ make
 Usage: ./slaplog [options] <logfile|directory> [file|dir ...]
 
 Options:
-  -o, --output FORMAT        text | textcolor | html | json | replay
+  -o, --output FORMAT        text | textcolor | html | tabhtml | json | replay
+                             Repeatable: FORMAT=FILE writes that report to a file
   -c, --compact              Top 5 instead of top 20
   -r, --recursive            Recurse into directories
   -q, --quiet                Suppress the progress bar (batch mode)
@@ -87,12 +88,25 @@ Options:
   --replay-limit N           Max ops stored for replay (default: 1000000, 0=unlimited)
   --unknown-lines FILE       Write unparseable lines to FILE
   --unknown-lines-only FILE  Like above but skip report
+  --save-state FILE          Write the analysis state to FILE (xz-compressed)
+  --resume FILE              Start from a state written by --save-state;
+                             the logs given are merged into it
   -D, --documentation        Print full documentation
   -l, --licence              Print AGPLv3 license
   -d, --debug                Verbose diagnostics
   -h, --help                 Show help
   -V, --version              Show version
 ```
+
+Several reports in one run, and an analysis continued later:
+
+```bash
+slaplog -o html=report.html -o json=report.json -r /var/log/slapd/
+slaplog -q -o html --save-state week1.slapstate -r /var/log/slapd/week1/ > week1.html
+slaplog -q -o html --resume week1.slapstate -r /var/log/slapd/week2/ > both.html
+```
+
+See [doc/slaplog.md](doc/slaplog.md) for the full documentation.
 
 ## Supported Log Formats
 
