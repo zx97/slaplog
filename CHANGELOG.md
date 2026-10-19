@@ -13,6 +13,10 @@ The project is distributed under the **AGPL-3.0** license — see [LICENSE](LICE
 - `--save-state FILE` / `--resume FILE`: fold successive analyses into one report (xz-compressed, versioned); also in the WASM page (*Resume a previous analysis*, *Download state*).
 - Repeated `-o`: `-o html=report.html -o json=report.json` writes several reports in one run.
 
+### Fixed
+
+- Exact ties made the report depend on merge order: two runs of one command could disagree on the top-100 rows and the slowest operation/connection.
+
 ## [4.0.5] - 2026-10-19
 
 ### Added
