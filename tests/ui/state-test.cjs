@@ -55,10 +55,11 @@ function* chunksByLine(bytes, target) {
     out = [];
     module.ccall("slaplog_begin", "number", ["string"], [`-o ${fmt} -q`]);
     let rc = 0;
-    if (resume) {
-      module.FS.writeFile("/work/resume.state", new Uint8Array(fs.readFileSync(resume)));
+    for (const state of (Array.isArray(resume) ? resume : (resume ? [resume] : []))) {
+      module.FS.writeFile("/work/resume.state", new Uint8Array(fs.readFileSync(state)));
       rc = module.ccall("slaplog_resume", "number", ["string"], ["/work/resume.state"]);
       try { module.FS.unlink("/work/resume.state"); } catch (e) { /* ignore */ }
+      if (rc !== 0) break;
     }
     let ptr = 0, cap = 0;
     const ensure = (n) => { if (n > cap) { if (ptr) module._free(ptr); cap = Math.max(n, 1 << 20); ptr = module._malloc(cap); } };
@@ -119,6 +120,20 @@ function* chunksByLine(bytes, target) {
     const gotSaved = norm(native(["-o", "json", "-j", "1", "--resume", SAVED, B]));
     check("a state written in the browser + B == native A+B", gotSaved === refSaved);
   }
+
+  // Two state files can be merged in the browser as well: the result is the
+  // single run over both sets of logs.
+  const STATE_TWIN = path.join(SL.SCRATCH, "pp42.slapstate");
+  const twinLog = path.join(SL.SCRATCH, "pp42.log");
+  fs.writeFileSync(twinLog, fs.readFileSync(A, "utf8")
+    .replace(/dc=europa,dc=eu/g, "o=cec.eu.int")
+    .replace(/digiameudspp41/g, "digiameudspp42"));
+  execFileSync(SL.BIN, ["-q", "-o", "json", "--save-state", STATE_TWIN, twinLog],
+    { maxBuffer: 1 << 28 });
+  const bothRef = norm(native(["-o", "json", "-j", "1", A, twinLog]));
+  const bothMerged = wasm([STATE, STATE_TWIN], [], "json");
+  check("wasm: two states merged == one run over both logs",
+        bothMerged.rc === 0 && norm(bothMerged.text) === bothRef);
 
   // A resume stays on the servers the state holds: a log naming another host is
   // dropped and the report is refused, rather than mixing two networks.

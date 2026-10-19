@@ -100,6 +100,27 @@ check "the replayed report names o=cec.eu.int" 1 \
 check "the replayed report names dc=europa,dc=eu" 1 \
     "$([ "$(grep -c 'dc=europa,dc=eu' "$SCRATCH/tie.txt")" -ge 1 ] && echo 1 || echo 0)"
 
+# 6b. two state files can be merged: the result is the single run of both sets,
+#     and the merged perimeter is the union of the two states' servers.
+"$BIN" -q -o json --save-state "$SCRATCH/pp42.to" "$SCRATCH/twin.log" > /dev/null 2>&1
+"$BIN" -q -o json "$SCRATCH/twin.log" "$A" 2>/dev/null | norm > "$SCRATCH/both.json"
+"$BIN" -q -o json --resume "$SCRATCH/a.to" --resume "$SCRATCH/pp42.to" 2>/dev/null \
+    | norm > "$SCRATCH/merged.json"
+check "two merged states == one run over both logs" 0 \
+    "$(diff -q "$SCRATCH/both.json" "$SCRATCH/merged.json" > /dev/null 2>&1; echo $?)"
+"$BIN" -q -o json --resume "$SCRATCH/pp42.to" --resume "$SCRATCH/a.to" 2>/dev/null \
+    | norm > "$SCRATCH/rev.json"
+check "and the order of the states does not matter" 0 \
+    "$(diff -q "$SCRATCH/merged.json" "$SCRATCH/rev.json" > /dev/null 2>&1; echo $?)"
+rc=0; "$BIN" -q -o json --resume "$SCRATCH/a.to" --resume "$SCRATCH/pp42.to" "$A" \
+    > /dev/null 2>&1 || rc=$?
+check "the merged perimeter accepts either server" 0 "$rc"
+
+sed 's/digiameudspp41/digiameudspp43/g' "$A" > "$SCRATCH/pp43.log"
+rc=0; "$BIN" -q -o json --resume "$SCRATCH/a.to" --resume "$SCRATCH/pp42.to" \
+    "$SCRATCH/pp43.log" > /dev/null 2>&1 || rc=$?
+check "and refuses a server outside the union" 1 "$rc"
+
 # 7. a resume stays on the servers the state holds.  The twin log above names
 #    another server, so folding it into A's state would mix two networks: it must
 #    be refused, and nothing may be written.

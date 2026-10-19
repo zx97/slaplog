@@ -91,6 +91,7 @@ Options:
   --save-state FILE          Write the analysis state to FILE (xz-compressed)
   --resume FILE              Start from a state written by --save-state;
                              the logs given are merged into it (same servers)
+                             Repeatable: several states are merged
   -D, --documentation        Print full documentation
   -l, --licence              Print AGPLv3 license
   -d, --debug                Verbose diagnostics
@@ -104,6 +105,7 @@ Several reports in one run, and an analysis continued later:
 slaplog -o html=report.html -o json=report.json -r /var/log/slapd/
 slaplog -q -o html --save-state week1.slapstate -r /var/log/slapd/week1/ > week1.html
 slaplog -q -o html --resume week1.slapstate -r /var/log/slapd/week2/ > both.html
+slaplog -o html --resume week1.slapstate --resume week2.slapstate > merged.html
 ```
 
 See [doc/slaplog.md](doc/slaplog.md) for the full documentation.

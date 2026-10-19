@@ -10,7 +10,7 @@ The project is distributed under the **AGPL-3.0** license — see [LICENSE](LICE
 
 ### Added
 
-- `--save-state FILE` / `--resume FILE`: fold successive analyses into one report (xz-compressed, versioned); a resume refuses a log naming a server the state does not hold. Also in the WASM page (*Resume a previous analysis*, *Download state*).
+- `--save-state FILE` / `--resume FILE`: fold successive analyses into one report (xz-compressed, versioned); `--resume` is repeatable and merges state files; a resume refuses a log naming a server the states do not hold. Also in the WASM page (*Resume a previous analysis*, *Download state*).
 - Repeated `-o`: `-o html=report.html -o json=report.json` writes several reports in one run.
 
 ### Fixed

@@ -726,7 +726,8 @@ bool read_payload(Reader& r, Aggregator& a, std::string& err) {
                      "note: state written by slaplog v%s, this build is v%s\n",
                      tool.c_str(), SLAPLOG_VERSION);
     }
-    a = std::move(n);
+    // Fold the loaded state in: one --resume loads it, a second one adds to it.
+    merge_aggregators(a, n);
     return true;
 }
 

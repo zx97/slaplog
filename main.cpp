@@ -311,6 +311,7 @@ static void usage(const char* prog) {
     std::cerr << "  --title TITLE              Custom report title (appended after default, separated by \" - \")\n";
     std::cerr << "  --save-state FILE          Write the analysis state to FILE (xz-compressed)\n";
     std::cerr << "  --resume FILE              Start from a state written by --save-state\n";
+    std::cerr << "                             Repeatable: several states are merged\n";
     std::cerr << "  -D, --documentation        Print documentation to stdout\n";
     std::cerr << "  -l, --licence              Print license to stdout\n";
     std::cerr << "  -d, --debug                Enable debug mode with verbose traces\n";
@@ -373,7 +374,7 @@ int main(int argc, char* argv[]) {
     std::string replay_separator = "|";
     int replay_limit = 1000000;
     std::string custom_title;
-    std::string resume_file;
+    std::vector<std::string> resume_files;   // --resume, one state per occurrence
     std::string save_state_file;
     // One entry per -o: the format and, when given as FORMAT=FILE, its file.
     struct OutputSpec { std::string format; std::string path; };
@@ -407,7 +408,7 @@ int main(int argc, char* argv[]) {
             if (eq != std::string::npos) o.path = spec.substr(eq + 1);
             outputs.push_back(o);
         } else if ((arg == "--resume") && i + 1 < argc) {
-            resume_file = argv[++i];
+            resume_files.emplace_back(argv[++i]);
         } else if ((arg == "--save-state") && i + 1 < argc) {
             save_state_file = argv[++i];
         } else if (arg == "-c" || arg == "--compact") {
@@ -560,7 +561,7 @@ int main(int argc, char* argv[]) {
     // ------------------------------------------------------------------
     // Validate input: at least one file or directory must be provided.
     // ------------------------------------------------------------------
-    if (inputs.empty() && resume_file.empty()) {
+    if (inputs.empty() && resume_files.empty()) {
         std::cerr << "Error: No input files specified (or use --resume STATE)\n";
         return 1;
     }
@@ -571,7 +572,7 @@ int main(int argc, char* argv[]) {
     auto files = collect_input_files(inputs, recursive, max_files, mtime_days);
     // A run may legitimately have no new log: --resume alone re-displays what
     // the state holds, and a state plus no file is the round-trip test.
-    if (files.empty() && resume_file.empty()) {
+    if (files.empty() && resume_files.empty()) {
         std::cerr << "Error: No valid log files found\n";
         return 1;
     }
@@ -643,10 +644,10 @@ int main(int argc, char* argv[]) {
     // cleared on every merge so they only live for one file at a time.
     // ------------------------------------------------------------------
     Aggregator final_agg;
-    if (!resume_file.empty()) {
+    for (const std::string& state_file : resume_files) {
         std::string err;
-        if (!load_state(final_agg, resume_file, err)) {
-            std::cerr << "Error: cannot resume from " << resume_file << ": " << err << "\n";
+        if (!load_state(final_agg, state_file, err)) {
+            std::cerr << "Error: cannot resume from " << state_file << ": " << err << "\n";
             return 1;
         }
     }
