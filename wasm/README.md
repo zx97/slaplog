@@ -51,7 +51,8 @@ python3 -m http.server -d wasm/web 8000
 Drop one or more log files, pick the output format and options, then click
 **Analyze locally**. Everything runs in the tab; several files are analysed
 sequentially and aggregated into a single report, and a progress bar reports
-the file in flight and the bytes consumed.
+the file in flight and the estimated decompressed bytes consumed (a compressed
+file counts as its size times a measured expansion ratio).
 
 The form mirrors the CLI options. Three details worth knowing:
 

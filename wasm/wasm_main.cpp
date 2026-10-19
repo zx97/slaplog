@@ -108,6 +108,7 @@ std::vector<std::string> split_whitespace(const std::string& s) {
 struct Options {
     bool compact = false;
     bool no_graph = false;
+    bool no_version = false;
     std::string output_format = "text";
     std::set<std::string> sections = {"all"};
     std::string log_format = "auto";
@@ -133,6 +134,8 @@ Options parse_options(const std::vector<std::string>& argv) {
             o.compact = true;
         } else if (arg == "--no-graph") {
             o.no_graph = true;
+        } else if (arg == "--no-version") {
+            o.no_version = true;
         } else if ((arg == "--title") && i + 1 < argv.size()) {
             take_value(o.custom_title);
         } else if (arg == "-s" || arg == "--section") {
@@ -202,6 +205,7 @@ void start_session(Options opts) {
     // The html report's charts need extra data collected while parsing; skip
     // that work unless the charts will actually be drawn.
     set_collect_graph_data(opts.output_format == "html" && !opts.no_graph);
+    set_show_version(!opts.no_version);
     auto s = std::make_unique<Session>();
     s->start = std::chrono::system_clock::now();
     s->opts = std::move(opts);

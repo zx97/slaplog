@@ -305,6 +305,7 @@ static void usage(const char* prog) {
     std::cerr << "  --unknown-lines FILE       Write unknown lines to FILE\n";
     std::cerr << "  --unknown-lines-only FILE  Like --unknown-lines, no final report\n";
     std::cerr << "  --no-graph                 Omit the charts from the html report\n";
+    std::cerr << "  --no-version               Omit the engine version from the report footer\n";
     std::cerr << "  --title TITLE              Custom report title (appended after default, separated by \" - \")\n";
     std::cerr << "  -D, --documentation        Print documentation to stdout\n";
     std::cerr << "  -l, --licence              Print license to stdout\n";
@@ -361,6 +362,7 @@ int main(int argc, char* argv[]) {
     bool debug = false;
     bool quiet = false;
     bool no_graph = false;
+    bool no_version = false;
     int max_files = 0;
     int mtime_days = 0;
     int jobs = 0;
@@ -404,6 +406,8 @@ int main(int argc, char* argv[]) {
             quiet = true;
         } else if (arg == "--no-graph") {
             no_graph = true;
+        } else if (arg == "--no-version") {
+            no_version = true;
         } else if ((arg == "--title") && i + 1 < argc) {
             custom_title = argv[++i];
         } else if ((arg == "-n" || arg == "--max-files") && (glued.size() || i + 1 < argc)) {
@@ -508,6 +512,8 @@ int main(int argc, char* argv[]) {
     // connection timeline and per-bind-account totals).  Skip that work
     // entirely unless the charts will actually be drawn.
     set_collect_graph_data(output_format == "html" && !no_graph);
+    // The footer names the engine version unless --no-version was given.
+    set_show_version(!no_version);
 
     // ------------------------------------------------------------------
     // Generation-only flags: --documentation / --licence.
@@ -551,11 +557,24 @@ int main(int argc, char* argv[]) {
     // gzip / bzip2 / xz files, causing the bar to reach 100 % early.
     // This is cosmetic only — the report is unaffected.
     // ------------------------------------------------------------------
-    size_t total_size = 0;
+    // The progress counter advances by *decompressed* bytes, so a compressed
+    // file must contribute its on-disk size times its expansion ratio.  The
+    // ratios are measured on real slapd access logs at the default compressor
+    // settings: one 401.8 MB log gives 22.7 MB (.xz), 19.5 MB (.bz2) and
+    // 30.3 MB (.gz), i.e. 17.7x, 20.6x and 13.3x.
+    auto ratio_of = [](const std::string& name) -> double {
+        if (utils::ends_with(name, ".xz"))  return 17.7;
+        if (utils::ends_with(name, ".bz2")) return 20.6;
+        if (utils::ends_with(name, ".gz"))  return 13.3;
+        return 1.0;
+    };
+    size_t total_size = 0, disk_size = 0;
     for (const auto& f : files) {
         std::error_code ec;
         auto size = fs::file_size(f, ec);
-        if (!ec) total_size += size;
+        if (ec) continue;
+        disk_size += size;
+        total_size += static_cast<size_t>(static_cast<double>(size) * ratio_of(f));
     }
 
     // ------------------------------------------------------------------
@@ -687,7 +706,8 @@ int main(int argc, char* argv[]) {
     if (num_workers > files.size()) num_workers = files.size();
 
     if (debug) {
-        std::cerr << "Total size: " << (total_size / (1024*1024)) << " MB\n";
+        std::cerr << "Total size: " << total_size << " bytes estimated decompressed ("
+                  << disk_size << " on disk)\n";
         if (mtime_days > 0) std::cerr << "Mtime filter: last " << mtime_days << " days\n";
         if (max_files > 0) std::cerr << "Max files: " << max_files << "\n";
         std::cerr << "Workers: " << num_workers << " (hw_concurrency="

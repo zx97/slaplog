@@ -16,6 +16,7 @@ The project is distributed under the **AGPL-3.0** license — see [LICENSE](LICE
 - Per-server coverage lanes on both time-series charts.
 - Spans no server's log covers are shaded on both time charts, keyed *no log*, with a tooltip.
 - `--title` option (native CLI and WASM `slaplog_set_title()`).
+- `--no-version`: the report footer names neither the engine nor its version.
 - Error `text=` field shown in *LDAP Result Codes* and *Errors per Application* (text, HTML, JSON).
 - JSON key `error_counts_by_app`.
 - Progress bar based on measured compression ratios.
@@ -31,6 +32,7 @@ The project is distributed under the **AGPL-3.0** license — see [LICENSE](LICE
 
 ### Fixed
 
+- Progress bar with compressed logs: the total was the on-disk size, so it hit 100 % almost immediately (CLI) or stalled (WASM); the estimate now applies measured expansion ratios (xz 17.7x, bzip2 20.6x, gzip 13.3x).
 - Peak active connections: a multi-server run reported the busiest server, not the peak of the sum; it is recomputed from the merged timeline, which is now collected even with `--no-graph`.
 - `-o json --title` failed outright; JSON and replay ignore `--title` by design.
 - WASM title truncated at the first space or hyphen; quoted-string and JS quoting fixed.
