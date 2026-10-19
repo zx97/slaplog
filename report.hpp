@@ -38,7 +38,7 @@ void print_text_report(const Aggregator& agg, double duration, bool compact = fa
 // Omit the "slaplog vX.Y.Z" mention from the report footer (--no-version).
 void set_show_version(bool on);
 
-void print_html_report(const Aggregator& agg, double duration, bool compact = false, const std::string& output_date_format = "rfc3339", const std::string& custom_title = "");
+void print_html_report(const Aggregator& agg, double duration, bool compact = false, const std::string& output_date_format = "rfc3339", const std::string& custom_title = "", bool tabs = false);
 
 void print_json_report(const Aggregator& agg, double duration, bool compact = false, const std::string& output_date_format = "rfc3339", const std::string& custom_title = "");
 

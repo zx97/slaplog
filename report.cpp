@@ -1027,7 +1027,7 @@ void print_text_report(const Aggregator& agg, double processing_time, bool compa
 static bool g_show_version = true;
 void set_show_version(bool on) { g_show_version = on; }
 
-void print_html_report(const Aggregator& agg, double duration, bool /*compact*/, const std::string& /*output_date_format*/, const std::string& custom_title) {
+void print_html_report(const Aggregator& agg, double duration, bool /*compact*/, const std::string& /*output_date_format*/, const std::string& custom_title, bool tabs) {
     // Charts are placed under the section whose data they draw; nothing is
     // emitted (not even the stylesheet) when there is no chart to draw.
     const bool charts = html_charts_available(agg);
@@ -1197,9 +1197,23 @@ void print_html_report(const Aggregator& agg, double duration, bool /*compact*/,
     std::cout << "  .sl-index-list a:hover { background:#eef2f7; }\n";
     std::cout << "  .sl-index-list a.active { background:#34495e; color:#fff; }\n";
     std::cout << "  @media (max-width:768px) { .sl-index { max-width:45vw; } }\n";
+    // Tabs (-o tabhtml): one panel per group of sections, the bar above them.
+    // Everything stays in the DOM; only display changes, so @media print shows
+    // the whole report and a deep link can select the tab of its section.
+    std::cout << "  .sl-tabs { display:none; }\n";
+    std::cout << "  body.sl-tabbed .sl-tabs { display:flex; flex-wrap:wrap; gap:6px; ";
+    std::cout << "margin:0 0 18px; padding:0 0 8px; border-bottom:1px solid #ecf0f1; }\n";
+    std::cout << "  .sl-tabs button { font:inherit; font-size:0.85em; padding:7px 14px; ";
+    std::cout << "border:1px solid #d3dbe3; border-radius:6px 6px 0 0; background:#fff; ";
+    std::cout << "color:#34495e; cursor:pointer; }\n";
+    std::cout << "  .sl-tabs button:hover { background:#eef2f7; border-color:#3498db; color:#2980b9; }\n";
+    std::cout << "  .sl-tabs button.on { background:#3498db; border-color:#3498db; color:#fff; font-weight:600; }\n";
+    std::cout << "  body.sl-tabbed .sl-index { display:none; }\n";
+    std::cout << "  @media print { body.sl-tabbed .sl-tabs { display:none !important; } ";
+    std::cout << "body.sl-tabbed .sl-tabpanel { display:block !important; } }\n";
     std::cout << "</style>\n";
     if (charts) print_html_chart_style();
-    std::cout << "</head>\n<body>\n";
+    std::cout << "</head>\n<body" << (tabs ? " class=\"sl-tabbed\"" : "") << ">\n";
 
     // Header
     std::cout << "<h1>OpenLDAP Log Analysis Report";
@@ -1819,6 +1833,120 @@ void print_html_report(const Aggregator& agg, double duration, bool /*compact*/,
       });
     })(c); }
   })(tables[i]); }
+
+  // ---- tabs (-o tabhtml) ------------------------------------------------
+  // One panel per group of sections, with a bar above them.  The content stays
+  // in the DOM and only its display changes, so @media print shows the whole
+  // report and a deep link can select the tab that holds its section.
+  if (document.body.classList.contains('sl-tabbed')) { (function(){
+    var TABS = [
+      ['Overview',    ['sec-statistics', 'sec-load', 'sec-server-events']],
+      ['Operations',  ['sec-operations', 'sec-top-ops', 'sec-top-conns', 'sec-indexing']],
+      ['Errors',      ['sec-result-codes', 'sec-errors-app', 'sec-paged']],
+      ['Searches',    ['sec-top-search-bases-by-count', 'sec-top-search-bases-by-etime',
+                       'sec-top-filters-by-count', 'sec-top-filters-by-etime',
+                       'sec-top-filters-nentries1', 'sec-top-filters-nentries0',
+                       'sec-top-wildcard-filters', 'sec-top-requested-attributes',
+                       'sec-filters-app', 'sec-qmark']],
+      ['Clients',     ['sec-top-applications-by-count', 'sec-top-applications-by-etime',
+                       'sec-session', 'sec-bind']],
+      ['Replication', ['sec-csn', 'sec-ext', 'sec-gc']]
+    ];
+    var group = {};
+    for (var g = 0; g < TABS.length; g++)
+      for (var k = 0; k < TABS[g][1].length; k++) group[TABS[g][1][k]] = TABS[g][0];
+
+    var body = document.body, first = null;
+    for (var i = 0; i < body.children.length; i++)
+      if (body.children[i].tagName === 'H2' && body.children[i].id) { first = body.children[i]; break; }
+    if (!first) return;
+
+    // Everything from the first section up to the footer is tabbed.
+    var moving = [];
+    for (var n = first; n; n = n.nextSibling) {
+      if (n.nodeType === 1 && n.classList && n.classList.contains('footer')) break;
+      moving.push(n);
+    }
+
+    var nav = document.createElement('div');
+    nav.className = 'sl-tabs';
+    nav.setAttribute('role', 'tablist');
+    body.insertBefore(nav, first);
+
+    var panels = [], byName = {};
+    function newPanel(name) {
+      var p = document.createElement('div');
+      p.className = 'sl-tabpanel';
+      p.setAttribute('role', 'tabpanel');
+      p.setAttribute('data-tab', name);
+      p.hidden = true;
+      body.insertBefore(p, first);
+      panels.push(p);
+      byName[name] = p;
+      return p;
+    }
+    for (var g2 = 0; g2 < TABS.length; g2++) newPanel(TABS[g2][0]);
+
+    var cur = null;
+    for (var m = 0; m < moving.length; m++) {
+      var node = moving[m];
+      if (node.nodeType === 1 && node.tagName === 'H2' && node.id) {
+        var name = group[node.id] || 'Other';
+        cur = byName[name] || newPanel(name);
+      }
+      if (cur) cur.appendChild(node);            // moves it into the panel
+    }
+
+    // A button per panel that actually holds a section; empty ones are dropped.
+    var live = [], buttons = [], idTab = {};
+    for (var p2 = 0; p2 < panels.length; p2++) {
+      var panel = panels[p2];
+      var hs = panel.querySelectorAll('h2[id]');
+      if (!hs.length) continue;
+      for (var h2 = 0; h2 < hs.length; h2++) idTab[hs[h2].id] = live.length;
+      live.push(panel);
+      var b = document.createElement('button');
+      b.type = 'button';
+      b.textContent = panel.getAttribute('data-tab');
+      b.setAttribute('role', 'tab');
+      b.setAttribute('data-panel', String(live.length - 1));
+      nav.appendChild(b);
+      buttons.push(b);
+    }
+    if (!live.length) { nav.parentNode.removeChild(nav); return; }
+
+    function select(idx, focus) {
+      for (var q = 0; q < buttons.length; q++) {
+        var on = Number(buttons[q].getAttribute('data-panel')) === idx;
+        buttons[q].classList.toggle('on', on);
+        buttons[q].setAttribute('aria-selected', on ? 'true' : 'false');
+        buttons[q].tabIndex = on ? 0 : -1;
+        if (focus && on) buttons[q].focus();
+      }
+      for (var r = 0; r < live.length; r++) live[r].hidden = (r !== idx);
+    }
+    nav.addEventListener('click', function(ev) {
+      var el = ev.target, b = null;
+      while (el && el !== nav) { if (el.tagName === 'BUTTON') { b = el; break; } el = el.parentNode; }
+      if (b) select(Number(b.getAttribute('data-panel')));
+    });
+    nav.addEventListener('keydown', function(ev) {
+      if (ev.key !== 'ArrowRight' && ev.key !== 'ArrowLeft') return;
+      var at = 0;
+      for (var q = 0; q < buttons.length; q++) if (buttons[q].tabIndex === 0) at = q;
+      var next = (at + (ev.key === 'ArrowRight' ? 1 : buttons.length - 1)) % buttons.length;
+      ev.preventDefault();
+      select(Number(buttons[next].getAttribute('data-panel')), true);
+    });
+
+    function fromHash() {
+      var h = (location.hash || '').replace(/^#/, '');
+      if (h && idTab[h] !== undefined) { select(idTab[h]); return true; }
+      return false;
+    }
+    if (!fromHash()) select(0);
+    window.addEventListener('hashchange', fromHash);
+  })(); }
 
   // Floating section index: built from the h2[id] elements, so it lists exactly
   // the sections the report drew — charts have no id and stay out of it.  It

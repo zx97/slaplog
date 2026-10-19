@@ -204,7 +204,8 @@ void start_session(Options opts) {
     set_log_format(parse_log_format(opts.log_format));
     // The html report's charts need extra data collected while parsing; skip
     // that work unless the charts will actually be drawn.
-    set_collect_graph_data(opts.output_format == "html" && !opts.no_graph);
+    if (opts.output_format == "tab-html") opts.output_format = "tabhtml";
+    set_collect_graph_data((opts.output_format == "html" || opts.output_format == "tabhtml") && !opts.no_graph);
     set_show_version(!opts.no_version);
     auto s = std::make_unique<Session>();
     s->start = std::chrono::system_clock::now();
@@ -289,6 +290,8 @@ int emit_report() {
             print_json_report(s.total, duration, o.compact, o.output_date_format, o.custom_title);
         } else if (o.output_format == "html") {
             print_html_report(s.total, duration, o.compact, o.output_date_format, o.custom_title);
+        } else if (o.output_format == "tabhtml") {
+            print_html_report(s.total, duration, o.compact, o.output_date_format, o.custom_title, true);
         } else if (o.output_format == "replay") {
             print_replay_report(s.total, duration, o.output_date_format, o.replay_separator);
         } else {

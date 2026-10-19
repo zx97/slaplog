@@ -281,7 +281,7 @@ static void usage(const char* prog) {
     std::cerr << "License: GNU Affero General Public License v3.0 or later (https://www.gnu.org/licenses/agpl-3.0.html)\n";
     std::cerr << "Usage: " << prog << " [options] <logfile|directory> [file|dir ...]\n";
     std::cerr << "Options:\n";
-    std::cerr << "  -o, --output FORMAT        Output format: text | textcolor | html | json | replay\n";
+    std::cerr << "  -o, --output FORMAT        Output format: text | textcolor | html | tabhtml | json | replay\n";
     std::cerr << "  -c, --compact              Compact output (top 5 instead of top 20)\n";
     std::cerr << "  -r, --recursive            Recurse into directories\n";
     std::cerr << "  -q, --quiet                Suppress the progress bar (batch mode)\n";
@@ -511,7 +511,10 @@ int main(int argc, char* argv[]) {
     // The HTML report's charts need extra data collected while parsing (a
     // connection timeline and per-bind-account totals).  Skip that work
     // entirely unless the charts will actually be drawn.
-    set_collect_graph_data(output_format == "html" && !no_graph);
+    // "tab-html" is accepted as an alias of "tabhtml".
+    if (output_format == "tab-html") output_format = "tabhtml";
+
+    set_collect_graph_data((output_format == "html" || output_format == "tabhtml") && !no_graph);
     // The footer names the engine version unless --no-version was given.
     set_show_version(!no_version);
 
@@ -894,6 +897,8 @@ int main(int argc, char* argv[]) {
             print_json_report(final_agg, duration, compact_mode, output_date_format, custom_title);
         } else if (output_format == "html") {
             print_html_report(final_agg, duration, compact_mode, output_date_format, custom_title);
+        } else if (output_format == "tabhtml") {
+            print_html_report(final_agg, duration, compact_mode, output_date_format, custom_title, true);
         } else if (output_format == "replay") {
             print_replay_report(final_agg, duration, output_date_format, replay_separator);
         } else {
