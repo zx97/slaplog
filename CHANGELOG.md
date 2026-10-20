@@ -8,6 +8,8 @@ The project is distributed under the **AGPL-3.0** license — see [LICENSE](LICE
 
 ## [Unreleased]
 
+## [4.1.0] - 2026-10-20
+
 ### Added
 
 - `--save-state FILE` / `--resume FILE`: fold successive analyses into one report (xz-compressed, versioned, clear `SLAPSTAT` header); `--resume` is repeatable and merges state files; a resume refuses a log naming a server the states do not hold. Also in the WASM page (*Resume a previous analysis*, *Download state* or the *Also save the state* box; a dropped state file is routed by its header).
