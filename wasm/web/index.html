@@ -369,8 +369,14 @@
   // Measured on a 1 GiB production log, the heap peaked at 1.12x the input with
   // the charts and 1.02x without; the 1.30 factor is the margin left for
   // fragmentation and for logs denser than the one measured.  Declared here
-  // because warnLimit() is reachable from the very first syncFormatPanels().
+  // because the pre-flight (memoryEstimate) is reachable from the very first
+  // syncFormatPanels().
   const MEM_CEILING = 4 * 1024 * 1024 * 1024;
+
+  // Margin included in the pre-flight: fragmentation, denser logs, and the
+  // report itself (its sort vectors peak after the analysis).  Declared here
+  // for the same reason as MEM_CEILING.
+  const MEM_MARGIN = 1.30;
 
   // Report sections that print_text_report() actually honours.
   const SECTIONS = [
@@ -561,16 +567,37 @@
   }
 
   // Safe input size for the current options (see MEM_CEILING above).
-  function warnLimit() {
+  // What the selection is likely to need in linear memory.
+  //
+  // Files are parsed one at a time, so the peak is the accumulated analysis
+  // plus the working set of the *largest* file — not the sum of the selection.
+  // The aggregate grows with the distinct values, measured at ~0.2x the input;
+  // a file's working set costs about its own size (it is parsed into a separate
+  // aggregator before being merged).  Charts add ~10 % (their series are kept).
+  // Measured on the 1 GiB reference log, single file: 1.12x the input with
+  // charts, 1.02x without — both reproduced by this formula.
+  function memoryEstimate(sel) {
+    const total = sel.reduce((a, f) => a + f.size, 0);
+    const largest = sel.reduce((a, f) => Math.max(a, f.size), 0);
     const charts = (outputEl.value === "html" || outputEl.value === "tabhtml") && !$("nograph").checked;
-    return Math.floor(MEM_CEILING / ((charts ? 1.12 : 1.02) * 1.30));
+    return (0.20 * total + largest) * (charts ? 1.10 : 1.00);
   }
 
-  // Number of leading files (the list is in name order) that fit under `limit`.
-  function filesThatFit(limit) {
+  function fits(list) { return memoryEstimate(list) * MEM_MARGIN <= MEM_CEILING; }
+
+  // The largest total that fits, given the largest file of the selection.
+  function safeTotal(sel) {
+    const largest = sel.reduce((a, f) => Math.max(a, f.size), 0);
+    const charts = (outputEl.value === "html" || outputEl.value === "tabhtml") && !$("nograph").checked;
+    const budget = MEM_CEILING / MEM_MARGIN / (charts ? 1.10 : 1.00) - largest;
+    return Math.max(0, Math.floor(budget / 0.20));
+  }
+
+  // Number of leading files (the list is in name order) that fit.
+  function filesThatFit() {
     let acc = 0, n = 0;
     for (const f of files) {
-      if (n > 0 && acc + f.size > limit) break;
+      if (n > 0 && !fits(files.slice(0, n + 1))) break;
       acc += f.size;
       n++;
     }
@@ -580,16 +607,24 @@
   function updateWarning() {
     const total = files.reduce((a, f) => a + f.size, 0);
     const charts = (outputEl.value === "html" || outputEl.value === "tabhtml") && !$("nograph").checked;
-    const limit = warnLimit();
-    if (total <= limit) { warnEl.style.display = "none"; return; }
+    if (fits(files)) { warnEl.style.display = "none"; return; }
 
-    const fit = filesThatFit(limit);
+    const largest = files.reduce((a, f) => Math.max(a, f.size), 0);
+    const safe = safeTotal(files);
+    const fit = filesThatFit();
     const html = [];
-    html.push(`⚠ <b>${fmtSize(total)}</b> of input. The browser module is a ` +
-              `<b>32-bit WebAssembly build</b>: its memory cannot exceed 4 GiB and grows ` +
-              `with everything analysed (about 1.1&times; the input), so a selection this ` +
-              `large is likely to run out of memory part-way. About <b>${fmtSize(limit)}</b> ` +
-              `is safe here with the current options.`);
+    html.push(`⚠ <b>${fmtSize(total)}</b> of input, the largest file being ` +
+              `<b>${fmtSize(largest)}</b>. The module is a <b>32-bit WebAssembly build</b> ` +
+              `(4 GiB of memory); files are analysed one at a time, so the peak is the ` +
+              `accumulated analysis plus that working set — about <b>${fmtSize(memoryEstimate(files))}</b> ` +
+              `here, too close to the limit.`);
+    if (safe > 0) {
+      html.push(`About <b>${fmtSize(safe)}</b> in total is safe with these options ` +
+                `and a largest file of ${fmtSize(largest)}.`);
+    } else {
+      html.push(`Even a single file this large is too big for one session: split it, ` +
+                `or use the command-line build.`);
+    }
     html.push('<span class="warn-actions">');
     if (charts) {
       html.push('<button class="preset" data-warn="nocharts">Analyse without charts ' +
@@ -613,7 +648,7 @@
       $("nograph").checked = true;
       updateWarning();
     } else if (btn.dataset.warn === "trim") {
-      setFiles(files.slice(0, filesThatFit(warnLimit()).n));
+      setFiles(files.slice(0, filesThatFit().n));
     }
   });
 
@@ -1026,7 +1061,7 @@
       showResult(text, ms, rc, diag);
       const what = `${files.length} file(s)` + (hasResume() ? " + resumed state" : "");
       statusEl.textContent = (rc === 0)
-        ? `Done in ${ms} ms (${what}).`
+        ? `Done in ${ms} ms (${what}) — peak memory ${fmtSize(module.HEAPU8.length)} of 4 GiB.`
         : `Finished with errors (exit ${rc}).`;
       statusEl.className = (rc === 0) ? "status ok" : "status err";
     } catch (err) {

@@ -8,13 +8,16 @@ The project is distributed under the **AGPL-3.0** license — see [LICENSE](LICE
 
 ## [Unreleased]
 
+## [4.1.2] - 2026-10-20
+
 ### Changed
 
 - The filter dimensions (filters, their nentries=1/0 and wildcard views, and the filter-by-application table) intern their keys in one shared pool and store the entries in open-addressing tables instead of `std::map<std::string,…>`.  Same reports, byte for byte; a two-day export's browser heap drops 350 → 266 MB (native RSS 374 → 247 MB) and a 1 GiB log's state now fits the 128 MB initial heap.
-- Smaller aggregate: the filter/attributes map that no report read is gone, the connection timeline is packed (9 bytes per event) and varint-encoded in the state (schema 2; schema 1 still reads), and unparsed lines are only kept when `--unknown-lines` asks for them.  Measured: the 1 GiB reference log's state 2.1 → 1.6 MB and its resume heap 221 → 154 MB; a two-day export's state 11.5 → 7.6 MB and 578 → 350 MB.
+- Smaller aggregate: the filter/attributes map that no report read is gone, the connection timeline is packed (9 bytes per event) and varint-encoded in the state (schema 2; schema 1 still reads), and unparsed lines are only kept when `--unknown-lines` asks for them.  Measured: the 1 GiB reference log's state 2.1 → 1.6 MB and its resume heap 221 → 128 MB; a two-day export's state 11.5 → 7.6 MB.
 
 ### Fixed
 
+- The browser pre-flight was pessimistic by a factor of three: it assumed the whole selection was held in memory, while files are parsed one at a time (the peak is the accumulated analysis plus the largest file). A 3.67 GiB selection in ~1 GiB files is now accepted instead of warning at 2.75 GiB, and the result line reports the peak memory actually used.
 - *Errors per Application* listed informational result codes (success, compareFalse/True, referral, saslBindInProgress), one row per application.  Only failures are listed now; a resumed state is normalised on load, and `error_counts` still accounts for every result.
 
 ## [4.1.1] - 2026-10-20

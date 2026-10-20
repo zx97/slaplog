@@ -255,6 +255,33 @@ const ok = (n, c) => results.push((c ? "PASS  " : "FAIL  ") + n);
        calls.findIndex((c) => c[0] === "slaplog_end"));
   }
 
+  // --- pre-flight model ----------------------------------------------
+  {
+    const gb = (g) => Math.round(g * 1024 ** 3);
+    const big = (name, g) => ({ name, size: gb(g), lastModified: 1,
+                                arrayBuffer: async () => new ArrayBuffer(0) });
+    // 3.67 GiB in four ~1 GiB files: files are parsed one at a time, so the peak
+    // is ~0.2x the total plus the largest file (measured: it passes at 2.4x the
+    // old 2.75 GiB warning).
+    $("clear").dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+    await sleep(20);
+    dropFiles([big("a.log", 1), big("b.log", 1), big("c.log", 0.67), big("d.log", 1)]);
+    await sleep(40);
+    ok("P1. 3.67 GiB in ~1 GiB files raises no warning",
+       $("warn").style.display === "none", $("warn").textContent.slice(0, 80));
+    // A single file of that size is a different story: its own working set is
+    // the peak, and it cannot be split by selecting fewer files.
+    $("clear").dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+    await sleep(20);
+    dropFiles([big("big.log", 3.5)]);
+    await sleep(40);
+    ok("P2. a single 3.5 GiB file warns, and says it cannot fit",
+       $("warn").style.display !== "none" && /too big/.test($("warn").textContent),
+       $("warn").textContent.slice(0, 120));
+    $("clear").dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+    await sleep(20);
+  }
+
   // --- static layout ------------------------------------------------
   ok("AE. CSS no longer caps width at 1080px", !/max-width:\s*1080px/.test(html));
   const m = html.match(/main\s*{[^}]*width:\s*([^;]+);/);
