@@ -1,6 +1,6 @@
 #pragma once
 
-#define SLAPLOG_VERSION "4.0.5"
+#define SLAPLOG_VERSION "4.1.0"
 
 #ifndef BUILD_NUMBER
 #define BUILD_NUMBER 0
