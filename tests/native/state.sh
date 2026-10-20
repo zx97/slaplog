@@ -29,6 +29,15 @@ check() { # <label> <expected> <actual>
 check "the state file starts with the SLAPSTAT magic" "SLAPSTAT" \
     "$(head -c 8 "$SCRATCH/magic.to")"
 
+# 0b. a state written by an older schema still loads.  The fixture was produced
+#     by v4.1.1 (schema 1: fixed-width timeline, plus a map that was later
+#     dropped); it must give exactly what analysing the log again gives.
+"$BIN" -q -o json --resume "$ROOT/tests/fixtures/logsmall/a-schema1.slapstate" \
+    2>/dev/null | norm > "$SCRATCH/schema1.json"
+"$BIN" -q -o json "$A" 2>/dev/null | norm > "$SCRATCH/schema1-direct.json"
+check "a schema-1 state still loads and matches a fresh run" 0 \
+    "$(diff -q "$SCRATCH/schema1.json" "$SCRATCH/schema1-direct.json" > /dev/null 2>&1; echo $?)"
+
 # 1. split == single
 "$BIN" -q -o json "$A" "$B" 2>/dev/null | norm > "$SCRATCH/all.json"
 "$BIN" -q -o json --save-state "$SCRATCH/a.to" "$A" > /dev/null 2>&1

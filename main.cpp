@@ -543,6 +543,9 @@ int main(int argc, char* argv[]) {
     // support a later HTML report (see --save-state).  Only --no-graph, which
     // explicitly asks to skip the chart work, turns it off.
     set_collect_graph_data(!no_graph);
+    // Unparsed lines are only needed to write them out: don't pay the memory
+    // for them otherwise (they are never printed in a report).
+    set_collect_unknown_lines(!unknown_lines_file.empty());
     // The footer names the engine version unless --no-version was given.
     set_show_version(!no_version);
 

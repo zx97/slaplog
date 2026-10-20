@@ -783,14 +783,16 @@ recognised by its first eight bytes — by the binary, by the WebAssembly sessio
 and by the page, which routes one dropped in the log area to the resume field
 instead of parsing it as a log.  A file from another schema is refused, naming
 both versions; one from another tool version of the same schema is loaded with a
-note.  The payload is handled as a stream, so the file is never held twice in
+note.  Schema 2 (this build) varint-encodes the connection timeline and drops a
+filter/attributes map that no report read; schema 1 files are still read.  The
+payload is handled as a stream, so the file is never held twice in
 memory.
 
 **Size.**  A state stores the *distinct* values in the logs — filters, bases,
 connections, error texts — not the lines, so the file is a small fraction of the
-input: 2 MB for the 1 GiB reference log, 0.2 % of it.  The
+input: 1.6 MB for the 1 GiB reference log, 0.15 % of it.  The
 aggregate it rebuilds is larger — of the order of 0.1–0.2× the input — and that
-is what must fit in RAM when the state is resumed (roughly 160 MB for that log).
+is what must fit in RAM when the state is resumed (roughly 150 MB for that log).
 Resuming is fast because nothing is re-parsed: the same report comes back in
 half a second instead of forty.
 
@@ -935,7 +937,7 @@ All data structures:
 All parsing and aggregation logic:
 
 - **Helpers**: `dequote`, `to_int`, `trim`, `normalize_filter`,
-  `normalize_attrs`, `ts_sort_key`, `update_time_bounds`.
+  `ts_sort_key`, `update_time_bounds`.
 - **Format conversion**: `convert_to_rfc3339_utc()` with helpers
   `parse_debug_timestamp()`, `parse_syslog_timestamp()`, `format_rfc3339_utc()`.
   Converts any supported format to RFC3339 UTC.
