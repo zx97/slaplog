@@ -8,6 +8,12 @@ The project is distributed under the **AGPL-3.0** license — see [LICENSE](LICE
 
 ## [Unreleased]
 
+## [4.1.1] - 2026-10-20
+
+### Fixed
+
+- WASM page: replaying a state file with no log crashed (`files[0]` undefined).  The report is now titled after the state, and its downloads are named after it.
+
 ## [4.1.0] - 2026-10-20
 
 ### Added
