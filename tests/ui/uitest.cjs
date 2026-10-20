@@ -18,12 +18,16 @@ const dom = new JSDOM(html, {
         analyzePath: () => ({ exists: true }),
         mkdir: () => {},
         writeFile: (p, b) => calls.push(["writeFile", p, b.length]),
+        readFile: () => new Uint8Array([1, 2, 3]),
+        unlink: () => {},
       },
       _malloc: () => 1,
       _free: () => {},
       HEAPU8: { set: () => {} },
       ccall: (name, _r, _t, args) => { calls.push([name].concat(args || [])); return 0; },
     });
+    // A download is an anchor click: keep jsdom out of the navigation.
+    window.HTMLAnchorElement.prototype.click = function () {};
     window.URL.createObjectURL = () => "blob:stub";
     window.URL.revokeObjectURL = () => {};
   },
@@ -196,6 +200,19 @@ const ok = (n, c) => results.push((c ? "PASS  " : "FAIL  ") + n);
   $("nograph").checked = false;
   ok("O6. report iframe allows scripts but not same-origin",
      /sandbox",\s*"allow-scripts"/.test(html) && !/allow-same-origin/.test(html));
+
+  // --- "Also save the state" -----------------------------------------
+  $("save-state").checked = true;
+  setFmt("json");
+  calls.length = 0;
+  $("run").dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+  await sleep(250);
+  ok("S1. ticking 'Also save the state' writes one after the run",
+     calls.some((c) => c[0] === "slaplog_save_state"),
+     calls.map((c) => c[0]).join(","));
+  ok("S2. and the download link says it is written",
+     /— written/.test($("download").textContent));
+  $("save-state").checked = false;
 
   // --- state files are recognised and routed -------------------------
   // The checks above have already put logs in the list: count the delta.

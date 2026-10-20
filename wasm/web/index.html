@@ -242,6 +242,10 @@
       <label class="check" title="Only affects the html report">
         <input type="checkbox" id="nograph"> No charts (html report)
       </label>
+      <label class="check" title="Writes the analysis as a SLAPSTAT file, which
+             --resume (or this page) can continue later">
+        <input type="checkbox" id="save-state"> Also save the state (.slapstate)
+      </label>
     </div>
   </fieldset>
 
@@ -1093,38 +1097,62 @@
     resultEl.style.display = "block";
   }
 
-  // The state file is written on demand: compressing a large analysis takes a
-  // moment, and most runs never ask for it.
+  // Write the session's state to the module filesystem and read it back.
+  // Returns null when it could not be written.
+  function buildState() {
+    const path = "/work/out.slapstate";
+    let bytes = null;
+    try {
+      if (module.ccall("slaplog_save_state", "number", ["string"], [path]) === 0) {
+        bytes = module.FS.readFile(path);
+      }
+    } finally {
+      try { module.FS.unlink(path); } catch (e) { /* ignore */ }
+    }
+    return bytes;
+  }
+
+  function saveBlob(name, bytes) {
+    const url = URL.createObjectURL(new Blob([bytes], { type: "application/octet-stream" }));
+    const tmp = document.createElement("a");
+    tmp.href = url;
+    tmp.download = name;
+    document.body.appendChild(tmp);
+    tmp.click();
+    document.body.removeChild(tmp);
+    setTimeout(() => URL.revokeObjectURL(url), 10000);
+  }
+
+  // The state is offered after every run.  When "Also save the state" was
+  // ticked, it is written straight away and downloaded, without a second
+  // gesture; the link stays available either way.
   function addStateDownload(base) {
+    const name = base + ".slapstate";
     const a = document.createElement("a");
     a.href = "#";
-    a.textContent = "⬇ Download state (" + base + ".slapstate)";
+    a.textContent = "⬇ Download state (" + name + ")";
     a.addEventListener("click", (ev) => {
       ev.preventDefault();
-      const path = "/work/out.slapstate";
-      let bytes = null;
-      try {
-        if (module.ccall("slaplog_save_state", "number", ["string"], [path]) === 0) {
-          bytes = module.FS.readFile(path);
-        }
-      } finally {
-        try { module.FS.unlink(path); } catch (e) { /* ignore */ }
-      }
+      const bytes = buildState();
       if (!bytes) {
         statusEl.textContent = "The state file could not be written.";
+        statusEl.className = "status err";
         return;
       }
-      // Same shape as the report download, but the blob is built on demand.
-      const url = URL.createObjectURL(new Blob([bytes], { type: "application/octet-stream" }));
-      const tmp = document.createElement("a");
-      tmp.href = url;
-      tmp.download = base + ".slapstate";
-      document.body.appendChild(tmp);
-      tmp.click();
-      document.body.removeChild(tmp);
-      setTimeout(() => URL.revokeObjectURL(url), 10000);
+      saveBlob(name, bytes);
     });
     dlEl.appendChild(a);
+
+    if ($("save-state").checked) {
+      const bytes = buildState();
+      if (!bytes) {
+        statusEl.textContent = "The state file could not be written.";
+        statusEl.className = "status err";
+        return;
+      }
+      a.textContent = "⬇ Download state (" + name + ") — written";
+      saveBlob(name, bytes);
+    }
   }
 
   function addDownload(name, content, mime) {

@@ -797,8 +797,10 @@ skip the chart work, leaves them out.
 **In the browser.**  The WebAssembly build uses the same schema, so the page can
 both read and write these files: *Resume a previous analysis* takes one or more
 state files (they are merged, and together set the servers the logs may name)
-before the logs, and *Download state* produces one after a run.  A state file
-dropped in the log area is recognised by its header and moved to that field.  The module holds the
+before the logs, and *Download state* produces one after a run — or the
+*Also save the state (.slapstate)* box writes it straight away, without a second
+click.  A state file dropped in the log area is recognised by its header and
+moved to that field.  The module holds the
 whole aggregate in memory, so the state and the logs added in the same session
 must fit together in its 4 GiB; a state written by the command-line build is
 how a browser session continues an analysis that started on a server.
