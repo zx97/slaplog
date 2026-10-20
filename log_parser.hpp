@@ -113,6 +113,12 @@ std::string format_epoch_seconds(long long t);
 void set_collect_graph_data(bool on);
 bool collect_graph_data_enabled();
 
+// Unknown (unparsed) lines are only useful to --unknown-lines FILE: 100 000 of
+// them cost ~14 MB of state and ~40 MB of heap, and no report prints them.  Off
+// by default; the CLI turns it on when the option is given.
+void set_collect_unknown_lines(bool on);
+bool collect_unknown_lines_enabled();
+
 // ---------------------------------------------------------------------------
 // LDAP result codes: what a code says about *who* has a problem.
 // ---------------------------------------------------------------------------
@@ -460,10 +466,17 @@ constexpr size_t MAX_ERROR_TIMES = 2000000;
 // A single connection open/close event, used to rebuild the number of
 // simultaneous connections over time.  Only recorded when timeline collection
 // is enabled (see set_collect_timeline).
+// One entry per ACCEPT (+1) or CLOSED (-1) event.  A two-day export of a busy
+// directory carried ~7.7 million of them: at 16 bytes each that was 46 % of the
+// aggregate and 124 MB of heap, most of it padding between an 8-byte timestamp
+// and a +/-1 sign.  Packed to 9 bytes; every target (x86-64, arm64, wasm32)
+// handles the unaligned loads the compiler emits for a packed struct.
+#pragma pack(push, 1)
 struct ConnEvent {
-    long long t = 0;   // Timestamp expressed in seconds (see ts_epoch_seconds).
-    int delta = 0;     // +1 on ACCEPT, -1 on CLOSED.
+    long long t = 0;         // Timestamp expressed in seconds (see ts_epoch_seconds).
+    signed char delta = 0;   // +1 on ACCEPT, -1 on CLOSED.
 };
+#pragma pack(pop)
 
 // ---- Stats ----
 // Simple aggregate counters collected across the entire log set.
@@ -549,7 +562,6 @@ struct Aggregator {
     // -- Per-filter breakdown --
     struct FilterInfo { long long count = 0; double etime_total = 0.0; };
     std::map<std::string, FilterInfo> filter_stats;
-    std::map<std::string, long long> norm_filter_attrs_count;  // Normalised filter (attrs only) -> count.
     std::map<std::string, long long> norm_filter_n1_count;     // Normalised filter with 1 RDN -> count.
     std::map<std::string, long long> norm_filter_n0_count;     // Normalised filter with 0 RDNs -> count.
     std::map<std::string, long long> wildcard_filter_count;    // Filters containing wildcards -> count.

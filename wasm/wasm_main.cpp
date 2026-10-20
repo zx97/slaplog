@@ -217,6 +217,8 @@ bool start_session(Options opts) {
     // Only --no-graph turns the chart work off.
     set_collect_graph_data(!opts.no_graph);
     set_show_version(!opts.no_version);
+    // The page has no --unknown-lines option: never keep unparsed lines.
+    set_collect_unknown_lines(false);
     auto s = std::make_unique<Session>();
     s->start = std::chrono::system_clock::now();
     s->opts = std::move(opts);

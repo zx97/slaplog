@@ -84,9 +84,12 @@ static long long g_replay_ops_dropped = 0;
 // text, JSON and replay outputs — and every run that does not ask for the
 // graphs — pay nothing for it.
 static bool g_collect_graph_data = false;
+static bool g_collect_unknown_lines = false;
 
 void set_collect_graph_data(bool on) { g_collect_graph_data = on; }
 bool collect_graph_data_enabled() { return g_collect_graph_data; }
+void set_collect_unknown_lines(bool on) { g_collect_unknown_lines = on; }
+bool collect_unknown_lines_enabled() { return g_collect_unknown_lines; }
 
 // Every code of the LDAP_ERRORS table in report.cpp is classified here, and the
 // classes add up to that table exactly; a code outside it (never seen in
@@ -418,33 +421,6 @@ void set_replay_ops_limit(long long limit) {
             }
         }
         return trim(out);
-    }
-
-/**
- * normalize_attrs: Canonicalise a space-separated attribute list.
- *
- * Steps:
- *   1. Tokenise by whitespace.
- *   2. Lowercase each token.
- *   3. Sort tokens alphabetically.
- *   4. Rejoin with single spaces.
- *
- * This ensures "[cn mail uid]" and "[uid cn mail]" are treated as
- * the same attribute set for aggregation.
- */
-    std::string normalize_attrs(const std::string& s) {
-        if (s.empty()) return "";
-        std::istringstream iss(s);
-        std::vector<std::string> attrs;
-        std::string a;
-        while (iss >> a) attrs.push_back(to_lower(a));
-        std::sort(attrs.begin(), attrs.end());
-        std::ostringstream oss;
-        for (size_t i = 0; i < attrs.size(); ++i) {
-            if (i) oss << ' ';
-            oss << attrs[i];
-        }
-        return oss.str();
     }
 
 /**
@@ -1833,7 +1809,8 @@ void update_aggregator(Aggregator& agg, const Event& ev,
         if (unknown_out) {
             std::lock_guard<std::mutex> lock(*unknown_mtx);
             *unknown_out << ev.raw << '\n';
-        } else if (agg.unknown_lines.size() < MAX_STORED_UNKNOWN_LINES) {
+        } else if (g_collect_unknown_lines &&
+                   agg.unknown_lines.size() < MAX_STORED_UNKNOWN_LINES) {
             agg.unknown_lines.push_back(ev.raw);
         }
         return;
@@ -2065,7 +2042,8 @@ void update_aggregator(Aggregator& agg, const Event& ev,
         if (unknown_out) {
             std::lock_guard<std::mutex> lock(*unknown_mtx);
             *unknown_out << ev.raw << '\n';
-        } else if (agg.unknown_lines.size() < MAX_STORED_UNKNOWN_LINES) {
+        } else if (g_collect_unknown_lines &&
+                   agg.unknown_lines.size() < MAX_STORED_UNKNOWN_LINES) {
             agg.unknown_lines.push_back(ev.raw);
         }
         return;
@@ -2256,9 +2234,7 @@ void update_aggregator(Aggregator& agg, const Event& ev,
 
     // --- SRCH_ATTR (search requested attributes) ---
     // Records the requested attribute list.  Each attribute is lowercased
-    // and counted individually in attr_count.  If the operation also has
-    // a filter, a combined key of "filter || attrs" is created for the
-    // norm_filter_attrs_count breakdown.
+    // and counted individually in attr_count.
     if (ev.kind == "SRCH_ATTR") {
         agg.operation_count["SRCH ATTR"]++;
         if (!ev.attrs.empty()) {
@@ -2269,11 +2245,6 @@ void update_aggregator(Aggregator& agg, const Event& ev,
                 std::string lower_a = a;
                 std::transform(lower_a.begin(), lower_a.end(), lower_a.begin(), ::tolower);
                 agg.attr_count[lower_a]++;
-            }
-            if (!op.filter.empty()) {
-                std::string na = normalize_attrs(ev.attrs);
-                std::string key = op.filter + " || " + na;
-                if (!op.filter.empty() || !na.empty()) agg.norm_filter_attrs_count[key]++;
             }
         }
         return;
@@ -2694,7 +2665,8 @@ void update_aggregator(Aggregator& agg, const Event& ev,
     if (unknown_out) {
         std::lock_guard<std::mutex> lock(*unknown_mtx);
         *unknown_out << ev.raw << '\n';
-    } else if (agg.unknown_lines.size() < MAX_STORED_UNKNOWN_LINES) {
+    } else if (g_collect_unknown_lines &&
+               agg.unknown_lines.size() < MAX_STORED_UNKNOWN_LINES) {
         agg.unknown_lines.push_back(ev.raw);
     }
 }
@@ -2812,7 +2784,6 @@ void merge_aggregators(Aggregator& dest, const Aggregator& src) {
         d.count += v.count;
         d.etime_total += v.etime_total;
     }
-    for (const auto& [k, v] : src.norm_filter_attrs_count) dest.norm_filter_attrs_count[k] += v;
     for (const auto& [k, v] : src.norm_filter_n1_count) dest.norm_filter_n1_count[k] += v;
     for (const auto& [k, v] : src.norm_filter_n0_count) dest.norm_filter_n0_count[k] += v;
     for (const auto& [k, v] : src.wildcard_filter_count) dest.wildcard_filter_count[k] += v;

@@ -8,6 +8,10 @@ The project is distributed under the **AGPL-3.0** license — see [LICENSE](LICE
 
 ## [Unreleased]
 
+### Changed
+
+- Smaller aggregate: the filter/attributes map that no report read is gone, the connection timeline is packed (9 bytes per event) and varint-encoded in the state (schema 2; schema 1 still reads), and unparsed lines are only kept when `--unknown-lines` asks for them.  Measured: the 1 GiB reference log's state 2.1 → 1.6 MB and its resume heap 221 → 154 MB; a two-day export's state 11.5 → 7.6 MB and 578 → 350 MB.
+
 ### Fixed
 
 - *Errors per Application* listed informational result codes (success, compareFalse/True, referral, saslBindInProgress), one row per application.  Only failures are listed now; a resumed state is normalised on load, and `error_counts` still accounts for every result.

@@ -30,7 +30,7 @@
 namespace {
 
 constexpr char MAGIC[8] = {'S', 'L', 'A', 'P', 'S', 'T', 'A', 'T'};
-constexpr uint32_t SCHEMA = 1;
+constexpr uint32_t SCHEMA = 2;   // 2: the timeline is varint-encoded
 
 // ------------------------------------------------------------------ writer --
 struct Writer {
@@ -258,6 +258,41 @@ std::optional<double> r_opt_f64(Reader& r) {
     return r_f64(r);
 }
 
+// LEB128 + zigzag.  The timeline holds millions of events whose timestamps are
+// seconds apart, so a fixed 8 + 4 bytes per event was mostly zero bytes.
+void w_varint(Writer& w, uint64_t v) {
+    uint8_t b;
+    do {
+        b = static_cast<uint8_t>(v & 0x7f);
+        v >>= 7;
+        if (v) b |= 0x80;
+        w_bytes(w, &b, 1);
+    } while (v);
+}
+
+uint64_t r_varint(Reader& r) {
+    uint64_t v = 0;
+    unsigned shift = 0;
+    for (;;) {
+        uint8_t b = 0;
+        r_bytes(r, &b, 1);
+        if (!r.ok) return 0;
+        v |= static_cast<uint64_t>(b & 0x7f) << shift;
+        if (!(b & 0x80)) break;
+        shift += 7;
+        if (shift >= 64) { r.ok = false; return 0; }
+    }
+    return v;
+}
+
+uint64_t zigzag(int64_t v) {
+    return (static_cast<uint64_t>(v) << 1) ^ static_cast<uint64_t>(v >> 63);
+}
+
+int64_t unzigzag(uint64_t v) {
+    return static_cast<int64_t>(v >> 1) ^ -static_cast<int64_t>(v & 1);
+}
+
 // ------------------------------------------------------------- collections --
 void w_map_size(Writer& w, size_t n) { w_u32(w, static_cast<uint32_t>(n)); }
 
@@ -345,7 +380,9 @@ void write_payload(Writer& w, const Aggregator& a) {
     w_map_info(w, a.app_stats);
     w_map_info(w, a.base_stats);
     w_map_info(w, a.filter_stats);
-    w_map_i64(w, a.norm_filter_attrs_count);
+    // Deprecated: this map was filled, serialised and never read by a report.
+    // The field stays in the layout (empty) so schema-1 states keep parsing.
+    w_map_size(w, 0);
     w_map_i64(w, a.norm_filter_n1_count);
     w_map_i64(w, a.norm_filter_n0_count);
     w_map_i64(w, a.wildcard_filter_count);
@@ -486,7 +523,14 @@ void write_payload(Writer& w, const Aggregator& a) {
 
     // -- chart data
     w_map_size(w, a.conn_timeline.size());
-    for (const ConnEvent& e : a.conn_timeline) { w_i64(w, e.t); w_i32(w, e.delta); }
+    {
+        int64_t prev = 0;
+        for (const ConnEvent& e : a.conn_timeline) {
+            w_varint(w, zigzag(e.t - prev));
+            prev = e.t;
+            w_u8(w, e.delta > 0 ? 1 : 0);
+        }
+    }
     for (int i = 0; i < OP_ETIME_BUCKETS; ++i) w_i64(w, a.op_etime_hist[i]);
     for (int i = 0; i < ETIME_LOG_BINS; ++i) w_i64(w, a.op_etime_log_hist[i]);
     w_map_size(w, a.error_times_by_code.size());
@@ -503,9 +547,9 @@ bool read_payload(Reader& r, Aggregator& a, std::string& err) {
         err = "state file is truncated or corrupt";
         return false;
     }
-    if (schema != SCHEMA) {
-        err = "state written by schema " + std::to_string(schema) + ", this build reads " +
-              std::to_string(SCHEMA);
+    if (schema != 1 && schema != SCHEMA) {
+        err = "state written by schema " + std::to_string(schema) +
+              ", this build reads 1 and " + std::to_string(SCHEMA);
         return false;
     }
     const std::string tool = r_str(r);
@@ -536,7 +580,12 @@ bool read_payload(Reader& r, Aggregator& a, std::string& err) {
     r_map_info(r, n.app_stats);
     r_map_info(r, n.base_stats);
     r_map_info(r, n.filter_stats);
-    r_map_i64(r, n.norm_filter_attrs_count);
+    // Deprecated and ignored: read it and drop it, without allocating what a
+    // schema-1 state may carry (17 % of one real export).
+    {
+        const uint32_t c = r_u32(r);
+        for (uint32_t i = 0; i < c && r.ok; ++i) { (void)r_str(r); (void)r_i64(r); }
+    }
     r_map_i64(r, n.norm_filter_n1_count);
     r_map_i64(r, n.norm_filter_n0_count);
     r_map_i64(r, n.wildcard_filter_count);
@@ -650,8 +699,14 @@ bool read_payload(Reader& r, Aggregator& a, std::string& err) {
     n.peak_active_connections = r_i64(r);
     {
         const uint32_t c = r_u32(r);
-        n.unknown_lines.reserve(c);
-        for (uint32_t i = 0; i < c && r.ok; ++i) n.unknown_lines.push_back(r_str(r));
+        // They are only useful to --unknown-lines FILE: skip their bytes when
+        // this run will not write them (the count stays in stats).
+        const bool keep = collect_unknown_lines_enabled();
+        if (keep) n.unknown_lines.reserve(c);
+        for (uint32_t i = 0; i < c && r.ok; ++i) {
+            std::string line = r_str(r);
+            if (keep) n.unknown_lines.push_back(std::move(line));
+        }
     }
     n.restart_count = r_i32(r);
     {
@@ -733,11 +788,20 @@ bool read_payload(Reader& r, Aggregator& a, std::string& err) {
     {
         const uint32_t c = r_u32(r);
         n.conn_timeline.reserve(c);
-        for (uint32_t i = 0; i < c && r.ok; ++i) {
-            ConnEvent e;
-            e.t = r_i64(r);
-            e.delta = r_i32(r);
-            n.conn_timeline.push_back(e);
+        if (schema >= 2) {
+            int64_t prev = 0;
+            for (uint32_t i = 0; i < c && r.ok; ++i) {
+                prev += unzigzag(r_varint(r));
+                const uint8_t d = r_u8(r);
+                n.conn_timeline.push_back({prev, static_cast<signed char>(d ? 1 : -1)});
+            }
+        } else {
+            // Schema 1 wrote a fixed 8 + 4 bytes per event.
+            for (uint32_t i = 0; i < c && r.ok; ++i) {
+                const long long t = r_i64(r);
+                const int32_t d = r_i32(r);
+                n.conn_timeline.push_back({t, static_cast<signed char>(d > 0 ? 1 : -1)});
+            }
         }
     }
     for (int i = 0; i < OP_ETIME_BUCKETS; ++i) n.op_etime_hist[i] = r_i64(r);
