@@ -232,6 +232,29 @@ const ok = (n, c) => results.push((c ? "PASS  " : "FAIL  ") + n);
   ok("R4. clearing the state leaves the log in place",
      filesCount() === before + 1);
 
+  // --- a state alone (no log at all) ---------------------------------
+  {
+    // Empty the log list, keep only a state: the report then has no file name
+    // to derive its title or download name from.
+    $("clear").dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+    await sleep(20);
+    dropFiles([mkState("week9.slapstate", 64)]);
+    await sleep(40);
+    ok("T1. no log left, only a state, and the run is still possible",
+       filesCount() === 0 && $("run").disabled === false, filesCount() + "," + $("run").disabled);
+    calls.length = 0;
+    $("run").dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+    await sleep(250);
+    ok("T2. a state-only run renders a result instead of throwing",
+       /Result — resumed state/.test($("result-title").textContent),
+       $("status").textContent);
+    ok("T3. and the downloads are named after the state file",
+       /week9\./.test($("download").textContent), $("download").textContent);
+    ok("T4. the state was loaded before the report",
+       calls.findIndex((c) => c[0] === "slaplog_resume") <
+       calls.findIndex((c) => c[0] === "slaplog_end"));
+  }
+
   // --- static layout ------------------------------------------------
   ok("AE. CSS no longer caps width at 1080px", !/max-width:\s*1080px/.test(html));
   const m = html.match(/main\s*{[^}]*width:\s*([^;]+);/);

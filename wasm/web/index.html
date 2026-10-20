@@ -1060,17 +1060,26 @@
   // Rendering
   // ------------------------------------------------------------------
   function showResult(text, ms, rc, diag) {
-    const label = files.length === 1 ? shortPath(pathOf(files[0])) : `${files.length} files`;
+    // A run may have no log at all — a resumed state replayed on its own — so
+    // nothing here may assume files[0] exists.
+    const resumedOnly = files.length === 0;
+    const label = files.length === 1 ? shortPath(pathOf(files[0]))
+                : resumedOnly ? "resumed state"
+                : `${files.length} files`;
     titleEl.textContent = `Result — ${label} (${ms} ms)`;
     panelEl.innerHTML = "";
 
     const fmt = outputEl.value;
     // The download name must be a bare file name: a picked folder gives paths
-    // such as "server1/access.log".
-    const first = pathOf(files[0]).split("/").pop();
+    // such as "server1/access.log".  With no log, the state file names the run,
+    // so its report and the state it produces sit side by side.
+    const first = files.length ? pathOf(files[0]).split("/").pop() : "";
+    const stateBase = resumedOnly && resumeFiles().length
+      ? resumeFiles()[0].name.replace(/\.[A-Za-z0-9]+$/, "")
+      : "";
     const base = files.length === 1
       ? (first.replace(/\.[A-Za-z0-9]+$/, "") || "report")
-      : "slaplog-report";
+      : (stateBase || "slaplog-report");
 
     if (fmt === "html" || fmt === "tabhtml") {
       const frame = document.createElement("iframe");
