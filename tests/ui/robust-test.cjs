@@ -45,8 +45,17 @@ const warn = () => $("warn");
 const clickWarn = (kind) => warn().querySelector(`[data-warn="${kind}"]`).dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
 const run = async () => { calls.length = 0; $("run").dispatchEvent(new window.MouseEvent("click", { bubbles: true })); await sleep(250); };
 
-// Mirror of the page's calibration: 4 GiB ceiling / (measured ratio x margin).
-const limitFor = (charts) => Math.floor((4 * GiB) / ((charts ? 1.12 : 1.02) * 1.30));
+// Mirror of the page's model: the peak is the accumulated analysis (0.20x the
+// total, measured at 0.06-0.15x) plus the largest file's working set (1.0x),
+// times 1.1 for the charts, times the 1.3 margin, against 4 GiB.
+const estimate = (sizes, charts) => {
+  const total = sizes.reduce((a, x) => a + x, 0);
+  const largest = sizes.reduce((a, x) => Math.max(a, x), 0);
+  return (0.20 * total + largest) * (charts ? 1.10 : 1.00) * 1.30;
+};
+const fitsModel = (sizes, charts) => estimate(sizes, charts) <= 4 * GiB;
+const safeTotalFor = (largest, charts) =>
+  (4 * GiB / 1.30 / (charts ? 1.10 : 1.00) - largest) / 0.20;
 
 const res = [];
 const ok = (n, c) => res.push((c ? "PASS  " : "FAIL  ") + n);
@@ -67,33 +76,42 @@ const ok = (n, c) => res.push((c ? "PASS  " : "FAIL  ") + n);
   ok("3 GiB: a warning is shown", warn().style.display !== "none");
   ok("the message names the 32-bit limit", /32-bit/.test(warn().innerHTML));
   ok("the message no longer claims it will abort", !/will abort/.test(warn().innerHTML));
-  ok("the message states the computed safe size", /safe here/.test(warn().innerHTML));
-  ok("the message quantifies the memory growth", /1\.1/.test(warn().innerHTML));
+  ok("one oversized file is named as such", /too big for one session/.test(warn().innerHTML));
+  ok("the message explains the per-file peak", /accumulated analysis/.test(warn().innerHTML));
   ok("'Analyse without charts' is proposed", /data-warn="nocharts"/.test(warn().innerHTML));
   ok("the charts' cost is stated honestly (10 %)", /10 %/.test(warn().innerHTML));
   ok("the command-line build is linked", /command-line build/.test(warn().innerHTML));
 
   // --- the ceiling follows the charts ---------------------------------------
-  // 2.9 GiB is over the charts limit (2.75) but under the no-charts one (3.02).
-  clear(); drop([mkBig("a.log", 2.9 * GiB)]); await sleep(30);
-  ok("2.9 GiB with charts: warning", warn().style.display !== "none");
+  // One 2.45 GiB file: (0.2 x 2.45 + 2.45) x 1.1 x 1.3 = 4.2 GiB, over the
+  // ceiling with charts; x 1.0 x 1.3 = 3.8 GiB, under it without.
+  clear(); drop([mkBig("a.log", 2.45 * GiB)]); await sleep(30);
+  ok("2.45 GiB with charts: warning", warn().style.display !== "none");
   clickWarn("nocharts"); await sleep(30);
   ok("clicking 'Analyse without charts' ticks No charts", $("nograph").checked === true);
-  ok("2.9 GiB without charts: warning cleared", warn().style.display === "none");
+  ok("2.45 GiB without charts: warning cleared", warn().style.display === "none");
   $("nograph").checked = false; fire($("nograph"), "change"); await sleep(30);
   ok("re-ticking the charts brings the warning back", warn().style.display !== "none");
 
   // --- the 'trim' button -----------------------------------------------------
-  clear(); drop([mkBig("f1.log", 1.5 * GiB), mkBig("f2.log", 1.5 * GiB), mkBig("f3.log", 1.5 * GiB)]);
+  // Six 1.5 GiB files: 4.7 GiB of estimated peak; the first four fit (3.9 GiB).
+  clear();
+  drop([1, 2, 3, 4, 5, 6].map((i) => mkBig(`f${i}.log`, 1.5 * GiB)));
   await sleep(30);
-  ok("'trim' is proposed for 4.5 GiB", /data-warn="trim"/.test(warn().innerHTML));
+  ok("'trim' is proposed for 9 GiB in six files", /data-warn="trim"/.test(warn().innerHTML));
+  ok("the message states the computed safe total", /6\.4\d GiB<\/b> in total is safe/.test(warn().innerHTML),
+     warn().innerHTML.slice(0, 200));
   clickWarn("trim"); await sleep(30);
-  ok("trim keeps only what fits under the ceiling", rows().length === 1);
+  ok("trim keeps only what fits (four files)", rows().length === 4, rows().length);
   ok("warning cleared after trim", warn().style.display === "none");
 
-  // --- the applied ceiling is the computed one ------------------------------
-  ok("charts ceiling ~2.75 GiB", Math.abs(limitFor(true) / GiB - 2.75) < 0.05);
-  ok("no-charts ceiling ~3.02 GiB", Math.abs(limitFor(false) / GiB - 3.02) < 0.05);
+  // --- the model itself -----------------------------------------------------
+  ok("one 2.45 GiB file fits without charts, not with",
+     !fitsModel([2.45 * GiB], true) && fitsModel([2.45 * GiB], false));
+  ok("four 1 GiB files (3.67 GiB) fit with charts",
+     fitsModel([1, 1, 0.67, 1].map((g) => g * GiB), true));
+  ok("safe total for a 1.5 GiB largest file ~6.5 GiB",
+     Math.abs(safeTotalFor(1.5 * GiB, true) / GiB - 6.5) < 0.1);
 
   // --- one trash button per file --------------------------------------------
   clear(); drop([mkFile("a.log", "x\n"), mkFile("b.log", "y\n"), mkFile("c.log", "z\n")]);
