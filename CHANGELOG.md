@@ -8,6 +8,10 @@ The project is distributed under the **AGPL-3.0** license — see [LICENSE](LICE
 
 ## [Unreleased]
 
+### Fixed
+
+- *Errors per Application* listed informational result codes (success, compareFalse/True, referral, saslBindInProgress), one row per application.  Only failures are listed now; a resumed state is normalised on load, and `error_counts` still accounts for every result.
+
 ## [4.1.1] - 2026-10-20
 
 ### Fixed

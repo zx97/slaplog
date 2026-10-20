@@ -2295,7 +2295,12 @@ void update_aggregator(Aggregator& agg, const Event& ev,
         if (ev.err.has_value()) {
             op.err = ev.err;
             agg.error_count[*ev.err]++;
-            agg.error_per_app[who][*ev.err]++;
+            // "Errors per Application" is about failures.  An informational code
+            // (success, compareFalse/True, referral, saslBindInProgress) is a
+            // result, not an error: one success row per application filled the
+            // table without saying anything.  They stay in error_count, so the
+            // result-code distribution still accounts for every operation.
+            if (ldap_code_is_error(*ev.err)) agg.error_per_app[who][*ev.err]++;
             // Store the error text message for this error code, per application
             if (!ev.text.empty()) {
                 agg.error_texts[who][*ev.err][ev.text]++;
@@ -2388,7 +2393,12 @@ void update_aggregator(Aggregator& agg, const Event& ev,
         if (ev.err.has_value()) {
             op.err = ev.err;
             agg.error_count[*ev.err]++;
-            agg.error_per_app[who][*ev.err]++;
+            // "Errors per Application" is about failures.  An informational code
+            // (success, compareFalse/True, referral, saslBindInProgress) is a
+            // result, not an error: one success row per application filled the
+            // table without saying anything.  They stay in error_count, so the
+            // result-code distribution still accounts for every operation.
+            if (ldap_code_is_error(*ev.err)) agg.error_per_app[who][*ev.err]++;
             // Store the error text message for this error code, per application
             if (!ev.text.empty()) {
                 agg.error_texts[who][*ev.err][ev.text]++;
