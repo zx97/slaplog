@@ -580,6 +580,20 @@ bool read_payload(Reader& r, Aggregator& a, std::string& err) {
         }
     }
 
+    // A state written before "Errors per Application" meant failures only may
+    // carry informational codes (success, compareFalse/True, referral,
+    // saslBindInProgress).  Drop them here, so replaying an older state shows a
+    // failure table too — and re-saving it writes a clean one.
+    for (auto it = n.error_per_app.begin(); it != n.error_per_app.end(); ) {
+        auto& codes = it->second;
+        for (auto c = codes.begin(); c != codes.end(); ) {
+            if (ldap_code_is_error(c->first)) ++c;
+            else c = codes.erase(c);
+        }
+        if (codes.empty()) it = n.error_per_app.erase(it);
+        else ++it;
+    }
+
     r_map_i64(r, n.ext_oid_count);
     r_map_i64(r, n.global_control_oid_count);
     n.csn_event_count.get = r_i64(r);

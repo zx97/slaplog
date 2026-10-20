@@ -96,12 +96,24 @@ const bEntry = byApp(perApp, "APP_B");
 check("APP_B does not inherit another client's texts",
       !!bEntry && !JSON.stringify(bEntry[1]).includes("Rule #1"));
 
-// Global and per-application figures must agree, for every code.
+// Informational codes (success, compareFalse/True, referral, saslBindInProgress)
+// are results, not errors: they stay in the global distribution, and never
+// appear in the per-application error table.
+const INFO = new Set(["0", "5", "6", "10", "14"]);
+check("informational codes stay out of the per-application table",
+      Object.values(perApp).every((a) => Object.keys(a).every((c) => !INFO.has(c))),
+      JSON.stringify(Object.values(perApp).map((a) => Object.keys(a))));
+check("informational codes stay in the global distribution",
+      !!j.error_counts["0"] && j.error_counts["0"].count > 0);
+
+// Global and per-application figures must agree, for every *failing* code.
+// (An informational code has no per-application row, by design.)
 check("global error_counts[53] carries every message",
       JSON.stringify(textsOf(j.error_counts["53"])) === JSON.stringify(GLOBAL_53.texts),
       JSON.stringify(textsOf(j.error_counts["53"])));
 let mismatched = 0;
 for (const [code, gv] of Object.entries(j.error_counts)) {
+  if (INFO.has(code)) continue;
   const apps = Object.values(perApp);
   const sumCount = apps.reduce((n, a) => n + (a[code] ? a[code].count : 0), 0);
   if (sumCount !== gv.count) mismatched++;
@@ -123,6 +135,8 @@ const rows = [...html.matchAll(/<tr>(.*?)<\/tr>/gs)]
     c[1].replace(/<[^>]+>/g, "").replace(/&amp;/g, "&").trim()))
   .filter((c) => c.length >= 5);
 const rowOf = (frag) => rows.find((c) => c[0].includes(frag) && c[1] === "53");
+check("no informational row in the per-application table",
+      !rows.some((c) => c.length >= 5 && c[1] === "0" && c[0].includes("dc=x")));
 check("APP_A's row shows only its own messages",
       (() => { const r = rowOf("APP_A"); return !!r && /2x: Rule #1/.test(r[4]) && /1x: Rule #2/.test(r[4]) && !/Rule #9/.test(r[4]); })());
 check("APP_B's row shows its own message and not another's",

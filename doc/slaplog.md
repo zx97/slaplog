@@ -269,7 +269,7 @@ to select specific sections:
 | `ops` | Per-operation type counts (BIND, SRCH, RESULT, etc.) |
 | `bind` | Bind usage: authentication method, transport (ldap/ldaps/StartTLS), SASL mechanism |
 | `errors` | Error code distribution with LDAP error names |
-| `errors_per_app` | Errors broken down by application identity |
+| `errors_per_app` | Failures broken down by application identity (informational codes excluded) |
 | `paged` | Searches using the pagedResultsControl (by shape, or the control line at loglevel `trace`) |
 | `bases` | Top search bases by count and cumulative etime |
 | `filters` | Top search filters by count, etime, nentries=1/0 |
@@ -398,7 +398,10 @@ directory's health.  Rows, table cells and charts are coloured by class:
 The five lists cover the whole mnemonic table, so no code is left unclassified;
 a code outside it is reported server-side (and named `unknown`) rather than
 guessed into a harmless class.  The informational codes are recalled in a note
-above the table, and left out of the two charts that show *failures*.
+above the table, and left out of everything that shows *failures*: the two
+charts, and the *Errors per Application* table, which lists one row per
+application and per failing code — a success row per application would say
+nothing and take most of the space.
 
 The *by configuration, or client-side* class is drawn **hatched** — amber
 diagonal stripes over the violet base — because the result code alone does not
@@ -667,8 +670,9 @@ correlations, etc.).
 `error_counts` is keyed by result code and carries the global message histogram
 for that code, while `error_counts_by_app` repeats the same shape per
 application (`who`) — each application's own counts and its own `text=`
-messages.  The two agree: for a given code, the per-application figures add up
-to the global ones.
+messages.  The two agree for every *failing* code: the per-application figures
+add up to the global ones.  Informational codes (`0`, `5`, `6`, `10`, `14`)
+exist in `error_counts` only; they are results, not errors.
 
 ### Replay (`-o replay`)
 
