@@ -33,6 +33,8 @@
 #include <unordered_map>
 #include <map>
 #include <vector>
+
+#include "interned_map.hpp"
 #include <chrono>
 #include <atomic>
 #include <mutex>
@@ -561,14 +563,28 @@ struct Aggregator {
 
     // -- Per-filter breakdown --
     struct FilterInfo { long long count = 0; double etime_total = 0.0; };
-    std::map<std::string, FilterInfo> filter_stats;
-    std::map<std::string, long long> norm_filter_n1_count;     // Normalised filter with 1 RDN -> count.
-    std::map<std::string, long long> norm_filter_n0_count;     // Normalised filter with 0 RDNs -> count.
-    std::map<std::string, long long> wildcard_filter_count;    // Filters containing wildcards -> count.
-    // Flat map (app, filter) -> count. Was a nested map, which stored
-    // duplicated filter strings per app; a single combined key avoids
-    // the per-app map node overhead.
-    std::map<std::pair<std::string, std::string>, long long> filter_by_app;
+    // The filter dimensions are the high-cardinality ones: these intern their
+    // keys and store the entries in an open-addressing table (see
+    // interned_map.hpp).  The reports sort, so the iteration order is free.
+    InternedMap<FilterInfo> filter_stats;
+    InternedMap<long long> norm_filter_n1_count;     // Normalised filter with 1 RDN -> count.
+    InternedMap<long long> norm_filter_n0_count;     // Normalised filter with 0 RDNs -> count.
+    InternedMap<long long> wildcard_filter_count;    // Filters containing wildcards -> count.
+    // (application, filter) -> count: two interned ids per entry, so a filter
+    // shared by several applications is stored once instead of per entry.
+    InternedPairMap<long long> filter_by_app;
+
+    // One pool for the five maps above: the same filter is stored once, whether
+    // filter_stats, the nentries views or the by-application table refers to it.
+    std::shared_ptr<StringPool> filter_pool = std::make_shared<StringPool>();
+
+    Aggregator() {
+        filter_stats.use_pool(filter_pool);
+        norm_filter_n1_count.use_pool(filter_pool);
+        norm_filter_n0_count.use_pool(filter_pool);
+        wildcard_filter_count.use_pool(filter_pool);
+        filter_by_app.use_pool(filter_pool);
+    }
     std::map<std::string, long long> attr_count;            // Requested attribute -> count.
 
     // -- "?" (unindexed) filter tracking --

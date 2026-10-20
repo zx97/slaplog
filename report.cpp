@@ -338,33 +338,33 @@ namespace {
      * @param m      Source map.
      * @param limit  Maximum number of rows to show.
      */
-    void print_string_count_map(const std::string& title, const std::string& col1, 
-                                 const std::map<std::string, long long>& m, int limit = 20) {
-        if (m.empty()) return;
-        print_separator(title);
-        auto sorted = sort_map_by_value_desc(m);
-        std::vector<std::vector<std::string>> rows;
-        int count = 0;
-        for (const auto& [key, val] : sorted) {
-            if (count++ >= limit) break;
-            rows.push_back({key, fmt_int(val)});
-        }
-        print_table({col1, "Count"}, rows);
-    }
-
-    /**
-     * Overloads for combined AppInfo / BaseInfo / FilterInfo maps.
-     * Each entry has both .count and .etime_total, so we sort by the
-     * appropriate field and pass it to the existing formatters.
-     */
-    template<typename T>
+    template <typename Map>
     void print_string_count_map(const std::string& title, const std::string& col1,
-                                const std::map<std::string, T>& m, int limit = 20) {
-        if (m.empty()) return;
+                                const Map& m, int limit = 20) {
+        const auto pairs = as_pairs(m);
+        if (pairs.empty()) return;
         print_separator(title);
+        using V = typename Map::mapped_type;
         std::vector<std::pair<long long, std::string>> sorted;
-        for (const auto& [k, v] : m) sorted.emplace_back(v.count, k);
-        std::sort(sorted.begin(), sorted.end(), std::greater<>());
+        sorted.reserve(pairs.size());
+        for (const auto& [k, v] : pairs) {
+            if constexpr (std::is_integral_v<V>) sorted.emplace_back(*v, std::string(k));
+            else sorted.emplace_back(v->count, std::string(k));
+        }
+        // A plain count map breaks ties by key ascending; the combined
+        // (count, etime) maps used std::greater<> on the pair, i.e. key
+        // descending.  Both are kept, so the tables do not move.
+        if constexpr (std::is_integral_v<V>) {
+            std::sort(sorted.begin(), sorted.end(), [](const auto& a, const auto& b) {
+                if (a.first != b.first) return a.first > b.first;
+                return a.second < b.second;
+            });
+        } else {
+            std::sort(sorted.begin(), sorted.end(), [](const auto& a, const auto& b) {
+                if (a.first != b.first) return a.first > b.first;
+                return a.second > b.second;
+            });
+        }
         std::vector<std::vector<std::string>> rows;
         int count = 0;
         for (const auto& [val, key] : sorted) {
@@ -374,13 +374,15 @@ namespace {
         print_table({col1, "Count"}, rows);
     }
 
-    template<typename T>
+    template <typename Map>
     void print_string_double_map(const std::string& title, const std::string& col1,
-                                 const std::map<std::string, T>& m, int limit = 20) {
-        if (m.empty()) return;
+                                 const Map& m, int limit = 20) {
+        const auto pairs = as_pairs(m);
+        if (pairs.empty()) return;
         print_separator(title);
         std::vector<std::pair<double, std::string>> sorted;
-        for (const auto& [k, v] : m) sorted.emplace_back(v.etime_total, k);
+        sorted.reserve(pairs.size());
+        for (const auto& [k, v] : pairs) sorted.emplace_back(v->etime_total, std::string(k));
         std::sort(sorted.begin(), sorted.end(), std::greater<>());
         std::vector<std::vector<std::string>> rows;
         int count = 0;
@@ -770,15 +772,16 @@ void print_text_report(const Aggregator& agg, double processing_time, bool compa
         print_separator("Filters per Application");
         std::vector<std::vector<std::string>> fa_rows;
 
+        const auto fa_items = agg.filter_by_app.sorted_by_key();
         long long max_fa_count = 0;
-        for (const auto& [key, cnt] : agg.filter_by_app)
-            if (cnt > max_fa_count) max_fa_count = cnt;
+        for (const auto& it : fa_items)
+            if (*it.value > max_fa_count) max_fa_count = *it.value;
 
         std::string current_app;
         int app_color_idx = 0;
         std::vector<std::pair<long long, std::string>> app_filters;
-        for (const auto& [key, cnt] : agg.filter_by_app) {
-            if (key.first != current_app) {
+        for (const auto& it : fa_items) {
+            if (it.key1 != std::string_view(current_app)) {
                 if (!current_app.empty()) {
                     std::sort(app_filters.begin(), app_filters.end(), std::greater<>());
                     int rank = 0;
@@ -797,10 +800,10 @@ void print_text_report(const Aggregator& agg, double processing_time, bool compa
                     }
                     app_filters.clear();
                 }
-                current_app = key.first;
+                current_app = std::string(it.key1);
                 app_color_idx++;
             }
-            app_filters.emplace_back(cnt, key.second);
+            app_filters.emplace_back(*it.value, std::string(it.key2));
         }
         if (!current_app.empty()) {
             std::sort(app_filters.begin(), app_filters.end(), std::greater<>());
@@ -1530,12 +1533,12 @@ void print_html_report(const Aggregator& agg, double duration, bool /*compact*/,
     auto print_h_count_table = [&](const std::string& title, const std::string& col1, const auto& m, int limit = 20) {
         if (m.empty()) return;
         std::cout << "<h2 id=\"" << section_id(title) << "\">" << title << "</h2>\n<table>\n<tr><th>" << col1 << "</th><th>Count</th></tr>\n";
+        using V = typename std::decay_t<decltype(m)>::mapped_type;
+        const auto pairs = as_pairs(m);
         std::vector<std::pair<long long, std::string>> sorted;
-        for (const auto& [key, val] : m) {
-            if constexpr (std::is_arithmetic_v<std::decay_t<decltype(val)>>)
-                sorted.emplace_back(val, key);
-            else
-                sorted.emplace_back(val.count, key);
+        for (const auto& [k, v] : pairs) {
+            if constexpr (std::is_integral_v<V>) sorted.emplace_back(*v, std::string(k));
+            else sorted.emplace_back(v->count, std::string(k));
         }
         std::sort(sorted.begin(), sorted.end(), std::greater<>());
         int cnt = 0;
@@ -1548,13 +1551,9 @@ void print_html_report(const Aggregator& agg, double duration, bool /*compact*/,
     auto print_h_double_table = [&](const std::string& title, const std::string& col1, const auto& m, int limit = 20) {
         if (m.empty()) return;
         std::cout << "<h2 id=\"" << section_id(title) << "\">" << title << "</h2>\n<table>\n<tr><th>" << col1 << "</th><th>Total etime</th></tr>\n";
+        const auto pairs = as_pairs(m);
         std::vector<std::pair<double, std::string>> sorted;
-        for (const auto& [key, val] : m) {
-            if constexpr (std::is_same_v<std::decay_t<decltype(val)>, double>)
-                sorted.emplace_back(val, key);
-            else
-                sorted.emplace_back(val.etime_total, key);
-        }
+        for (const auto& [k, v] : pairs) sorted.emplace_back(v->etime_total, std::string(k));
         std::sort(sorted.begin(), sorted.end(), std::greater<>());
         int cnt = 0;
         for (const auto& [t, key] : sorted) {
@@ -1585,14 +1584,15 @@ void print_html_report(const Aggregator& agg, double duration, bool /*compact*/,
     // with the same gradient ratio as the text version.
     if (!agg.filter_by_app.empty()) {
         std::cout << "<h2 id=\"sec-filters-app\">Filters per Application</h2>\n<table>\n<tr><th>App</th><th>Filter</th><th>Count</th></tr>\n";
+        const auto fa_items = agg.filter_by_app.sorted_by_key();
         long long max_fa_count = 0;
-        for (const auto& [key, cnt] : agg.filter_by_app)
-            if (cnt > max_fa_count) max_fa_count = cnt;
+        for (const auto& it : fa_items)
+            if (*it.value > max_fa_count) max_fa_count = *it.value;
 
         std::string current_app;
         std::vector<std::pair<long long, std::string>> app_filters;
-        for (const auto& [key, cnt] : agg.filter_by_app) {
-            if (key.first != current_app) {
+        for (const auto& it : fa_items) {
+            if (it.key1 != std::string_view(current_app)) {
                 if (!current_app.empty()) {
                     std::sort(app_filters.begin(), app_filters.end(), std::greater<>());
                     int rank = 0;
@@ -1604,9 +1604,9 @@ void print_html_report(const Aggregator& agg, double duration, bool /*compact*/,
                     }
                     app_filters.clear();
                 }
-                current_app = key.first;
+                current_app = std::string(it.key1);
             }
-            app_filters.emplace_back(cnt, key.second);
+            app_filters.emplace_back(*it.value, std::string(it.key2));
         }
         if (!current_app.empty()) {
             std::sort(app_filters.begin(), app_filters.end(), std::greater<>());
@@ -2300,7 +2300,8 @@ void print_json_report(const Aggregator& agg, double duration, bool /*compact*/,
     // Array of objects sorted by count descending (limit 20).
     json filters = json::array();
     std::vector<std::pair<long long, std::string>> filters_sorted;
-    for (const auto& [k, v] : agg.filter_stats) filters_sorted.emplace_back(v.count, k);
+    for (const auto& [k, v] : as_pairs(agg.filter_stats))
+        filters_sorted.emplace_back(v->count, std::string(k));
     std::sort(filters_sorted.begin(), filters_sorted.end(), std::greater<>());
     count = 0;
     for (const auto& [c, filter] : filters_sorted) {
@@ -2308,8 +2309,8 @@ void print_json_report(const Aggregator& agg, double duration, bool /*compact*/,
         json entry;
         entry["filter"] = filter;
         entry["count"] = c;
-        auto it = agg.filter_stats.find(filter);
-        if (it != agg.filter_stats.end()) entry["etime_total"] = it->second.etime_total;
+        if (const auto* info = agg.filter_stats.find(filter))
+            entry["etime_total"] = info->etime_total;
         filters.push_back(entry);
     }
     report["top_filters"] = filters;
