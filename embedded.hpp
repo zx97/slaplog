@@ -1490,7 +1490,7 @@ memory.
 connections, error texts — not the lines, so the file is a small fraction of the
 input: 1.6 MB for the 1 GiB reference log, 0.15 % of it.  The
 aggregate it rebuilds is larger — of the order of 0.1–0.2× the input — and that
-is what must fit in RAM when the state is resumed (roughly 150 MB for that log).
+is what must fit in RAM when the state is resumed (roughly 130 MB for that log).
 Resuming is fast because nothing is re-parsed: the same report comes back in
 half a second instead of forty.
 

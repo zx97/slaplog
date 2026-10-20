@@ -196,6 +196,11 @@ void w_str(Writer& w, const std::string& s) {
     w_bytes(w, s.data(), s.size());
 }
 
+void w_strv(Writer& w, std::string_view s) {
+    w_u32(w, static_cast<uint32_t>(s.size()));
+    w_bytes(w, s.data(), s.size());
+}
+
 void w_opt_i32(Writer& w, const std::optional<int>& o) {
     w_u8(w, o ? 1 : 0);
     if (o) w_i32(w, *o);
@@ -331,6 +336,37 @@ void w_map_info(Writer& w, const std::map<std::string, T>& m) {
     for (const auto& [k, v] : m) { w_str(w, k); w_i64(w, v.count); w_f64(w, v.etime_total); }
 }
 
+// The interned maps use the same wire layout, keyed by a borrowed view.
+template <typename Map>
+void write_interned_i64(Writer& w, const Map& m) {
+    const auto items = m.sorted_by_key();
+    w_map_size(w, items.size());
+    for (const auto& it : items) { w_strv(w, it.key); w_i64(w, *it.value); }
+}
+
+template <typename Map>
+void read_map_i64(Reader& r, Map& m) {
+    m.clear();
+    const uint32_t n = r_u32(r);
+    for (uint32_t i = 0; i < n && r.ok; ++i) {
+        std::string k = r_str(r);
+        m[k] = r_i64(r);
+    }
+}
+
+template <typename Map>
+void read_map_info(Reader& r, Map& m) {
+    m.clear();
+    const uint32_t n = r_u32(r);
+    for (uint32_t i = 0; i < n && r.ok; ++i) {
+        std::string k = r_str(r);
+        typename Map::mapped_type v;
+        v.count = r_i64(r);
+        v.etime_total = r_f64(r);
+        m[k] = v;
+    }
+}
+
 template <typename T>
 void r_map_info(Reader& r, std::map<std::string, T>& m) {
     m.clear();
@@ -379,15 +415,31 @@ void write_payload(Writer& w, const Aggregator& a) {
     // -- per-app / base / filter
     w_map_info(w, a.app_stats);
     w_map_info(w, a.base_stats);
-    w_map_info(w, a.filter_stats);
+    // Written in key order: the hash layout must not leak into the file.
+    {
+        const auto items = a.filter_stats.sorted_by_key();
+        w_map_size(w, items.size());
+        for (const auto& it : items) {
+            w_strv(w, it.key);
+            w_i64(w, it.value->count);
+            w_f64(w, it.value->etime_total);
+        }
+    }
     // Deprecated: this map was filled, serialised and never read by a report.
     // The field stays in the layout (empty) so schema-1 states keep parsing.
     w_map_size(w, 0);
-    w_map_i64(w, a.norm_filter_n1_count);
-    w_map_i64(w, a.norm_filter_n0_count);
-    w_map_i64(w, a.wildcard_filter_count);
-    w_map_size(w, a.filter_by_app.size());
-    for (const auto& [k, v] : a.filter_by_app) { w_str(w, k.first); w_str(w, k.second); w_i64(w, v); }
+    write_interned_i64(w, a.norm_filter_n1_count);
+    write_interned_i64(w, a.norm_filter_n0_count);
+    write_interned_i64(w, a.wildcard_filter_count);
+    {
+        const auto items = a.filter_by_app.sorted_by_key();
+        w_map_size(w, items.size());
+        for (const auto& it : items) {
+            w_strv(w, it.key1);
+            w_strv(w, it.key2);
+            w_i64(w, *it.value);
+        }
+    }
     w_map_i64(w, a.attr_count);
 
     // -- question-mark filters
@@ -579,21 +631,21 @@ bool read_payload(Reader& r, Aggregator& a, std::string& err) {
 
     r_map_info(r, n.app_stats);
     r_map_info(r, n.base_stats);
-    r_map_info(r, n.filter_stats);
+    read_map_info(r, n.filter_stats);
     // Deprecated and ignored: read it and drop it, without allocating what a
     // schema-1 state may carry (17 % of one real export).
     {
         const uint32_t c = r_u32(r);
         for (uint32_t i = 0; i < c && r.ok; ++i) { (void)r_str(r); (void)r_i64(r); }
     }
-    r_map_i64(r, n.norm_filter_n1_count);
-    r_map_i64(r, n.norm_filter_n0_count);
-    r_map_i64(r, n.wildcard_filter_count);
+    read_map_i64(r, n.norm_filter_n1_count);
+    read_map_i64(r, n.norm_filter_n0_count);
+    read_map_i64(r, n.wildcard_filter_count);
     {
         const uint32_t c = r_u32(r);
         for (uint32_t i = 0; i < c && r.ok; ++i) {
             std::string a1 = r_str(r), a2 = r_str(r);
-            n.filter_by_app[{a1, a2}] = r_i64(r);
+            n.filter_by_app(a1, a2) = r_i64(r);
         }
     }
     r_map_i64(r, n.attr_count);

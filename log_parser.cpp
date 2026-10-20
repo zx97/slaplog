@@ -2335,7 +2335,7 @@ void update_aggregator(Aggregator& agg, const Event& ev,
                 if (*op.nentries == 1) agg.norm_filter_n1_count[op.filter]++;
                 if (*op.nentries == 0) agg.norm_filter_n0_count[op.filter]++;
             }
-            if (!who.empty()) agg.filter_by_app[{who, op.filter}]++;
+            if (!who.empty()) agg.filter_by_app(who, op.filter)++;
         }
 
         if (!who.empty()) {
@@ -2435,7 +2435,7 @@ void update_aggregator(Aggregator& agg, const Event& ev,
                 if (*op.nentries == 1) agg.norm_filter_n1_count[op.filter]++;
                 if (*op.nentries == 0) agg.norm_filter_n0_count[op.filter]++;
             }
-            if (!who.empty()) agg.filter_by_app[{who, op.filter}]++;
+            if (!who.empty()) agg.filter_by_app(who, op.filter)++;
         }
 
         if (!who.empty()) {
@@ -2779,16 +2779,16 @@ void merge_aggregators(Aggregator& dest, const Aggregator& src) {
         d.count += v.count;
         d.etime_total += v.etime_total;
     }
-    for (const auto& [k, v] : src.filter_stats) {
-        auto& d = dest.filter_stats[k];
-        d.count += v.count;
-        d.etime_total += v.etime_total;
+    for (const auto& it : src.filter_stats) {
+        auto& d = dest.filter_stats[it.key];
+        d.count += it.value.count;
+        d.etime_total += it.value.etime_total;
     }
-    for (const auto& [k, v] : src.norm_filter_n1_count) dest.norm_filter_n1_count[k] += v;
-    for (const auto& [k, v] : src.norm_filter_n0_count) dest.norm_filter_n0_count[k] += v;
-    for (const auto& [k, v] : src.wildcard_filter_count) dest.wildcard_filter_count[k] += v;
-    for (const auto& [kv, cnt] : src.filter_by_app)
-        dest.filter_by_app[kv] += cnt;
+    for (const auto& it : src.norm_filter_n1_count) dest.norm_filter_n1_count[it.key] += it.value;
+    for (const auto& it : src.norm_filter_n0_count) dest.norm_filter_n0_count[it.key] += it.value;
+    for (const auto& it : src.wildcard_filter_count) dest.wildcard_filter_count[it.key] += it.value;
+    for (const auto& it : src.filter_by_app)
+        dest.filter_by_app(it.key1, it.key2) += it.value;
     for (const auto& [k, v] : src.attr_count) dest.attr_count[k] += v;
 
     // --- "?" filter (unindexed) tracking ---
