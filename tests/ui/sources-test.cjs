@@ -44,7 +44,7 @@ const lines = [
   L("hostB.example.com", 12, 'conn=1 op=3 SRCH base="dc=example,dc=com" scope=2 deref=0 filter="(uid=b)"'),
   L("hostB.example.com", 13, "conn=1 op=3 SEARCH RESULT tag=101 err=0 qtime=0 etime=1 nentries=500 text="),
   // debug format: no host, so it must not add a third server
-  '6a734745.00000001 0x7f9c1e33a700 conn=9 op=0 BIND dn="cn=x,dc=y" method=128',
+  '6a734745.00000001 0x7f9c1e33a700 conn=9 op=0 BIND dn="cn=x,dc=test" method=128',
 ].join("\n") + "\n";
 fs.writeFileSync(LOG, lines);
 
@@ -163,7 +163,7 @@ const blines = [
   L("hostA", 2, 'conn=1 op=0 BIND dn="cn=tls,dc=example,dc=com" method=128'),
   L("hostA", 3, "conn=1 op=0 RESULT tag=97 err=0 qtime=0 etime=1 text="),
   // ldap + StartTLS: the handshake follows the STARTTLS operation
-  L("hostA", 4, "conn=2 fd=2 ACCEPT from IP=10.0.0.2:1 (IP=0.0.0.0:389)"),
+  L("hostA", 4, "conn=2 fd=2 ACCEPT from IP=192.0.2.2:1 (IP=0.0.0.0:389)"),
   L("hostA", 5, "conn=2 op=0 EXT oid=1.3.6.1.4.1.1466.20037"),
   L("hostA", 6, "conn=2 op=0 STARTTLS"),
   L("hostA", 7, "conn=2 op=0 RESULT oid= err=0 qtime=0 etime=1 text="),
@@ -203,7 +203,7 @@ check("HTML: no Load by Server section for a single-server log",
 // set, and no Load by Server section (which would have one unnamed row).
 const DLOG = SL.SCRATCH + "/debug-only.log";
 fs.writeFileSync(DLOG,
-  '6a734745.00000001 0x7f9c1e33a700 conn=1 op=0 BIND dn="cn=x,dc=y" method=128\n' +
+  '6a734745.00000001 0x7f9c1e33a700 conn=1 op=0 BIND dn="cn=x,dc=test" method=128\n' +
   "6a734745.00000002 0x7f9c1e33a700 conn=1 op=0 RESULT tag=97 err=0 qtime=0 etime=1 text=\n");
 const djson = JSON.parse(run(["-o", "json", "-q", DLOG]));
 check("cluster: a host-less debug log has no per-server split",

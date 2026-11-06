@@ -25,7 +25,7 @@ gen() { # <file> <host> <base-hour>
       for (i = 0; i < n; i++) {
         t = i; hh = h0 + int(t/3600); mm = int((t%3600)/60); ss = t%60;
         printf "Oct 17 %02d:%02d:%02d %s slapd[1]: conn=%d fd=%d ACCEPT from IP=10.0.0.%d:1 (IP=0.0.0.0:389)\n", hh,mm,ss,host,i,i,i%250;
-        printf "Oct 17 %02d:%02d:%02d %s slapd[1]: conn=%d op=0 BIND dn=\"uid=%s,dc=x\" method=128\n", hh,mm,ss,host,i,host;
+        printf "Oct 17 %02d:%02d:%02d %s slapd[1]: conn=%d op=0 BIND dn=\"uid=%s,dc=example\" method=128\n", hh,mm,ss,host,i,host;
       }
     }' > "$2"
 }

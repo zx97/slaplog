@@ -99,6 +99,11 @@ embedded:
 check-doc:
 	@$(ROOT_DIR)tools/gen_embedded.py --check
 
+# Refuse fixtures, samples and tests carrying data that is not anonymised.
+.PHONY: check-anonymity
+check-anonymity:
+	@python3 $(ROOT_DIR)tools/check_anonymity.py
+
 # ===================================================================
 # Tests
 # ===================================================================
@@ -109,7 +114,7 @@ check-doc:
 # `make check`    — the documentation guard plus `make test`.
 # ===================================================================
 .PHONY: test test-ui check
-test: $(TARGET)
+test: check-anonymity $(TARGET)
 	@sh $(ROOT_DIR)tests/native/run.sh
 
 test-ui: $(TARGET)

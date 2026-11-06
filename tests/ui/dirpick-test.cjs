@@ -110,9 +110,9 @@ function entryFromTree(node, fullPath, mtime) {
 }
 
 const TREE = {
-  server1: { "slapd_2.6.log": "2026-10-18T08:00:00.000000001Z host1 slapd[1]: conn=1 fd=5 ACCEPT from IP=10.0.0.1:5000 (IP=0.0.0.0:389)\n" },
-  server2: { "slapd_2.6.log": "2026-10-18T08:00:01.000000001Z host2 slapd[2]: conn=1 fd=5 ACCEPT from IP=10.0.0.2:5000 (IP=0.0.0.0:389)\n" },
-  server3: { "slapd_2.6.log": "2026-10-18T08:00:02.000000001Z host3 slapd[3]: conn=1 fd=5 ACCEPT from IP=10.0.0.3:5000 (IP=0.0.0.0:389)\n" },
+  server1: { "slapd_2.6.log": "2026-10-18T08:00:00.000000001Z host1 slapd[1]: conn=1 fd=5 ACCEPT from IP=192.0.2.1:5000 (IP=0.0.0.0:389)\n" },
+  server2: { "slapd_2.6.log": "2026-10-18T08:00:01.000000001Z host2 slapd[2]: conn=1 fd=5 ACCEPT from IP=192.0.2.2:5000 (IP=0.0.0.0:389)\n" },
+  server3: { "slapd_2.6.log": "2026-10-18T08:00:02.000000001Z host3 slapd[3]: conn=1 fd=5 ACCEPT from IP=192.0.2.3:5000 (IP=0.0.0.0:389)\n" },
 };
 
 // Every file in this tree has the SAME size and the SAME mtime, so only the

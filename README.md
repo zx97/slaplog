@@ -205,6 +205,14 @@ make test        # dependency-free guards (shell + the binary): parse rate, TZ
 make test-ui     # the jsdom/WebAssembly harnesses (npm install --prefix tests)
 ```
 
+`make test` also runs `make check-anonymity`, which refuses fixtures, samples
+and tests that are not anonymised (reserved `example.*` names and RFC 5737
+addresses only). Enable the same guard on every commit, once per clone:
+
+```bash
+git config core.hooksPath .githooks
+```
+
 ## WebAssembly build (browser)
 
 slaplog can also be compiled to WebAssembly and run **entirely inside a browser

@@ -1,0 +1,5 @@
+#!/bin/sh
+# Refuse a commit that would add data which is not anonymised.
+# Enable it once per clone with:
+#     git config core.hooksPath .githooks
+exec python3 "$(git rev-parse --show-toplevel)/tools/check_anonymity.py" --staged

@@ -72,7 +72,7 @@ Aug  5 14:23:07 ldap01 slapd[1234]: conn=2000 fd=20 closed
 2026-08-05T14:23:10.500000Z ldap01 slapd[1234]: conn=3001 op=2 UNBIND
 2026-08-05T14:23:10.600000Z ldap01 slapd[1234]: conn=3001 fd=31 closed
 2026-08-05T14:24:00.000000Z ldap01 slapd[1234]: slapd starting
-2026-08-05T14:25:00.000000Z ldap01 slapd[1234]: [IP=10.99.0.5 NAME=webapp USERNAME=uid=erin,ou=people,dc=example,dc=com] conn=4000 fd=40 ACCEPT from IP=203.0.113.40:50010 (IP=0.0.0.0:389)
+2026-08-05T14:25:00.000000Z ldap01 slapd[1234]: [IP=198.51.100.5 NAME=webapp USERNAME=uid=erin,ou=people,dc=example,dc=com] conn=4000 fd=40 ACCEPT from IP=203.0.113.40:50010 (IP=0.0.0.0:389)
 2026-08-05T14:25:01.000000Z ldap01 slapd[1234]: conn=4000 op=0 BIND dn="uid=erin,ou=people,dc=example,dc=com" method=128
 2026-08-05T14:25:01.100000Z ldap01 slapd[1234]: conn=4000 op=0 RESULT tag=97 err=0 qtime=0 etime=1 text=
 2026-08-05T14:25:02.000000Z ldap01 slapd[1234]: conn=4000 op=1 SRCH base="dc=example,dc=com" scope=2 deref=0 filter="(cn=VeryLongSearchThatTakesTime)"

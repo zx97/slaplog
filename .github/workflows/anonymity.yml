@@ -1,0 +1,13 @@
+name: anonymity
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check that no fixture leaks production data
+        run: python3 tools/check_anonymity.py

@@ -882,7 +882,7 @@ draft-ietf-ldup-session-tracking. When enabled on the client side, slapd logs
 the tracking information on each operation line:
 
 ```
-conn=705807 op=1 [IP=10.67.10.49 NAME=vm3 USERNAME=uid=MyApplication,...] BIND dn="..." method=128
+conn=705807 op=1 [IP=192.0.2.49 NAME=vm3 USERNAME=uid=MyApplication,...] BIND dn="..." method=128
 ```
 
 ### How slaplog handles it

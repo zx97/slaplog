@@ -18,7 +18,7 @@ trap 'rm -rf "$SCRATCH"' EXIT INT TERM
 mk() {
     awk -v h="$2" -v m="$3" -v n="$4" -v cm="${5:-}" 'BEGIN{
         for (i = 0; i < n; i++)
-            printf "Oct 18 20:%02d:00 %s slapd[1]: conn=%d fd=%d ACCEPT from IP=10.0.0.1:1 (IP=0.0.0.0:389)\n", m, h, i, i;
+            printf "Oct 18 20:%02d:00 %s slapd[1]: conn=%d fd=%d ACCEPT from IP=192.0.2.1:1 (IP=0.0.0.0:389)\n", m, h, i, i;
         if (cm != "")
             for (i = 0; i < n; i++)
                 printf "Oct 18 20:%02d:00 %s slapd[1]: conn=%d fd=%d closed\n", cm, h, i, i;

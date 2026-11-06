@@ -21,12 +21,12 @@ const { execFileSync } = require("child_process");
 const FILE1 = [
   "6a734745.00000001 0x7f9c1e33a700 slapd starting",
   "6a734745.00000002 0x7f9c1e33a700 conn=1 fd=12 ACCEPT from IP=192.0.2.10:1111 (IP=0.0.0.0:389)",
-  '6a734745.00000003 0x7f9c1e33a700 conn=1 op=0 BIND dn="uid=APP_A,ou=services,dc=x" method=128',
+  '6a734745.00000003 0x7f9c1e33a700 conn=1 op=0 BIND dn="uid=APP_A,ou=services,dc=example" method=128',
   "6a734745.00000004 0x7f9c1e33a700 conn=1 op=0 RESULT tag=97 err=0 qtime=0.000010 etime=0.000200 text=",
   "6a734745.00000005 0x7f9c1e33a700 conn=1 op=1 SEARCH RESULT tag=101 err=53 qtime=0 etime=1 nentries=0 text=Rule #1",
   "6a734745.00000006 0x7f9c1e33a700 conn=1 op=2 SEARCH RESULT tag=101 err=53 qtime=0 etime=1 nentries=0 text=Rule #1",
   "6a734745.00000007 0x7f9c1e33a700 conn=2 fd=13 ACCEPT from IP=192.0.2.11:2222 (IP=0.0.0.0:389)",
-  '6a734745.00000008 0x7f9c1e33a700 conn=2 op=0 BIND dn="uid=APP_B,ou=services,dc=x" method=128',
+  '6a734745.00000008 0x7f9c1e33a700 conn=2 op=0 BIND dn="uid=APP_B,ou=services,dc=example" method=128',
   "6a734745.00000009 0x7f9c1e33a700 conn=2 op=0 RESULT tag=97 err=0 qtime=0 etime=1 text=",
   "6a734745.0000000a 0x7f9c1e33a700 conn=2 op=1 SEARCH RESULT tag=101 err=53 qtime=0 etime=1 nentries=0 text=Rule #9",
   "6a734745.0000000b 0x7f9c1e33a700 conn=2 op=2 SEARCH RESULT tag=101 err=53 qtime=0 etime=1 nentries=0 text=Rule #9",
@@ -35,11 +35,11 @@ const FILE1 = [
 const FILE2 = [
   "6a734745.00000001 0x7f9c1e33a700 slapd starting",
   "6a734745.00000002 0x7f9c1e33a700 conn=1 fd=12 ACCEPT from IP=192.0.2.10:1111 (IP=0.0.0.0:389)",
-  '6a734745.00000003 0x7f9c1e33a700 conn=1 op=0 BIND dn="uid=APP_A,ou=services,dc=x" method=128',
+  '6a734745.00000003 0x7f9c1e33a700 conn=1 op=0 BIND dn="uid=APP_A,ou=services,dc=example" method=128',
   "6a734745.00000004 0x7f9c1e33a700 conn=1 op=0 RESULT tag=97 err=0 qtime=0 etime=1 text=",
   "6a734745.00000005 0x7f9c1e33a700 conn=1 op=1 SEARCH RESULT tag=101 err=53 qtime=0 etime=1 nentries=0 text=Rule #2",
   "6a734745.00000006 0x7f9c1e33a700 conn=2 fd=13 ACCEPT from IP=192.0.2.12:3333 (IP=0.0.0.0:389)",
-  '6a734745.00000007 0x7f9c1e33a700 conn=2 op=0 BIND dn="uid=APP_C,ou=services,dc=x" method=128',
+  '6a734745.00000007 0x7f9c1e33a700 conn=2 op=0 BIND dn="uid=APP_C,ou=services,dc=example" method=128',
   "6a734745.00000008 0x7f9c1e33a700 conn=2 op=0 RESULT tag=97 err=0 qtime=0 etime=1 text=",
   "6a734745.00000009 0x7f9c1e33a700 conn=2 op=1 SEARCH RESULT tag=101 err=53 qtime=0 etime=1 nentries=0 text=Rule #1",
 ].join("\n") + "\n";
@@ -136,7 +136,7 @@ const rows = [...html.matchAll(/<tr>(.*?)<\/tr>/gs)]
   .filter((c) => c.length >= 5);
 const rowOf = (frag) => rows.find((c) => c[0].includes(frag) && c[1] === "53");
 check("no informational row in the per-application table",
-      !rows.some((c) => c.length >= 5 && c[1] === "0" && c[0].includes("dc=x")));
+      !rows.some((c) => c.length >= 5 && c[1] === "0" && c[0].includes("dc=example")));
 check("APP_A's row shows only its own messages",
       (() => { const r = rowOf("APP_A"); return !!r && /2x: Rule #1/.test(r[4]) && /1x: Rule #2/.test(r[4]) && !/Rule #9/.test(r[4]); })());
 check("APP_B's row shows its own message and not another's",

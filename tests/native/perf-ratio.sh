@@ -29,14 +29,14 @@ trap 'rm -rf "$SCRATCH"' EXIT INT TERM
 awk -v n="$N" 'BEGIN{
   for (i = 0; i < n; i++) {
     d = 1 + (i % 28); h = i % 24; m = i % 60; s = i % 60;
-    printf "Oct %02d %02d:%02d:%02d host1 slapd[1]: conn=%d op=0 BIND dn=\"uid=u%d,dc=x\" method=128\n", d,h,m,s,i,i;
+    printf "Oct %02d %02d:%02d:%02d host1 slapd[1]: conn=%d op=0 BIND dn=\"uid=u%d,dc=example\" method=128\n", d,h,m,s,i,i;
     printf "Oct %02d %02d:%02d:%02d host1 slapd[1]: conn=%d op=0 RESULT tag=97 err=0 qtime=0.000010 etime=0.000200 text=\n", d,h,m,s,i;
   } }' > "$SCRATCH/syslog.log"
 
 awk -v n="$N" 'BEGIN{
   for (i = 0; i < n; i++) {
     d = 1 + (i % 28); h = i % 24; m = i % 60; s = i % 60;
-    printf "2026-10-%02dT%02d:%02d:%02d.000000001Z host1 slapd[1]: conn=%d op=0 BIND dn=\"uid=u%d,dc=x\" method=128\n", d,h,m,s,i,i;
+    printf "2026-10-%02dT%02d:%02d:%02d.000000001Z host1 slapd[1]: conn=%d op=0 BIND dn=\"uid=u%d,dc=example\" method=128\n", d,h,m,s,i,i;
     printf "2026-10-%02dT%02d:%02d:%02d.000000002Z host1 slapd[1]: conn=%d op=0 RESULT tag=97 err=0 qtime=0.000010 etime=0.000200 text=\n", d,h,m,s,i;
   } }' > "$SCRATCH/rfc3339.log"
 

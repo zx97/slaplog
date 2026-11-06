@@ -23,7 +23,7 @@ trap 'rm -rf "$SCRATCH"' EXIT INT TERM
 
 # A syslog-utc fixture with a known answer: 09:30:16Z (and one second later).
 cat > "$SCRATCH/s.log" <<'EOF'
-Oct 18 09:30:16 host1 slapd[1]: conn=1 op=0 BIND dn="uid=a,dc=x" method=128
+Oct 18 09:30:16 host1 slapd[1]: conn=1 op=0 BIND dn="uid=a,dc=example" method=128
 Oct 18 09:30:17 host1 slapd[1]: conn=1 op=0 RESULT tag=97 err=0 qtime=0.000010 etime=0.000200 text=
 EOF
 

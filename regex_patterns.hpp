@@ -139,7 +139,7 @@ namespace slaplog_rx {
     // [group  1] connection ID
     // [group  2] fd number
     // [group  3] remote IP address (with optional port)
-    // Matches: conn=1 fd=12 ACCEPT from IP=192.168.1.1:54321
+    // Matches: conn=1 fd=12 ACCEPT from IP=192.0.2.1:54321
     inline const Regex RE_ACCEPT_IP(R"xx(^conn=(\d+)\s+fd=(\d+)\s+ACCEPT\s+from\s+IP=(.+?)(?:\s+$.*$)?$)xx");
 
     // [group  1] connection ID
@@ -401,14 +401,14 @@ namespace slaplog_rx {
     // [group  2] session name (may be empty)
     // [group  3] username (may be empty)
     // [group  4] the remainder of the log line after the session info
-    // Matches: [IP=192.168.1.1 NAME=sessionX USERNAME=cn=admin] SEARCH ...
+    // Matches: [IP=192.0.2.1 NAME=sessionX USERNAME=cn=admin] SEARCH ...
     inline const Regex RE_SESSION_TRACK_FULL(R"xx(^\[IP=(\S+)\s+NAME=(.*?)\s+USERNAME=(.*?)\]\s+(.*)$)xx");
 
     // Same as RE_SESSION_TRACK_FULL but without the USERNAME field.
     // [group  1] client IP address
     // [group  2] session name
     // [group  3] remainder of log line
-    // Matches: [IP=192.168.1.1 NAME=sessionX] SEARCH ...
+    // Matches: [IP=192.0.2.1 NAME=sessionX] SEARCH ...
     inline const Regex RE_SESSION_TRACK_PARTIAL(R"xx(^\[IP=(\S+)\s+NAME=(.*?)\]\s+(.*)$)xx");
 
     // -----------------------------------------------------------------

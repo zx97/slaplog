@@ -177,7 +177,7 @@ for (const [name, svg] of [["connections", connTwo], ["errors", errTwo]]) {
     let s = "";
     for (let i = 0; i < 20; i++) {
       const ts = `${date}T${String(hh).padStart(2, "0")}:${String(i).padStart(2, "0")}:00.000000000Z`;
-      s += `${ts} ${host} slapd[1]: conn=${i + 1} fd=${i + 10} ACCEPT from IP=10.0.0.1:1000 (IP=0.0.0.0:389)\n`;
+      s += `${ts} ${host} slapd[1]: conn=${i + 1} fd=${i + 10} ACCEPT from IP=192.0.2.1:1000 (IP=0.0.0.0:389)\n`;
       s += `${ts} ${host} slapd[1]: conn=${i + 1} op=0 SEARCH RESULT tag=101 err=49 qtime=0 etime=1 nentries=0 text=x\n`;
     }
     return s;
