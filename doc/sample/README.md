@@ -66,7 +66,12 @@ generated from a simulated OpenLDAP log set, then **fully anonymised**: every
 account, host, domain, IP address, e-mail, group and custom schema value was
 replaced with a synthetic value, and the custom schema attribute names were
 renamed (`customAttr1`, `customAttr2`, …). The numbers, charts, tables and the
-**shape of the incident** are simulated.
+**shape of the incident** are simulated; only the labels are synthetic.
+
+Three display adjustments make the sample easier to read and more readable:
+the dates are shifted by six months, two days and 17:23:12 (the report's
+"Generated" date is kept), `slapo-sock` filter messages become
+`slapo-sock filter rule #<n>`, and oversized filters are shortened.
 
 It is here to show what the report makes obvious at a glance — the kind of
 diagnosis that would otherwise take hours of reading raw log lines:
