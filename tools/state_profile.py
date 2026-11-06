@@ -295,6 +295,55 @@ def error_times():
 
 mark("error_times_by_code", error_times)
 
+
+def filter_families():
+    n = u32()
+    for _ in range(n):
+        s(); s()          # account, generalized template
+        i64(); f64(); i64()
+        opt(i64)          # nentries_min (optional)
+        opt(i64)          # nentries_max (optional)
+    return n
+
+
+def op_sequences():
+    n = u32()
+    for _ in range(n):
+        s(); s(); i64()
+    return n
+
+
+def op_type_etime():
+    n = u32()
+    for _ in range(n):
+        s(); f64()
+    return n
+
+
+if SCHEMA >= 3:
+    mark("filter_families", filter_families)
+    mark("op_sequences", op_sequences)
+
+if SCHEMA >= 4:
+    mark("op_type_etime", op_type_etime)
+
+if SCHEMA >= 5:
+    mark("log_format", lambda: i32())
+
+
+def etime_by_hour():
+    n = u32()
+    for _ in range(n):
+        i64()
+        m = u32()
+        for _ in range(m):
+            s(); f64()
+    return n
+
+
+if SCHEMA >= 6:
+    mark("etime_by_hour", etime_by_hour)
+
 print(f"payload: {len(payload):,} bytes ({len(payload)/1048576:.1f} MiB)")
 print(f"parsed:  {pos:,} bytes\n")
 print(f"{'section':48s} {'bytes':>12s} {'%':>6s} {'entries':>10s}")

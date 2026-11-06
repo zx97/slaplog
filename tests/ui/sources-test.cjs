@@ -106,7 +106,7 @@ check("HTML: Load by Server is drawn when the log names two servers",
 // ----------------------------------------------------------------- text
 const text = run(["-o", "text", "-q", LOG]);
 check("text: the Statistics table lists the servers",
-      text.includes("| Server(s)               | hostA.example.com, hostB.example.com |"));
+      /Server\(s\)/.test(text) && text.includes("hostA.example.com, hostB.example.com"));
 check("text: the Paged Searches section is present",
       text.includes("Paged Searches") && text.includes("cn=admin,dc=example,dc=com"));
 

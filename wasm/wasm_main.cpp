@@ -110,6 +110,8 @@ struct Options {
     bool compact = false;
     bool no_graph = false;
     bool no_version = false;
+    bool no_patterns = false;
+    int pattern_seq_len = 4;
     std::string output_format = "text";
     std::set<std::string> sections = {"all"};
     std::string log_format = "auto";
@@ -138,6 +140,14 @@ Options parse_options(const std::vector<std::string>& argv) {
             o.no_graph = true;
         } else if (arg == "--no-version") {
             o.no_version = true;
+        } else if (arg == "--no-patterns") {
+            o.no_patterns = true;
+        } else if (arg == "--pattern-seq-len") {
+            std::string val;
+            take_value(val);
+            try { o.pattern_seq_len = std::stoi(val); }
+            catch (const std::exception&) { o.pattern_seq_len = 4; }
+            if (o.pattern_seq_len < 2) o.pattern_seq_len = 2;
         } else if (arg == "--resume") {
             if (i + 1 < argv.size()) o.resume.push_back(argv[++i]);
         } else if ((arg == "--title") && i + 1 < argv.size()) {
@@ -219,6 +229,8 @@ bool start_session(Options opts) {
     set_show_version(!opts.no_version);
     // The page has no --unknown-lines option: never keep unparsed lines.
     set_collect_unknown_lines(false);
+    set_collect_patterns(!opts.no_patterns);
+    set_pattern_seq_len(opts.pattern_seq_len);
     auto s = std::make_unique<Session>();
     s->start = std::chrono::system_clock::now();
     s->opts = std::move(opts);

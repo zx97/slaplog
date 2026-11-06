@@ -91,6 +91,16 @@ bool collect_graph_data_enabled() { return g_collect_graph_data; }
 void set_collect_unknown_lines(bool on) { g_collect_unknown_lines = on; }
 bool collect_unknown_lines_enabled() { return g_collect_unknown_lines; }
 
+// Behaviour-pattern collection (--detect-patterns): generalized filter families
+// and repeated operation sequences.  Opt-in, same rationale as graph data.
+static bool g_collect_patterns = false;
+static int g_pattern_seq_len = 4;   // --pattern-seq-len, minimum 2
+
+void set_collect_patterns(bool on) { g_collect_patterns = on; }
+bool collect_patterns_enabled() { return g_collect_patterns; }
+void set_pattern_seq_len(int n) { g_pattern_seq_len = n < 2 ? 2 : n; }
+int pattern_seq_len() { return g_pattern_seq_len; }
+
 // Every code of the LDAP_ERRORS table in report.cpp is classified here, and the
 // classes add up to that table exactly; a code outside it (never seen in
 // production, per the table's own note) is reported as Server, so that an
@@ -421,6 +431,116 @@ void set_replay_ops_limit(long long limit) {
             }
         }
         return trim(out);
+    }
+
+/**
+ * factorize_children: fold consecutive identical sibling clauses into one
+ * "<clause>+".  An OR of a hundred different uid values — (|(uid=a)(uid=b)…) —
+ * generalises to (|(uid=$)(uid=$)…) and is collapsed here to (|(uid=$)+), so two
+ * such requests differing only in the number of clauses land in the same family
+ * instead of one family per arity.  Applied recursively, so a run of identical
+ * negated clauses folds the same way.  The '+' follows a closing ')' and never
+ * collides with a comparison operator.
+ */
+    std::string factorize_children(std::string_view s) {
+        std::string out;
+        size_t i = 0;
+        while (i < s.size()) {
+            const char c = s[i];
+            if (c == '&' || c == '|' || c == '!') { out += c; ++i; continue; }
+            if (c != '(') { out += c; ++i; continue; }
+            // Balanced clause [i, j).
+            size_t j = i + 1, depth = 1;
+            while (j < s.size() && depth > 0) {
+                if (s[j] == '(') ++depth;
+                else if (s[j] == ')') --depth;
+                ++j;
+            }
+            const std::string fact =
+                "(" + factorize_children(s.substr(i + 1, j - i - 2)) + ")";
+            // Count the consecutive identical (factorized) clauses that follow.
+            size_t k = j;
+            int reps = 1;
+            while (k < s.size() && s[k] == '(') {
+                size_t j2 = k + 1, d2 = 1;
+                while (j2 < s.size() && d2 > 0) {
+                    if (s[j2] == '(') ++d2;
+                    else if (s[j2] == ')') --d2;
+                    ++j2;
+                }
+                const std::string next =
+                    "(" + factorize_children(s.substr(k + 1, j2 - k - 2)) + ")";
+                if (next == fact) { ++reps; k = j2; }
+                else break;
+            }
+            out += fact;
+            if (reps >= 2) out += '+';
+            i = k;
+        }
+        return out;
+    }
+
+    std::string factorize_filter(std::string_view s) { return factorize_children(s); }
+
+/**
+ * generalize_filter: Mask the literal values of a search filter while keeping
+ * its structure, so that concrete filters differing only in the data they
+ * search for fold into one family.  The filter passed in is already normalised
+ * (lowercased, dequoted, whitespace-collapsed) by normalize_filter().
+ *
+ *   (employeeNumber=100*)  ->  (employeenumber=#*)
+ *   (employeeNumber=0*)    ->  (employeenumber=#*)
+ *   (employeeType=i)       ->  (employeetype=$)
+ *   (&(objectClass=person)(uid=abc)) -> (&(objectclass=$)(uid=$))
+ *   (uid=*)                ->  (uid=*)        (the wildcard is preserved)
+ *
+ * Digits collapse to '#', any other value character to '$'; attribute names are
+ * kept (already lowercased), as are the comparison operators (= >= <= ~=), the
+ * wildcard '*', and the structural characters (& | ! ( )).  Whitespace is
+ * dropped, so "(uid = foo)" and "(uid=foo)" share a template.
+ */
+    std::string generalize_filter(std::string_view f) {
+        std::string out;
+        bool in_value = false;   // true after an = >= <= ~= operator
+        for (char c : f) {
+            // The log's own closing quote: the filter proper ended here.  Some
+            // SRCH lines carry "attrs=..." after the filter and the parser keeps
+            // it, so stop at the quote instead of generalising that tail.
+            if (c == '"') break;
+            if (std::isspace(static_cast<unsigned char>(c))) continue;
+            if (c == '(' || c == ')') { out += c; in_value = false; continue; }
+            if (c == '&' || c == '|' || c == '!') { out += c; in_value = false; continue; }
+            if (c == '=' || c == '>' || c == '<' || c == '~') { out += c; in_value = true; continue; }
+            if (in_value) {
+                if (c == '*') { out += '*'; continue; }
+                if (c >= '0' && c <= '9') {
+                    if (out.empty() || out.back() != '#') out += '#';
+                    continue;
+                }
+                if (out.empty() || out.back() != '$') out += '$';
+                continue;
+            }
+            out += c;   // attribute name, outside any value
+        }
+        return factorize_filter(out);
+    }
+
+/**
+ * op_symbol: the generalized symbol of a finalized operation, for sequence
+ * mining.  A search is "SRCH|generalized-filter|scope" so that two searches
+ * with the same family and scope share a symbol; any other operation is its
+ * type alone.  Two symbols that keep repeating are what an enumeration or a
+ * fixed request cycle looks like.
+ */
+    std::string op_symbol(const ::OpState& op) {
+        if (op.type == "SRCH") {
+            std::string s = "SRCH|";
+            s += generalize_filter(op.filter);
+            s += '|';
+            s += op.scope.has_value() ? std::to_string(*op.scope) : "-";
+            return s;
+        }
+        return op.type.empty() ? "?" : op.type;
     }
 
 /**
@@ -1137,6 +1257,14 @@ std::string format_epoch_seconds(long long t) {
     }
 
     void add_top_op(Aggregator& agg, const ::TopOpRow& row) {
+        // Cost per operation type, part of the behaviour-patterns collection.
+        if (g_collect_patterns && !row.type.empty()) agg.op_type_etime[row.type] += row.etime;
+        // Cost per hour and account (for the hourly top-consumer view).
+        if (g_collect_patterns && !row.who.empty() && !row.timestamp.empty()) {
+            if (auto t = ts_epoch_seconds(row.timestamp)) {
+                agg.etime_by_hour[*t / 3600][row.who] += row.etime;
+            }
+        }
         // Per-bind-account resource totals, for the HTML report's pie chart.
         if (g_collect_graph_data && !row.who.empty()) {
             auto& u = agg.user_stats[row.who];
@@ -1156,6 +1284,47 @@ std::string format_epoch_seconds(long long t) {
         if (agg.top_ops.size() > 100) {
             std::sort(agg.top_ops.begin(), agg.top_ops.end(), top_op_before);
             agg.top_ops.resize(100);
+        }
+    }
+
+    // Fold a finalized operation into the behaviour-pattern aggregates, when
+    // collection is on.  A search contributes its generalized filter family;
+    // every operation appends its symbol to the connection's sequence window and
+    // counts the contiguous n-grams (length 2..pattern_seq_len()) that end there.
+    void track_pattern_op(Aggregator& agg, ConnState& conn, const ::OpState& op,
+                          const std::string& who, double etime) {
+        if (!g_collect_patterns) return;
+
+        if (op.type == "SRCH" && !op.filter.empty() && !who.empty()) {
+            const std::string tmpl = generalize_filter(op.filter);
+            auto& fam = agg.filter_families(who, tmpl);
+            fam.count++;
+            fam.etime_total += etime;
+            if (op.nentries.has_value()) {
+                fam.nentries_sum += *op.nentries;
+                if (!fam.nentries_min || *op.nentries < *fam.nentries_min)
+                    fam.nentries_min = *op.nentries;
+                if (!fam.nentries_max || *op.nentries > *fam.nentries_max)
+                    fam.nentries_max = *op.nentries;
+            }
+        }
+
+        if (who.empty()) return;
+        const std::string symbol = op_symbol(op);
+        auto& w = conn.recent_symbols;
+        w.push_back(symbol);
+        const int max_len = g_pattern_seq_len;
+        if (static_cast<int>(w.size()) > max_len) w.erase(w.begin());
+        // Emit the n-grams of length 2..len that end at the new symbol; a single
+        // symbol is not a pattern, so length 1 is skipped.
+        std::string ngram;
+        for (size_t k = 2; k <= w.size(); ++k) {
+            ngram.clear();
+            for (size_t j = w.size() - k; j < w.size(); ++j) {
+                if (!ngram.empty()) ngram += " > ";
+                ngram += w[j];
+            }
+            agg.op_sequences(who, ngram)++;
         }
     }
 
@@ -1251,6 +1420,7 @@ Event parse_line(const std::string& line) {
         ev.kind = "UNKNOWN_LINE";
         return ev;
     }
+    ev.format = detected_fmt;
 
     std::string rfc3339_ts = convert_to_rfc3339_utc(timestamp, detected_fmt);
     if (!rfc3339_ts.empty()) {
@@ -1816,6 +1986,11 @@ void update_aggregator(Aggregator& agg, const Event& ev,
         return;
     }
 
+    // Record the detected timestamp format from the first parsed line, so the
+    // report can name the format it read.
+    if (agg.format == LogFormat::AUTO && ev.format != LogFormat::AUTO)
+        agg.format = ev.format;
+
     // ------------------------------------------------------------------
     // Time Bounds
     // ------------------------------------------------------------------
@@ -2347,6 +2522,7 @@ void update_aggregator(Aggregator& agg, const Event& ev,
                                   op.attrs, op.scope, op.deref, conn.binddn, op.authcid,
                                   op.authzid, op.nentries, op.err, op.qtime, op.text,
                                   op.timestamp});
+        track_pattern_op(agg, conn, op, who, etime);
         conn.completed_ops++;
         track_search_run(agg, conn, op, who);
         conn.ops.erase(opid);
@@ -2447,6 +2623,7 @@ void update_aggregator(Aggregator& agg, const Event& ev,
                                   op.attrs, op.scope, op.deref, conn.binddn, op.authcid,
                                   op.authzid, op.nentries, op.err, op.qtime, op.text,
                                   op.timestamp});
+        track_pattern_op(agg, conn, op, who, etime);
         conn.completed_ops++;
         // A search extends the run (or starts one); any other completion breaks
         // it, because the pages must be back to back.
@@ -2702,6 +2879,11 @@ void merge_aggregators(Aggregator& dest, const Aggregator& src) {
     // --- Per-operation-type counts ---
     for (const auto& [k, v] : src.operation_count)
         dest.operation_count[k] += v;
+    for (const auto& [k, v] : src.op_type_etime)
+        dest.op_type_etime[k] += v;
+    for (const auto& [hour, accts] : src.etime_by_hour)
+        for (const auto& [acct, et] : accts)
+            dest.etime_by_hour[hour][acct] += et;
 
     // --- Read/write breakdown ---
     dest.read_write_stats.read += src.read_write_stats.read;
@@ -2790,6 +2972,22 @@ void merge_aggregators(Aggregator& dest, const Aggregator& src) {
     for (const auto& it : src.filter_by_app)
         dest.filter_by_app(it.key1, it.key2) += it.value;
     for (const auto& [k, v] : src.attr_count) dest.attr_count[k] += v;
+
+    // --- Behaviour patterns (--detect-patterns) ---
+    for (const auto& it : src.filter_families) {
+        auto& d = dest.filter_families(it.key1, it.key2);
+        d.count += it.value.count;
+        d.etime_total += it.value.etime_total;
+        d.nentries_sum += it.value.nentries_sum;
+        if (it.value.nentries_min &&
+            (!d.nentries_min || *it.value.nentries_min < *d.nentries_min))
+            d.nentries_min = it.value.nentries_min;
+        if (it.value.nentries_max &&
+            (!d.nentries_max || *it.value.nentries_max > *d.nentries_max))
+            d.nentries_max = it.value.nentries_max;
+    }
+    for (const auto& it : src.op_sequences)
+        dest.op_sequences(it.key1, it.key2) += it.value;
 
     // --- "?" filter (unindexed) tracking ---
     dest.qmark_filter_count += src.qmark_filter_count;
@@ -2886,6 +3084,7 @@ void merge_aggregators(Aggregator& dest, const Aggregator& src) {
         d.etime_total += ui.etime_total;
     }
     if (dest.openldap_version.empty()) dest.openldap_version = src.openldap_version;
+    if (dest.format == LogFormat::AUTO) dest.format = src.format;
     for (const auto& s : src.servers) dest.servers.insert(s);
     for (const auto& [srv, n] : src.ops_by_server) dest.ops_by_server[srv] += n;
     for (const auto& [srv, t] : src.etime_by_server) dest.etime_by_server[srv] += t;

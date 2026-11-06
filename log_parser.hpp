@@ -121,6 +121,16 @@ bool collect_graph_data_enabled();
 void set_collect_unknown_lines(bool on);
 bool collect_unknown_lines_enabled();
 
+// Behaviour-pattern collection.  When enabled (--detect-patterns), two extra
+// aggregates are recorded: generalized search-filter families per bind account
+// and repeated operation sequences (contiguous n-grams) per account.  It is
+// opt-in because it costs memory proportional to the distinct (account, pattern)
+// pairs, and no report reads it unless the "patterns" section is drawn.
+void set_collect_patterns(bool on);
+bool collect_patterns_enabled();
+void set_pattern_seq_len(int n);
+int pattern_seq_len();
+
 // ---------------------------------------------------------------------------
 // LDAP result codes: what a code says about *who* has a problem.
 // ---------------------------------------------------------------------------
@@ -225,6 +235,7 @@ struct Event {
     std::string ts;     // Timestamp of the log entry.
     std::string host;   // Hostname that appears in the syslog-style prefix.
     std::string proc;   // Process identifier (e.g. "slapd[12345]").
+    LogFormat format = LogFormat::AUTO;   // Detected timestamp format of this line.
 
     // --- Connection / operation identifiers ---
     std::optional<int> conn;  // Connection number.
@@ -341,6 +352,12 @@ struct ConnState {
         std::vector<int> counts;  // nentries of each search in the run
     };
     std::optional<SearchRun> search_run;
+
+    // -- Behaviour-pattern sequence window (opt-in) --
+    // The last few finalized operation symbols, kept so repeated n-grams can be
+    // counted as they end.  Only pushed to when pattern collection is enabled,
+    // and bounded to pattern_seq_len() entries, so it costs nothing otherwise.
+    std::vector<std::string> recent_symbols;
 };
 
 // ---- TopOpRow ----
@@ -380,6 +397,21 @@ struct TopConnRow {
     long long ops_count = 0;  // Total operations on this connection.
     std::string binddn;       // Authenticated DN.
     std::string reason;       // Disconnect reason or last error text.
+};
+
+// ---- FilterFamily ----
+// A generalized search-filter family: concrete filters folded together by
+// masking their literal values (see generalize_filter in log_parser.cpp).
+// "(employeeNumber=100*)" and "(employeeNumber=0*)" both reduce to the template
+// "(employeenumber=#*)", so an enumeration over a whole directory shows as one
+// row instead of hundreds.  Carries the aggregate the "patterns" section reads:
+// how often the family ran, how long it took, and how many entries it returned.
+struct FilterFamily {
+    long long count = 0;
+    double etime_total = 0.0;
+    long long nentries_sum = 0;
+    std::optional<long long> nentries_min;   // unset until the first entry count
+    std::optional<long long> nentries_max;
 };
 
 // ---- Deterministic ordering for the top-N tables ----
@@ -518,6 +550,20 @@ struct Aggregator {
         {"SASL", 0},         {"GLOBAL_CONTROL", 0}, {"SYNCPROV", 0}, {"CSN_GET", 0}, {"CSN_QUEUE", 0},
         {"CSN_GRADUATE", 0}, {"NOT_INDEXED", 0}, {"STARTTLS", 0}};
 
+    // -- Per-operation-type cumulative etime --
+    // The "cost per operation" view needs the time each operation type spent,
+    // not just its count: operation_count holds the count, this holds the sum of
+    // etime (milliseconds), so the average cost of SRCH vs BIND vs DEL … shows.
+    // Collected with the behaviour patterns (--no-patterns turns it off), since
+    // the cost table is part of the patterns section.
+    std::map<std::string, double> op_type_etime;
+
+    // -- Cost per hour and account --
+    // etime_by_hour[hour][account] = cumulative etime spent by that account in
+    // that UTC hour (epoch_seconds / 3600).  Feeds the hourly "top consumer"
+    // table and the stacked chart.  Collected with the behaviour patterns.
+    std::map<long long, std::map<std::string, double>> etime_by_hour;
+
     // -- Read vs. write breakdown --
     struct {
         long long read = 0;   // Count of read operations (SRCH, CMP).
@@ -584,6 +630,8 @@ struct Aggregator {
         norm_filter_n0_count.use_pool(filter_pool);
         wildcard_filter_count.use_pool(filter_pool);
         filter_by_app.use_pool(filter_pool);
+        filter_families.use_pool(pattern_pool);
+        op_sequences.use_pool(pattern_pool);
     }
     std::map<std::string, long long> attr_count;            // Requested attribute -> count.
 
@@ -669,6 +717,11 @@ struct Aggregator {
     // never log it; the field then stays empty and no version is invented.
     std::string openldap_version;
 
+    // -- Detected log format --
+    // The timestamp format of the first parsed line, so the report can say which
+    // format it read.  AUTO means no line carried a recognised timestamp.
+    LogFormat format = LogFormat::AUTO;
+
     // -- Log source servers --
     // Distinct hostnames read from the syslog/rfc3339 header prefix.  The
     // "debug" log format carries no hostname, so this stays empty for it and
@@ -735,6 +788,14 @@ struct Aggregator {
     // username.  Feeds the HTML report's "resource consumers" pie chart.
     struct UserInfo { long long count = 0; double etime_total = 0.0; };
     std::map<std::string, UserInfo> user_stats;
+
+    // -- Behaviour patterns (opt-in, see set_collect_patterns) --
+    // Generalized filter families and repeated operation sequences, keyed by the
+    // bind account.  The two maps intern their keys in one shared pool, so an
+    // account or template shared across several entries is stored once.
+    InternedPairMap<FilterFamily> filter_families;  // (account, template) -> family
+    InternedPairMap<long long> op_sequences;        // (account, sequence) -> count
+    std::shared_ptr<StringPool> pattern_pool = std::make_shared<StringPool>();
 
     // -- Connection timeline --
     // One entry per ACCEPT (+1) or CLOSED (-1) event, used by the HTML

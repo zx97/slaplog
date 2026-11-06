@@ -75,12 +75,12 @@ The form mirrors the CLI options. Three details worth knowing:
   `html`, `json` and `replay` reports always contain every section. `all` is
   mutually exclusive with the individual sections.
 - The input log format is always auto-detected, line by line.
-- The html report includes eight SVG charts (simultaneous connections over time
-  with downtime bands and restart markers, errors over time — failing results
-  only, stacked by result code —, response-time distribution, its density
-  profile on a log scale, resource consumers per bind account, operation types,
-  every result code on a log scale with the same codes drawn as a pie on the
-  right, and the
+- The html report includes ten SVG charts (simultaneous connections over time
+  with downtime bands and restart markers, the load split by server, errors over
+  time — failing results only, stacked by result code —, response-time
+  distribution, its density profile on a log scale, resource consumers per bind
+  account, operation types, bind usage (authentication method mix), every result
+  code on a log scale with the same codes drawn as a pie on the right, and the
   failing ones by class), and no *how to read it* note anywhere — a chart that
   needs a word says it in its subtitle. They
   are drawn by default; the **No charts** checkbox turns them off, mirroring

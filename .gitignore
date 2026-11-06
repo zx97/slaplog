@@ -10,6 +10,9 @@
 !*.md
 !/doc/
 !/doc/*.md
+# The synthetic sample log is committed gzipped; the uncompressed copy the
+# generator writes is a local artifact.
+/doc/sample/access.log
 
 # === License ===
 !LICENSE

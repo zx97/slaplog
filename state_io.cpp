@@ -30,7 +30,7 @@
 namespace {
 
 constexpr char MAGIC[8] = {'S', 'L', 'A', 'P', 'S', 'T', 'A', 'T'};
-constexpr uint32_t SCHEMA = 2;   // 2: the timeline is varint-encoded
+constexpr uint32_t SCHEMA = 6;   // 4: cost per op type; 5: log format; 6: etime by hour
 
 // ------------------------------------------------------------------ writer --
 struct Writer {
@@ -591,6 +591,45 @@ void write_payload(Writer& w, const Aggregator& a) {
         w_map_size(w, times.size());
         for (long long t : times) w_i64(w, t);
     }
+
+    // -- behaviour patterns (schema 3)
+    {
+        const auto items = a.filter_families.sorted_by_key();
+        w_map_size(w, items.size());
+        for (const auto& it : items) {
+            w_strv(w, it.key1);            // bind account
+            w_strv(w, it.key2);            // generalized filter template
+            w_i64(w, it.value->count);
+            w_f64(w, it.value->etime_total);
+            w_i64(w, it.value->nentries_sum);
+            w_u8(w, it.value->nentries_min ? 1 : 0);
+            if (it.value->nentries_min) w_i64(w, *it.value->nentries_min);
+            w_u8(w, it.value->nentries_max ? 1 : 0);
+            if (it.value->nentries_max) w_i64(w, *it.value->nentries_max);
+        }
+        const auto seqs = a.op_sequences.sorted_by_key();
+        w_map_size(w, seqs.size());
+        for (const auto& it : seqs) {
+            w_strv(w, it.key1);
+            w_strv(w, it.key2);
+            w_i64(w, *it.value);
+        }
+    }
+
+    // -- cost per operation type (schema 4)
+    w_map_size(w, a.op_type_etime.size());
+    for (const auto& [k, v] : a.op_type_etime) { w_str(w, k); w_f64(w, v); }
+
+    // -- detected log format (schema 5)
+    w_i32(w, static_cast<int32_t>(a.format));
+
+    // -- etime per hour and account (schema 6)
+    w_map_size(w, a.etime_by_hour.size());
+    for (const auto& [hour, accts] : a.etime_by_hour) {
+        w_i64(w, hour);
+        w_map_size(w, accts.size());
+        for (const auto& [acct, et] : accts) { w_str(w, acct); w_f64(w, et); }
+    }
 }
 
 bool read_payload(Reader& r, Aggregator& a, std::string& err) {
@@ -599,9 +638,9 @@ bool read_payload(Reader& r, Aggregator& a, std::string& err) {
         err = "state file is truncated or corrupt";
         return false;
     }
-    if (schema != 1 && schema != SCHEMA) {
+    if (schema < 1 || schema > SCHEMA) {
         err = "state written by schema " + std::to_string(schema) +
-              ", this build reads 1 and " + std::to_string(SCHEMA);
+              ", this build reads 1.." + std::to_string(SCHEMA);
         return false;
     }
     const std::string tool = r_str(r);
@@ -867,6 +906,53 @@ bool read_payload(Reader& r, Aggregator& a, std::string& err) {
             v.reserve(n_t);
             for (uint32_t j = 0; j < n_t && r.ok; ++j) v.push_back(r_i64(r));
             n.error_time_total += n_t;
+        }
+    }
+
+    if (schema >= 3) {
+        {
+            const uint32_t c = r_u32(r);
+            for (uint32_t i = 0; i < c && r.ok; ++i) {
+                std::string acct = r_str(r);
+                std::string tmpl = r_str(r);
+                auto& fam = n.filter_families(acct, tmpl);
+                fam.count = r_i64(r);
+                fam.etime_total = r_f64(r);
+                fam.nentries_sum = r_i64(r);
+                if (r_u8(r)) fam.nentries_min = r_i64(r);
+                if (r_u8(r)) fam.nentries_max = r_i64(r);
+            }
+        }
+        {
+            const uint32_t c = r_u32(r);
+            for (uint32_t i = 0; i < c && r.ok; ++i) {
+                std::string acct = r_str(r);
+                std::string seq = r_str(r);
+                n.op_sequences(acct, seq) = r_i64(r);
+            }
+        }
+    }
+
+    if (schema >= 4) {
+        const uint32_t c = r_u32(r);
+        for (uint32_t i = 0; i < c && r.ok; ++i) {
+            std::string k = r_str(r);
+            n.op_type_etime[k] = r_f64(r);
+        }
+    }
+
+    if (schema >= 5)
+        n.format = static_cast<LogFormat>(r_i32(r));
+
+    if (schema >= 6) {
+        const uint32_t c = r_u32(r);
+        for (uint32_t i = 0; i < c && r.ok; ++i) {
+            const long long hour = r_i64(r);
+            const uint32_t na = r_u32(r);
+            for (uint32_t j = 0; j < na && r.ok; ++j) {
+                std::string acct = r_str(r);
+                n.etime_by_hour[hour][acct] = r_f64(r);
+            }
         }
     }
 

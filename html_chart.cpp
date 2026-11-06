@@ -50,6 +50,7 @@
 #include <cmath>
 #include <cstdio>
 #include <iostream>
+#include <map>
 #include <optional>
 #include <string>
 #include <utility>
@@ -158,13 +159,15 @@ const char* const HATCH_TAG_DONUT = "sl-hatch-donut";
 // Only a render shows this, so the rule is spelled out here once.
 
 // Round a value down to a "readable" axis tick spacing.
-double nice_step(double range, int ticks) {
+double nice_step(double range, int ticks, bool floor_at_one = true) {
     if (range <= 0.0 || ticks <= 0) return 1.0;
     const double raw = range / ticks;
     const double mag = std::pow(10.0, std::floor(std::log10(raw)));
     const double n = raw / mag;
     const double step = (n <= 1.0 ? 1.0 : n <= 2.0 ? 2.0 : n <= 5.0 ? 5.0 : 10.0) * mag;
-    return step < 1.0 ? 1.0 : step;
+    // Integer counts (connections, errors) want whole-unit steps; a continuous
+    // time (etime) does not, so the caller can lift the 1-unit floor.
+    return (floor_at_one && step < 1.0) ? 1.0 : step;
 }
 
 // ---- shared style and tooltip script -------------------------------------
@@ -203,6 +206,10 @@ void print_chart_style() {
   /* Stacked errors: the same silhouette as one total curve, with the colour
      underneath naming the result code that built each part of it. */
   .sl-stack-total{fill:none;stroke:#2c3e50;stroke-width:1.5;stroke-linejoin:round}
+  /* Onset markers on the top-consumer charts: a durable change of the busiest
+     account, drawn at the same x on both the bars and the stack. */
+  .sl-onset{stroke:#d35400;stroke-width:1.5;stroke-dasharray:5 3;stroke-opacity:0.9}
+  .sl-onset-label{fill:#d35400;font-size:11px;font-weight:600}
   .sl-stack-legend{display:flex;flex-wrap:wrap;gap:5px 18px;font-size:0.76rem;color:#5b6b7c;
                    line-height:1.5;margin:8px 0 2px;padding-left:2px}
   .sl-stack-key{white-space:nowrap}
@@ -874,6 +881,16 @@ std::string metric(double v, bool seconds) {
     return seconds ? num(v, 1) + " s" : num(v, 0);
 }
 
+// A duration label that picks the unit so it stays readable: seconds when the
+// value is at least one second, otherwise milliseconds, otherwise microseconds.
+// `v` is in seconds (the unit etime is stored in).
+std::string metric_adaptive(double v) {
+    if (v <= 0.0) return "0";
+    if (v >= 1.0) return num(v, 1) + " s";
+    if (v >= 1e-3) return num(v * 1e3, 1) + " ms";
+    return num(v * 1e6, 1) + " \xc2\xb5s";
+}
+
 // A share is only readable at the scale it is read at.  Four significant digits
 // do that uniformly: 63.4 %, 3.571 %, 99.98 % for the big ones, 0.008333 % and
 // 0.0002097 % for a code seen three times in 1.4 M results — where "%.1f" would
@@ -1070,6 +1087,400 @@ void print_optype_chart(const Aggregator& agg) {
     }
     if (rows.empty()) return;
     print_donut("Operation Types", "share of each operation type", std::move(rows), false);
+}
+
+// Cost per operation type: the same types as the count donut above, but weighted
+// by etime — which type *costs* the most, not which is the most frequent.
+void print_optypecost_chart(const Aggregator& agg) {
+    std::vector<Slice> rows;
+    for (const auto& [type, et] : agg.op_type_etime) {
+        if (et > 0.0) rows.push_back({type, et, "", ""});
+    }
+    if (rows.empty()) return;
+    print_donut("Cost per Operation Type",
+                "share of the cumulative operation time (etime), by operation type",
+                std::move(rows), true);
+}
+
+// Cost per generalized filter family, aggregated across accounts: one slice per
+// template, so an enumeration like (employeenumber=#*) shows as one wedge.
+void print_filterfamilies_chart(const Aggregator& agg) {
+    std::map<std::string, double> by_tmpl;
+    for (const auto& it : agg.filter_families)
+        by_tmpl[std::string(it.key2)] += it.value.etime_total;
+    std::vector<Slice> rows;
+    for (const auto& [tmpl, et] : by_tmpl)
+        if (et > 0.0) rows.push_back({tmpl, et, "", ""});
+    if (rows.empty()) return;
+    print_donut("Filter Families by Cost",
+                "share of the cumulative operation time (etime), by generalized filter family",
+                std::move(rows), true);
+}
+
+// A bind account's own name: the DN starts with "uid=NAME," and the rest is the
+// common directory branch, the same for every account in the log.
+std::string short_account(const std::string& acct) {
+    auto comma = acct.find(',');
+    return comma == std::string::npos ? acct : acct.substr(0, comma);
+}
+
+// Durable takeovers, not every change at the top.  The #1 account oscillates
+// (daytime work, a nightly batch at 02:00), so "the leader changed" would put a
+// line on the chart most hours.  An onset is instead an account that was rarely
+// first over the window before it and is first for most of the window after it:
+// the regime change a reader cares about.  Returns (hour, account) pairs, at
+// most two, earliest first.
+std::vector<std::pair<long long, std::string>> find_onsets(const Aggregator& agg) {
+    constexpr size_t WIN = 24;      // hours on each side of the candidate
+    constexpr double AFTER = 0.80;  // share of the next WIN hours it leads
+    constexpr double BEFORE = 0.20; // share of the prior WIN hours it led
+    std::vector<long long> hours;
+    for (const auto& kv : agg.etime_by_hour) hours.push_back(kv.first);
+    std::sort(hours.begin(), hours.end());
+    const size_t NB = hours.size();
+    if (NB < WIN) return {};
+
+    // The busiest account in each hour.
+    std::vector<std::string> top(NB);
+    for (size_t k = 0; k < NB; ++k) {
+        double best = 0.0;
+        for (const auto& [acct, et] : agg.etime_by_hour.at(hours[k]))
+            if (et > best) { best = et; top[k] = acct; }
+    }
+
+    struct Cand { size_t k; std::string acct; double gain; };
+    std::vector<Cand> cands;
+    std::vector<std::string> seen;
+    for (size_t k = WIN / 2; k < NB; ++k) {
+        const size_t b0 = k > WIN ? k - WIN : 0;
+        const size_t after_end = std::min(NB, k + WIN);
+        const size_t before_len = k - b0, after_len = after_end - k;
+        if (before_len < WIN / 2 || after_len < WIN / 2) continue;
+
+        // Who leads the after-window?
+        std::map<std::string, size_t> count;
+        for (size_t j = k; j < after_end; ++j) ++count[top[j]];
+        std::string acct;
+        size_t lead = 0;
+        for (const auto& [a, c] : count) if (c > lead) { lead = c; acct = a; }
+        if (acct.empty() ||
+            std::find(seen.begin(), seen.end(), acct) != seen.end()) continue;
+
+        size_t led_before = 0;
+        for (size_t j = b0; j < k; ++j) if (top[j] == acct) ++led_before;
+        const double after_frac = static_cast<double>(lead) / after_len;
+        const double before_frac = static_cast<double>(led_before) / before_len;
+        if (after_frac < AFTER || before_frac > BEFORE) continue;
+
+        // Pin the onset to the first hour of that run: the after-window can
+        // start an hour early and still meet the threshold.
+        size_t on = k;
+        while (on < after_end && top[on] != acct) ++on;
+        if (on >= after_end) continue;
+        seen.push_back(acct);
+        cands.push_back({on, acct, after_frac - before_frac});
+    }
+
+    std::sort(cands.begin(), cands.end(),
+              [](const Cand& a, const Cand& b) { return a.gain > b.gain; });
+    if (cands.size() > 2) cands.resize(2);
+    std::sort(cands.begin(), cands.end(),
+              [](const Cand& a, const Cand& b) { return a.k < b.k; });
+    std::vector<std::pair<long long, std::string>> out;
+    for (const auto& c : cands) out.emplace_back(hours[c.k], c.acct);
+    return out;
+}
+
+// Draw the onset markers shared by both top-consumer charts.  `xat` maps an hour
+// index to pixels, so the caller's geometry puts the line at the same x on both.
+// A transparent hit rect over the line makes the thin marker easy to hover, and
+// its tooltip says what the line means.
+template <typename Xat>
+void print_onset_marks(const std::vector<long long>& hours,
+                       const std::vector<std::pair<long long, std::string>>& onsets,
+                       double T, double ph, double plot_right, Xat xat) {
+    for (const auto& [oh, acct] : onsets) {
+        auto it = std::lower_bound(hours.begin(), hours.end(), oh);
+        if (it == hours.end() || *it != oh) continue;
+        const size_t k = static_cast<size_t>(it - hours.begin());
+        const double x = xat(k);
+        const std::string who = short_account(acct);
+
+        std::cout << "<line class=\"sl-onset\" x1=\"" << num(x, 1) << "\" y1=\"" << num(T, 0)
+                  << "\" x2=\"" << num(x, 1) << "\" y2=\"" << num(T + ph, 0) << "\"/>\n";
+        const bool near_right = x > plot_right - 130;
+        std::cout << "<text class=\"sl-onset-label\" x=\"" << num(x + (near_right ? -4 : 4), 1)
+                  << "\" y=\"" << num(T + 11, 0) << "\" text-anchor=\""
+                  << (near_right ? "end" : "start") << "\">"
+                  << xml_escape(who + " onset") << "</text>\n";
+        // Wide invisible target: the 1.5 px line itself is nearly impossible to
+        // hit.  It sits above the bars/bands so it always receives the hover.
+        std::cout << "<rect class=\"sl-hit\" x=\"" << num(x - 6, 1) << "\" y=\"" << num(T, 0)
+                  << "\" width=\"12\" height=\"" << num(ph, 0) << "\""
+                  << " data-x=\"" << xml_escape("Onset " + who) << "\""
+                  << " data-y=\"" << xml_escape(format_epoch_seconds(oh * 3600) +
+                                                 ": becomes #1 here and stays #1 for most of the next 24 h")
+                  << "\"/>\n";
+    }
+}
+
+// "Who consumed the most this hour?"  The table answers it row by row; this
+// chart answers it at a glance: one bar per hour, its height the etime of the
+// single busiest bind account that hour, its colour that account.  A stacked
+// total (still drawn by print_topconsumers_chart, below) reads the total load
+// correctly but hides the culprit: the tallest point can be a recurring nightly
+// batch of another application, and the band drawn on top of the stack "owns"
+// the peak even when the culprit is the band underneath.  The top-consumer bars
+// say exactly what the feature is about, and a sustained takeover shows up as a
+// run of one colour.
+void print_topconsumer_bars(const Aggregator& agg) {
+    if (agg.etime_by_hour.empty()) return;
+
+    std::vector<long long> hours;
+    std::map<std::string, double> total_by_acct;
+    for (const auto& [hour, accts] : agg.etime_by_hour) {
+        hours.push_back(hour);
+        for (const auto& [acct, et] : accts) total_by_acct[acct] += et;
+    }
+    std::sort(hours.begin(), hours.end());
+
+    // Colour is assigned by cumulative etime, so the biggest accounts keep one
+    // stable colour all through the report; anyone outside the top KEEP is grey.
+    std::vector<std::pair<double, std::string>> ranked;
+    for (const auto& [acct, et] : total_by_acct) ranked.emplace_back(et, acct);
+    std::sort(ranked.begin(), ranked.end(), std::greater<>());
+    constexpr size_t KEEP = 6;
+    std::vector<std::string> names;
+    for (size_t i = 0; i < ranked.size() && i < KEEP; ++i) names.push_back(ranked[i].second);
+    auto fill_of = [&](const std::string& acct) -> const char* {
+        auto it = std::find(names.begin(), names.end(), acct);
+        return it != names.end() ? PALETTE[static_cast<size_t>(it - names.begin()) % PALETTE_N]
+                                 : "#7f8c8d";
+    };
+
+    // The single busiest account per hour, and how much etime it cost.
+    const size_t NB = hours.size();
+    std::vector<std::string> top_app(NB);
+    std::vector<double> top_et(NB, 0.0);
+    double ymax = 0.0;
+    for (size_t k = 0; k < NB; ++k) {
+        for (const auto& [acct, et] : agg.etime_by_hour.at(hours[k])) {
+            if (et > top_et[k]) { top_et[k] = et; top_app[k] = acct; }
+        }
+        ymax = std::max(ymax, top_et[k]);
+    }
+    if (ymax <= 0.0) return;
+    const double step = nice_step(ymax, 4, false);
+    const double ytop = std::ceil(ymax / step) * step;
+
+    const double W = 1440, H = 440;
+    const double L = 110, plot_right = 1380, T = 14, B = 56;
+    const double pw = plot_right - L, ph = H - T - B;
+    auto yof = [&](double v) { return T + ph - (v / ytop) * ph; };
+    auto xat = [&](size_t k) {
+        return L + pw * static_cast<double>(k) / (NB > 1 ? static_cast<double>(NB - 1) : 1.0);
+    };
+    auto day_of = [](long long h) {
+        std::string s = format_epoch_seconds(h * 3600);
+        if (s.size() >= 16 && s[4] == '-') return s.substr(5, 5);  // "MM-DD"
+        return s.size() >= 6 ? s.substr(0, 6) : s;                  // "MMM DD"
+    };
+    auto time_of = [](long long h) {
+        std::string s = format_epoch_seconds(h * 3600);
+        return s.size() >= 5 ? s.substr(s.size() - 5) : s;          // "HH:MM"
+    };
+
+    std::cout << "<h2>Top Consumer per Hour</h2>\n<div class=\"sl-chart\">\n";
+    std::cout << "<div class=\"sl-chart-sub\">each hour: the bind account with the highest "
+                 "cumulative etime that hour — bar height is its etime, colour the account</div>\n";
+    std::cout << "<svg viewBox=\"0 0 " << num(W, 0) << " " << num(H, 0) << "\" role=\"img\" "
+                 "aria-label=\"Top consumer per hour: bar height is its etime, colour the account\">\n";
+
+    // Y grid + labels.
+    for (int i = 0; i <= 4; ++i) {
+        const double v = ytop * i / 4.0, y = yof(v);
+        std::cout << "<line x1=\"" << num(L, 0) << "\" y1=\"" << num(y, 0) << "\" x2=\"" << num(plot_right, 0)
+                  << "\" y2=\"" << num(y, 0) << "\" stroke=\"#eef1f4\"/>\n";
+        std::cout << "<text x=\"" << num(L - 6, 0) << "\" y=\"" << num(y + 4, 0)
+                  << "\" text-anchor=\"end\">" << xml_escape(metric_adaptive(v)) << "</text>\n";
+    }
+    // X labels: first, last, and a few in between.  Day on the first line, hour
+    // on the second, so the labels stay narrow enough to crowd the axis.
+    const size_t xstep = NB > 8 ? NB / 8 : 1;
+    for (size_t k = 0; k < NB; k += xstep) {
+        std::cout << "<text x=\"" << num(xat(k), 0) << "\" y=\"" << num(H - 24, 0)
+                  << "\" text-anchor=\"middle\">" << xml_escape(day_of(hours[k])) << "</text>\n";
+        std::cout << "<text x=\"" << num(xat(k), 0) << "\" y=\"" << num(H - 9, 0)
+                  << "\" text-anchor=\"middle\">" << xml_escape(time_of(hours[k])) << "</text>\n";
+    }
+
+    // One bar per hour, coloured by the account that topped it.  A hair of gap
+    // keeps adjacent bars distinct while a run of one colour still reads as a
+    // block — the shape of a takeover.
+    const double slot = pw / static_cast<double>(NB > 0 ? NB : 1);
+    const double bw = std::max(1.0, slot * 0.82);
+    for (size_t k = 0; k < NB; ++k) {
+        if (top_et[k] <= 0.0) continue;
+        const double y = yof(top_et[k]);
+        const double hgt = (T + ph) - y;
+        std::string app = top_app[k];
+        auto comma = app.find(',');
+        if (comma != std::string::npos) app = app.substr(0, comma);  // "uid=NAME"
+        std::cout << "<rect class=\"sl-bar\" x=\"" << num(xat(k) - bw / 2.0, 1)
+                  << "\" y=\"" << num(y, 1) << "\" width=\"" << num(bw, 1)
+                  << "\" height=\"" << num(hgt, 1) << "\""
+                  << " style=\"fill:" << fill_of(top_app[k]) << ";fill-opacity:0.9\""
+                  << " data-x=\"" << xml_escape(format_epoch_seconds(hours[k] * 3600))
+                  << "\" data-y=\"" << xml_escape(app + " — " + metric_adaptive(top_et[k]))
+                  << "\"/>\n";
+    }
+    print_onset_marks(hours, find_onsets(agg), T, ph, plot_right, xat);
+
+    std::cout << "</svg>\n<div class=\"sl-tip\" hidden></div>\n";
+    // Legend, in HTML below the plot so the drawing keeps the full width.  Only
+    // the accounts that actually topped an hour are keyed, so every colour on
+    // the chart has a name beside it.
+    std::vector<std::string> shown;
+    for (size_t k = 0; k < NB; ++k) {
+        if (top_et[k] <= 0.0) continue;
+        if (std::find(shown.begin(), shown.end(), top_app[k]) == shown.end())
+            shown.push_back(top_app[k]);
+    }
+    std::sort(shown.begin(), shown.end(), [&](const std::string& a, const std::string& b) {
+        return total_by_acct.at(a) > total_by_acct.at(b);
+    });
+    std::cout << "<div class=\"sl-stack-legend\">";
+    for (const auto& name : shown) {
+        std::string label = name;
+        if (label.size() > 40) label = label.substr(0, 37) + "...";
+        std::cout << "<span class=\"sl-stack-key\"><i style=\"background:" << fill_of(name)
+                  << "\"></i>" << xml_escape(label) << "</span>";
+    }
+    std::cout << "</div>\n</div>\n";
+}
+
+// The stacked view answers a different question: not "who was first?" but "how
+// was the hour's total load split?".  It is kept beside the top-consumer bars
+// because the two read together: the bars name the culprit hour by hour, the
+// stack shows how much of each hour's total the culprit and the others made up.
+// The stack's height is the whole hour's total, so a recurring nightly batch can
+// set the scale and the band drawn on top can appear to own it — which is
+// exactly why the bars exist above.
+void print_topconsumers_chart(const Aggregator& agg) {
+    if (agg.etime_by_hour.empty()) return;
+
+    std::vector<long long> hours;
+    std::map<std::string, double> total_by_acct;
+    for (const auto& [hour, accts] : agg.etime_by_hour) {
+        hours.push_back(hour);
+        for (const auto& [acct, et] : accts) total_by_acct[acct] += et;
+    }
+    std::sort(hours.begin(), hours.end());
+
+    std::vector<std::pair<double, std::string>> ranked;
+    for (const auto& [acct, et] : total_by_acct) ranked.emplace_back(et, acct);
+    std::sort(ranked.begin(), ranked.end(), std::greater<>());
+
+    constexpr size_t KEEP = 6;
+    std::vector<std::string> names;
+    for (size_t i = 0; i < ranked.size() && i < KEEP; ++i) names.push_back(ranked[i].second);
+    const bool has_other = ranked.size() > KEEP;
+    if (has_other) names.push_back("other");
+
+    const size_t NB = hours.size();
+    std::vector<std::vector<double>> series(names.size(), std::vector<double>(NB, 0.0));
+    for (size_t k = 0; k < NB; ++k) {
+        for (const auto& [acct, et] : agg.etime_by_hour.at(hours[k])) {
+            auto it = std::find(names.begin(), names.end(), acct);
+            if (it != names.end()) series[static_cast<size_t>(it - names.begin())][k] += et;
+            else if (has_other) series.back()[k] += et;
+        }
+    }
+
+    std::vector<double> total_per(NB, 0.0);
+    for (const auto& s : series)
+        for (size_t k = 0; k < NB; ++k) total_per[k] += s[k];
+    double ymax = 0.0;
+    for (double v : total_per) ymax = std::max(ymax, v);
+    if (ymax <= 0.0) return;
+    const double step = nice_step(ymax, 4, false);
+    const double ytop = std::ceil(ymax / step) * step;
+
+    const double W = 1440, H = 440;
+    const double L = 110, plot_right = 1380, T = 14, B = 56;
+    const double pw = plot_right - L, ph = H - T - B;
+    auto yof = [&](double v) { return T + ph - (v / ytop) * ph; };
+    auto xat = [&](size_t k) {
+        return L + pw * static_cast<double>(k) / (NB > 1 ? static_cast<double>(NB - 1) : 1.0);
+    };
+    auto day_of = [](long long h) {
+        std::string s = format_epoch_seconds(h * 3600);
+        if (s.size() >= 16 && s[4] == '-') return s.substr(5, 5);  // "MM-DD"
+        return s.size() >= 6 ? s.substr(0, 6) : s;                  // "MMM DD"
+    };
+    auto time_of = [](long long h) {
+        std::string s = format_epoch_seconds(h * 3600);
+        return s.size() >= 5 ? s.substr(s.size() - 5) : s;          // "HH:MM"
+    };
+
+    std::cout << "<h2>Consumers Over Time (stacked)</h2>\n<div class=\"sl-chart\">\n";
+    std::cout << "<div class=\"sl-chart-sub\">cumulative operation time (etime) per hour, "
+                 "stacked by bind account — the height is the hour's total load</div>\n";
+    std::cout << "<svg viewBox=\"0 0 " << num(W, 0) << " " << num(H, 0) << "\" role=\"img\" "
+                 "aria-label=\"Consumers over time, stacked by bind account\">\n";
+
+    // Y grid + labels.
+    for (int i = 0; i <= 4; ++i) {
+        const double v = ytop * i / 4.0, y = yof(v);
+        std::cout << "<line x1=\"" << num(L, 0) << "\" y1=\"" << num(y, 0) << "\" x2=\"" << num(plot_right, 0)
+                  << "\" y2=\"" << num(y, 0) << "\" stroke=\"#eef1f4\"/>\n";
+        std::cout << "<text x=\"" << num(L - 6, 0) << "\" y=\"" << num(y + 4, 0)
+                  << "\" text-anchor=\"end\">" << xml_escape(metric_adaptive(v)) << "</text>\n";
+    }
+    // X labels: day on the first line, hour on the second.
+    const size_t xstep = NB > 8 ? NB / 8 : 1;
+    for (size_t k = 0; k < NB; k += xstep) {
+        std::cout << "<text x=\"" << num(xat(k), 0) << "\" y=\"" << num(H - 24, 0)
+                  << "\" text-anchor=\"middle\">" << xml_escape(day_of(hours[k])) << "</text>\n";
+        std::cout << "<text x=\"" << num(xat(k), 0) << "\" y=\"" << num(H - 9, 0)
+                  << "\" text-anchor=\"middle\">" << xml_escape(time_of(hours[k])) << "</text>\n";
+    }
+
+    // Stacked bands (tallest account at the bottom).
+    std::vector<double> base(NB, 0.0);
+    for (size_t i = 0; i < series.size(); ++i) {
+        std::string d;
+        for (size_t k = 0; k < NB; ++k)
+            d += (k ? " L " : "M ") + num(xat(k), 1) + "," + num(yof(base[k]), 1);
+        for (size_t k = NB; k-- > 0; )
+            d += " L " + num(xat(k), 1) + "," + num(yof(base[k] + series[i][k]), 1);
+        d += " Z";
+        const char* fill = i < KEEP ? PALETTE[i % PALETTE_N] : "#7f8c8d";
+        double band_total = 0.0;
+        for (size_t k = 0; k < NB; ++k) band_total += series[i][k];
+        std::cout << "<path class=\"sl-stack\" style=\"fill:" << fill << ";fill-opacity:"
+                  << (i < KEEP ? "0.85" : "0.45") << "\" d=\"" << d << "\""
+                  << " data-x=\"" << xml_escape(names[i])
+                  << "\" data-y=\"" << metric_adaptive(band_total) << "\"/>\n";
+        for (size_t k = 0; k < NB; ++k) base[k] += series[i][k];
+    }
+    std::string line;
+    for (size_t k = 0; k < NB; ++k)
+        line += (line.empty() ? "M " : " L ") + num(xat(k), 1) + "," + num(yof(total_per[k]), 1);
+    std::cout << "<path class=\"sl-stack-total\" d=\"" << line << "\"/>\n";
+    print_onset_marks(hours, find_onsets(agg), T, ph, plot_right, xat);
+
+    std::cout << "</svg>\n<div class=\"sl-tip\" hidden></div>\n";
+    // Legend, in HTML below the plot so the drawing keeps the full width.
+    std::cout << "<div class=\"sl-stack-legend\">";
+    for (size_t i = 0; i < names.size(); ++i) {
+        const char* fill = i < KEEP ? PALETTE[i % PALETTE_N] : "#7f8c8d";
+        std::string name = names[i];
+        if (name.size() > 40) name = name.substr(0, 37) + "...";
+        std::cout << "<span class=\"sl-stack-key\"><i style=\"background:" << fill
+                  << "\"></i>" << xml_escape(name) << "</span>";
+    }
+    std::cout << "</div>\n</div>\n";
 }
 
 // How clients authenticated, as a share of the BIND requests.  The detail line
@@ -1591,6 +2002,22 @@ void print_html_chart(const Aggregator& agg, HtmlChart which) {
 
         case HtmlChart::ResultCodes:
             print_error_chart(agg);
+            break;
+
+        case HtmlChart::OpTypeCost:
+            print_optypecost_chart(agg);
+            break;
+
+        case HtmlChart::FilterFamilies:
+            print_filterfamilies_chart(agg);
+            break;
+
+        case HtmlChart::TopConsumers:
+            // Two views of the same hourly data: the bars name the busiest
+            // account each hour (the culprit at a glance), the stack shows how
+            // that hour's total load was split between accounts.
+            print_topconsumer_bars(agg);
+            print_topconsumers_chart(agg);
             break;
     }
 }

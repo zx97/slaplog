@@ -213,6 +213,29 @@ namespace {
         return buf;
     }
 
+    /** fmt_pct_d – fmt_pct for double values (etime shares), same rules. */
+    std::string fmt_pct_d(double value, double total) {
+        if (total <= 0.0) return "0%";
+        const double pct = 100.0 * value / total;
+        if (value > 0.0 && pct < 0.01) return "<0.01%";
+        char buf[32];
+        std::snprintf(buf, sizeof(buf), "%.4g%%", pct);
+        return buf;
+    }
+
+    /**
+     * truncate_pattern – Cap the width a generalized filter template or an
+     * operation sequence may occupy in a rendered report.  A sequence of length
+     * 4 joins four symbols and a long template would widen the whole column; the
+     * JSON output keeps the full string, only the display truncates.  "..." is
+     * ASCII on purpose, so the visible-width arithmetic stays exact.
+     */
+    constexpr size_t PATTERN_MAX_DISPLAY = 100;
+    std::string truncate_pattern(std::string_view s) {
+        if (s.size() <= PATTERN_MAX_DISPLAY) return std::string(s);
+        return std::string(s.substr(0, PATTERN_MAX_DISPLAY - 3)) + "...";
+    }
+
     /**
      * strip_ansi – Remove all ANSI escape sequences from a string.
      *
@@ -251,6 +274,43 @@ namespace {
         });
         return v;
     }
+
+    // ---- compact-mode cutoff -------------------------------------------------
+    // In compact mode a ranking keeps its first COMPACT_MIN rows and, beyond
+    // that, only rows whose share of the total is at least COMPACT_PCT.  This
+    // bounds the report to what matters; without it the HTML leaves thousands of
+    // masked rows in the DOM ("show more" only hides them).  `values` is sorted
+    // descending.  The JSON is never affected: it stays the machine format.
+    constexpr size_t COMPACT_MIN = 10;
+    constexpr double COMPACT_PCT = 1.0;   // per cent of the table's own total
+    static bool g_compact = false;
+
+    size_t compact_cutoff(const std::vector<double>& values, double total) {
+        size_t keep = 0;
+        for (size_t i = 0; i < values.size(); ++i) {
+            if (i < COMPACT_MIN) { keep = i + 1; continue; }
+            if (total > 0 && 100.0 * values[i] / total >= COMPACT_PCT) { keep = i + 1; continue; }
+            break;
+        }
+        return keep;
+    }
+
+    // A filter template that forces a full scan when the attribute has no
+    // matching substring index: a negation, or any wildcard that is not a bare
+    // presence check.  "(attr=*)" (presence) has the '*' right before ')'; every
+    // other wildcard ("$*", "*$", "#*", "*#") is a prefix/suffix/substring.
+    bool is_slow_filter(std::string_view tmpl) {
+        if (tmpl.find('!') != std::string_view::npos) return true;
+        if (tmpl.find("$*") != std::string_view::npos) return true;
+        if (tmpl.find("#*") != std::string_view::npos) return true;
+        if (tmpl.find("*$") != std::string_view::npos) return true;
+        if (tmpl.find("*#") != std::string_view::npos) return true;
+        return false;
+    }
+
+    // A filter family is a "resource hog" when at least this share of the
+    // cumulative etime is spent on an unindexed (substring/negation) family.
+    constexpr double RESOURCE_HOG_SHARE = 20.0;   // per cent of etime_total
 
     /**
      * print_separator – Print a section heading underlined with '=' characters.
@@ -347,9 +407,13 @@ namespace {
         using V = typename Map::mapped_type;
         std::vector<std::pair<long long, std::string>> sorted;
         sorted.reserve(pairs.size());
+        long long total = 0;
         for (const auto& [k, v] : pairs) {
-            if constexpr (std::is_integral_v<V>) sorted.emplace_back(*v, std::string(k));
-            else sorted.emplace_back(v->count, std::string(k));
+            long long val;
+            if constexpr (std::is_integral_v<V>) { val = *v; }
+            else { val = v->count; }
+            sorted.emplace_back(val, std::string(k));
+            total += val;
         }
         // A plain count map breaks ties by key ascending; the combined
         // (count, etime) maps used std::greater<> on the pair, i.e. key
@@ -365,12 +429,16 @@ namespace {
                 return a.second > b.second;
             });
         }
-        std::vector<std::vector<std::string>> rows;
-        int count = 0;
-        for (const auto& [val, key] : sorted) {
-            if (count++ >= limit) break;
-            rows.push_back({key, fmt_int(val)});
+        size_t keep = static_cast<size_t>(limit);
+        if (g_compact) {
+            std::vector<double> values;
+            values.reserve(sorted.size());
+            for (const auto& [val, key] : sorted) values.push_back(static_cast<double>(val));
+            keep = compact_cutoff(values, static_cast<double>(total));
         }
+        std::vector<std::vector<std::string>> rows;
+        for (size_t i = 0; i < keep && i < sorted.size(); ++i)
+            rows.push_back({sorted[i].second, fmt_int(sorted[i].first)});
         print_table({col1, "Count"}, rows);
     }
 
@@ -382,14 +450,22 @@ namespace {
         print_separator(title);
         std::vector<std::pair<double, std::string>> sorted;
         sorted.reserve(pairs.size());
-        for (const auto& [k, v] : pairs) sorted.emplace_back(v->etime_total, std::string(k));
-        std::sort(sorted.begin(), sorted.end(), std::greater<>());
-        std::vector<std::vector<std::string>> rows;
-        int count = 0;
-        for (const auto& [val, key] : sorted) {
-            if (count++ >= limit) break;
-            rows.push_back({key, fmt_double(val)});
+        double total = 0.0;
+        for (const auto& [k, v] : pairs) {
+            sorted.emplace_back(v->etime_total, std::string(k));
+            total += v->etime_total;
         }
+        std::sort(sorted.begin(), sorted.end(), std::greater<>());
+        size_t keep = static_cast<size_t>(limit);
+        if (g_compact) {
+            std::vector<double> values;
+            values.reserve(sorted.size());
+            for (const auto& [val, key] : sorted) values.push_back(val);
+            keep = compact_cutoff(values, total);
+        }
+        std::vector<std::vector<std::string>> rows;
+        for (size_t i = 0; i < keep && i < sorted.size(); ++i)
+            rows.push_back({sorted[i].second, fmt_double(sorted[i].first)});
         print_table({col1, "Total etime"}, rows);
     }
 }
@@ -507,6 +583,7 @@ static std::map<std::string, long long> error_texts_for_code(const Aggregator& a
 
 void print_text_report(const Aggregator& agg, double processing_time, bool compact, int color_mode, const std::set<std::string>& sections, const std::string& /*output_date_format*/, const std::string& custom_title) {
     set_color_output(color_mode);
+    g_compact = compact;
     int limit = compact ? 5 : 20;
 
     auto has_section = [&](const std::string& name) {
@@ -544,10 +621,14 @@ void print_text_report(const Aggregator& agg, double processing_time, bool compa
         print_separator("Statistics");
         std::vector<std::vector<std::string>> st_rows;
         double speed = processing_time > 0 ? agg.stats.lines / processing_time : 0;
+
+        // Run.
         st_rows.push_back({"Processing time", fmt_double(processing_time) + " s"});
         st_rows.push_back({"Processing speed", fmt_int(static_cast<long long>(speed)) + " lines/s"});
         st_rows.push_back({"Lines processed", fmt_int(agg.stats.lines)});
         st_rows.push_back({"Unknown lines", fmt_int(agg.stats.unknown_lines)});
+
+        // Scope.
         if (!agg.openldap_version.empty())
             st_rows.push_back({"OpenLDAP version", agg.openldap_version});
         if (!agg.servers.empty()) {
@@ -558,25 +639,34 @@ void print_text_report(const Aggregator& agg, double processing_time, bool compa
             }
             st_rows.push_back({"Server(s)", sv});
         }
-        st_rows.push_back({"Connections opened", fmt_int(agg.stats.conn_count)});
-        st_rows.push_back({"FD open events", fmt_int(agg.stats.fd_open)});
-        st_rows.push_back({"FD close events", fmt_int(agg.stats.fd_close)});
-        st_rows.push_back({"Replication logs", fmt_int(agg.stats.replication_logs)});
+        if (!agg.firsttime.empty() || !agg.lasttime.empty()) {
+            std::string range;
+            if (!agg.firsttime.empty()) range += "from " + agg.firsttime;
+            if (!agg.lasttime.empty()) {
+                range += (range.empty() ? "to " : " to ");
+                range += agg.lasttime;
+            }
+            st_rows.push_back({"Time range", range});
+        }
+
+        // Traffic.
+        st_rows.push_back({"Read operations", fmt_int(agg.read_write_stats.read)});
+        st_rows.push_back({"Write operations", fmt_int(agg.read_write_stats.write)});
+        st_rows.push_back({"Connections opened / closed",
+                           fmt_int(agg.stats.conn_count) + " / " + fmt_int(agg.stats.fd_close)});
         st_rows.push_back({"Peak active connections", fmt_int(agg.peak_active_connections)});
-        if (!agg.firsttime.empty()) st_rows.push_back({"First timestamp", agg.firsttime});
-        if (!agg.lasttime.empty()) st_rows.push_back({"Last timestamp", agg.lasttime});
+
+        // Latency.
         st_rows.push_back({"Total etime", fmt_etime(agg.etime_total)});
         st_rows.push_back({"Total qtime", fmt_etime(agg.qtime_total)});
+        const long long data_ops = agg.read_write_stats.read + agg.read_write_stats.write;
+        if (data_ops > 0)
+            st_rows.push_back({"Average etime/op", fmt_etime(agg.etime_total / data_ops)});
         if (agg.maxetime.has_value()) {
             st_rows.push_back({"Max operation etime", fmt_etime(*agg.maxetime)});
             st_rows.push_back({"Max operation user", agg.maxetimeusr});
         }
-        if (agg.maxconnetime.has_value()) {
-            st_rows.push_back({"Max connection etime", fmt_etime(*agg.maxconnetime)});
-            st_rows.push_back({"Max connection user", agg.maxconnetimeusr});
-        }
-        st_rows.push_back({"Read operations", fmt_int(agg.read_write_stats.read)});
-        st_rows.push_back({"Write operations", fmt_int(agg.read_write_stats.write)});
+
         print_table({"Metric", "Value"}, st_rows);
     }
 
@@ -1008,6 +1098,162 @@ void print_text_report(const Aggregator& agg, double processing_time, bool compa
             print_table(header, top_conn_rows);
         }
     }
+
+    // Behaviour patterns (on by default; --no-patterns disables collection).
+    // Generalized filter families and repeated operation sequences, per bind
+    // account: the raw material for spotting an account that enumerates the
+    // directory with a slow (substring/negation) filter, or loops a fixed
+    // request cycle.
+    if (has_section("patterns")) {
+        // Resource-hog verdict: accounts whose unindexed (substring/negation)
+        // filter families dominate the cumulative etime.
+        {
+            std::vector<std::string> hogs;
+            for (const auto& it : agg.filter_families) {
+                if (!is_slow_filter(it.key2)) continue;
+                const double share = agg.etime_total > 0.0
+                    ? 100.0 * it.value.etime_total / agg.etime_total : 0.0;
+                if (share < RESOURCE_HOG_SHARE) continue;
+                const double avg = it.value.count ? it.value.etime_total / it.value.count : 0.0;
+                hogs.push_back(std::string(it.key1) + " — " +
+                               fmt_pct_d(it.value.etime_total, agg.etime_total) +
+                               " of etime via " + truncate_pattern(it.key2) +
+                               " (" + fmt_double(avg) + " avg)");
+            }
+            if (!hogs.empty()) {
+                print_separator("Resource Hog");
+                for (const auto& h : hogs) std::cout << "  " << h << "\n";
+            }
+        }
+        // Cost per operation — the verdict: who (account) and what (operation
+        // type) costs the most, per single operation and in total.
+        if (!agg.app_stats.empty()) {
+            print_separator("Cost per Operation (by Account)");
+            std::vector<std::pair<double, std::string>> accts;
+            for (const auto& [name, ai] : agg.app_stats)
+                accts.emplace_back(ai.etime_total, name);
+            std::sort(accts.begin(), accts.end(), std::greater<>());
+            size_t keep = accts.size();
+            if (g_compact) {
+                std::vector<double> values;
+                values.reserve(accts.size());
+                for (const auto& [et, name] : accts) values.push_back(et);
+                keep = compact_cutoff(values, agg.etime_total);
+            }
+            std::vector<std::vector<std::string>> rows;
+            for (size_t i = 0; i < keep && i < accts.size(); ++i) {
+                const auto& [et, name] = accts[i];
+                const long long cnt = agg.app_stats.at(name).count;
+                const double avg = cnt ? et / cnt : 0.0;
+                rows.push_back({name, fmt_int(cnt), fmt_etime(et), fmt_etime(avg),
+                                fmt_pct_d(et, agg.etime_total)});
+            }
+            print_table({"account", "ops", "total etime", "avg etime/op", "share"}, rows);
+        }
+        if (!agg.op_type_etime.empty()) {
+            print_separator("Cost per Operation (by Type)");
+            std::vector<std::pair<double, std::string>> types;
+            for (const auto& [t, et] : agg.op_type_etime)
+                types.emplace_back(et, t);
+            std::sort(types.begin(), types.end(), std::greater<>());
+            size_t keep = types.size();
+            if (g_compact) {
+                std::vector<double> values;
+                values.reserve(types.size());
+                for (const auto& [et, t] : types) values.push_back(et);
+                keep = compact_cutoff(values, agg.etime_total);
+            }
+            std::vector<std::vector<std::string>> rows;
+            for (size_t i = 0; i < keep && i < types.size(); ++i) {
+                const auto& [et, t] = types[i];
+                const long long cnt = agg.operation_count.count(t) ? agg.operation_count.at(t) : 0;
+                const double avg = cnt ? et / cnt : 0.0;
+                rows.push_back({t, fmt_int(cnt), fmt_etime(et), fmt_etime(avg),
+                                fmt_pct_d(et, agg.etime_total)});
+            }
+            print_table({"type", "ops", "total etime", "avg etime/op", "share"}, rows);
+        }
+        // Top consumer per hour — the #1 account by etime in each hour, so the
+        // moment a hog takes over (its onset) shows.
+        if (!agg.etime_by_hour.empty()) {
+            print_separator("Top Consumer per Hour");
+            std::vector<std::vector<std::string>> rows;
+            for (const auto& [hour, accts] : agg.etime_by_hour) {
+                auto top = std::max_element(accts.begin(), accts.end(),
+                    [](const auto& a, const auto& b) { return a.second < b.second; });
+                if (top == accts.end()) continue;
+                rows.push_back({format_epoch_seconds(hour * 3600), top->first,
+                                fmt_etime(top->second)});
+            }
+            print_table({"hour", "top consumer", "etime"}, rows);
+        }
+        if (!agg.filter_families.empty()) {
+            print_separator("Generalized Search Filter Families");
+            std::cout << "  # = digits, $ = any other literal value; attribute "
+                         "names, operators and * are kept.\n";
+            struct FamRow { std::string account, tmpl; const FilterFamily* f; };
+            std::vector<FamRow> fams;
+            double total = 0.0;
+            for (const auto& it : agg.filter_families) {
+                fams.push_back({std::string(it.key1), std::string(it.key2), &it.value});
+                total += it.value.etime_total;
+            }
+            std::sort(fams.begin(), fams.end(), [](const FamRow& a, const FamRow& b) {
+                if (a.f->etime_total != b.f->etime_total)
+                    return a.f->etime_total > b.f->etime_total;
+                if (a.account != b.account) return a.account < b.account;
+                return a.tmpl < b.tmpl;
+            });
+            size_t keep = fams.size();
+            if (g_compact) {
+                std::vector<double> values;
+                values.reserve(fams.size());
+                for (const auto& r : fams) values.push_back(r.f->etime_total);
+                keep = compact_cutoff(values, total);
+            }
+            std::vector<std::vector<std::string>> fam_rows;
+            for (size_t i = 0; i < keep && i < fams.size(); ++i) {
+                const auto& r = fams[i];
+                const double avg_etime = r.f->count ? r.f->etime_total / r.f->count : 0.0;
+                const std::string avg_n =
+                    r.f->count ? fmt_int(r.f->nentries_sum / r.f->count) : "-";
+                fam_rows.push_back({
+                    r.account, truncate_pattern(r.tmpl), fmt_int(r.f->count),
+                    fmt_etime(r.f->etime_total), fmt_etime(avg_etime), avg_n
+                });
+            }
+            print_table({"account", "generalized filter", "ops", "total etime",
+                         "avg etime", "avg nentries"}, fam_rows);
+        }
+        if (!agg.op_sequences.empty()) {
+            print_separator("Repeated Operation Sequences");
+            std::cout << "  SRCH|<generalized filter>|<scope>; scope: 0=base, "
+                         "1=one level, 2=subtree.\n";
+            std::vector<std::pair<long long, std::pair<std::string, std::string>>> seqs;
+            long long total = 0;
+            for (const auto& it : agg.op_sequences) {
+                seqs.push_back({it.value, {std::string(it.key1), std::string(it.key2)}});
+                total += it.value;
+            }
+            std::sort(seqs.begin(), seqs.end(), [](const auto& a, const auto& b) {
+                if (a.first != b.first) return a.first > b.first;
+                if (a.second.first != b.second.first) return a.second.first < b.second.first;
+                return a.second.second < b.second.second;
+            });
+            size_t keep = static_cast<size_t>(limit);
+            if (g_compact) {
+                std::vector<double> values;
+                values.reserve(seqs.size());
+                for (const auto& [cnt, kv] : seqs) values.push_back(static_cast<double>(cnt));
+                keep = compact_cutoff(values, static_cast<double>(total));
+            }
+            std::vector<std::vector<std::string>> seq_rows;
+            for (size_t i = 0; i < keep && i < seqs.size(); ++i)
+                seq_rows.push_back({seqs[i].second.first, truncate_pattern(seqs[i].second.second),
+                                    fmt_int(seqs[i].first)});
+            print_table({"account", "operation sequence", "count"}, seq_rows);
+        }
+    }
 }
 
 // =======================================================================
@@ -1035,7 +1281,8 @@ void print_text_report(const Aggregator& agg, double processing_time, bool compa
 static bool g_show_version = true;
 void set_show_version(bool on) { g_show_version = on; }
 
-void print_html_report(const Aggregator& agg, double duration, bool /*compact*/, const std::string& /*output_date_format*/, const std::string& custom_title, bool tabs) {
+void print_html_report(const Aggregator& agg, double duration, bool compact, const std::string& /*output_date_format*/, const std::string& custom_title, bool tabs) {
+    g_compact = compact;
     // Charts are placed under the section whose data they draw; nothing is
     // emitted (not even the stylesheet) when there is no chart to draw.
     const bool charts = html_charts_available(agg);
@@ -1120,14 +1367,13 @@ void print_html_report(const Aggregator& agg, double duration, bool /*compact*/,
     // Section headings: solid dark background, rounded, clear-fixed.
     std::cout << "  h2 { background:#2c3e50; color:#ecf0f1; padding:10px 20px; border-radius:6px; ";
     std::cout << "margin:20px 0 10px; font-size:1.2em; clear:both; }\n";
-    // Meta info box: white card with flex layout for side-by-side stats.
-    std::cout << "  .meta { background:#fff; border-radius:6px; padding:15px 20px; ";
+    // Meta info box: a single compact line identifying the report.
+    std::cout << "  .meta { background:#fff; border-radius:6px; padding:8px 16px; ";
     std::cout << "box-shadow:0 1px 4px rgba(0,0,0,0.08); margin-bottom:20px; ";
-    std::cout << "display:flex; flex-wrap:wrap; gap:15px; }\n";
-    std::cout << "  .meta-item { min-width:200px; }\n";
-    std::cout << "  .meta-label { color:#7f8c8d; font-size:0.75em; text-transform:uppercase; ";
-    std::cout << "letter-spacing:0.5px; }\n";
-    std::cout << "  .meta-value { font-size:1.3em; font-weight:600; color:#2c3e50; }\n";
+    std::cout << "display:flex; flex-wrap:wrap; gap:6px 22px; font-size:0.85em; }\n";
+    std::cout << "  .meta-item { display:flex; align-items:baseline; gap:6px; }\n";
+    std::cout << "  .meta-label { color:#7f8c8d; }\n";
+    std::cout << "  .meta-value { font-weight:500; color:#2c3e50; }\n";
     // Tables: white background, collapsed borders, rounded via overflow hidden.
     std::cout << "  table { width:100%; border-collapse:collapse; background:#fff; ";
     std::cout << "border-radius:6px; overflow:hidden; box-shadow:0 1px 4px rgba(0,0,0,0.08); ";
@@ -1236,22 +1482,12 @@ void print_html_report(const Aggregator& agg, double duration, bool /*compact*/,
     std::cout << "<div class=\"meta\">\n";
     std::cout << "  <div class=\"meta-item\"><div class=\"meta-label\">Generated</div>";
     std::cout << "<div class=\"meta-value\">" << format_time(std::chrono::system_clock::now()) << "</div></div>\n";
-    std::cout << "  <div class=\"meta-item\"><div class=\"meta-label\">Processing time</div>";
-    std::cout << "<div class=\"meta-value\">" << fmt_double(duration) << " s</div></div>\n";
-    std::cout << "  <div class=\"meta-item\"><div class=\"meta-label\">Lines processed</div>";
-    std::cout << "<div class=\"meta-value\">" << agg.stats.lines << "</div></div>\n";
-    std::cout << "  <div class=\"meta-item\"><div class=\"meta-label\">Unknown lines</div>";
-    std::cout << "<div class=\"meta-value\">" << agg.stats.unknown_lines << "</div></div>\n";
-    std::cout << "  <div class=\"meta-item\"><div class=\"meta-label\">Connections</div>";
-    std::cout << "<div class=\"meta-value\">" << agg.stats.conn_count << "</div></div>\n";
-    std::cout << "  <div class=\"meta-item\"><div class=\"meta-label\">Peak active</div>";
-    std::cout << "<div class=\"meta-value\">" << agg.peak_active_connections << "</div></div>\n";
     if (!agg.openldap_version.empty()) {
         std::cout << "  <div class=\"meta-item\"><div class=\"meta-label\">OpenLDAP</div>";
         std::cout << "<div class=\"meta-value\">" << agg.openldap_version << "</div></div>\n";
     }
     // Which server(s) the analysed log lines name.  Empty for the "debug"
-    // format, which carries no hostname — then the row is simply absent.
+    // format, which carries no hostname — then the item is simply absent.
     if (!agg.servers.empty()) {
         std::string sv;
         for (const auto& s : agg.servers) {
@@ -1265,16 +1501,10 @@ void print_html_report(const Aggregator& agg, double duration, bool /*compact*/,
         else std::cout << agg.servers.size() << " servers";
         std::cout << "</div></div>\n";
     }
-    if (!agg.firsttime.empty()) {
-        std::cout << "  <div class=\"meta-item\"><div class=\"meta-label\">First event</div>";
-        std::cout << "<div class=\"meta-value\">" << agg.firsttime << "</div></div>\n";
+    if (agg.format != LogFormat::AUTO) {
+        std::cout << "  <div class=\"meta-item\"><div class=\"meta-label\">Format</div>";
+        std::cout << "<div class=\"meta-value\">" << log_format_to_string(agg.format) << "</div></div>\n";
     }
-    if (!agg.lasttime.empty()) {
-        std::cout << "  <div class=\"meta-item\"><div class=\"meta-label\">Last event</div>";
-        std::cout << "<div class=\"meta-value\">" << agg.lasttime << "</div></div>\n";
-    }
-    std::cout << "  <div class=\"meta-item\"><div class=\"meta-label\">Speed</div>";
-    std::cout << "<div class=\"meta-value\">" << static_cast<long long>(speed) << " lines/s</div></div>\n";
     std::cout << "</div>\n";
 
     // Statistics table
@@ -1291,11 +1521,6 @@ void print_html_report(const Aggregator& agg, double duration, bool /*compact*/,
     add_stat("Processing speed", fmt_int(static_cast<long long>(speed)) + " lines/s");
     add_stat("Lines processed", fmt_int(agg.stats.lines));
     add_stat("Unknown lines", fmt_int(agg.stats.unknown_lines));
-    add_stat("Connections opened", fmt_int(agg.stats.conn_count));
-    add_stat("FD open events", fmt_int(agg.stats.fd_open));
-    add_stat("FD close events", fmt_int(agg.stats.fd_close));
-    add_stat("Replication logs", fmt_int(agg.stats.replication_logs));
-    add_stat("Peak active connections", fmt_int(agg.peak_active_connections));
     if (!agg.servers.empty()) {
         std::string sv;
         for (const auto& s : agg.servers) {
@@ -1304,20 +1529,45 @@ void print_html_report(const Aggregator& agg, double duration, bool /*compact*/,
         }
         add_stat("Server(s)", sv);
     }
-    if (!agg.firsttime.empty()) add_stat("First timestamp", agg.firsttime);
-    if (!agg.lasttime.empty()) add_stat("Last timestamp", agg.lasttime);
+    if (!agg.firsttime.empty() || !agg.lasttime.empty()) {
+        std::string range;
+        if (!agg.firsttime.empty()) range += "from " + agg.firsttime;
+        if (!agg.lasttime.empty()) {
+            range += (range.empty() ? "to " : " to ");
+            range += agg.lasttime;
+        }
+        add_stat("Time range", range);
+    }
+    add_stat("Read operations", fmt_int(agg.read_write_stats.read));
+    add_stat("Write operations", fmt_int(agg.read_write_stats.write));
+    add_stat("Connections opened / closed",
+             fmt_int(agg.stats.conn_count) + " / " + fmt_int(agg.stats.fd_close));
+    add_stat("Peak active connections", fmt_int(agg.peak_active_connections));
     add_stat("Total etime", "<span style=\"" + etime_color(agg.etime_total) + "\">" + fmt_double(agg.etime_total) + "</span>");
     add_stat("Total qtime", "<span style=\"" + etime_color(agg.qtime_total) + "\">" + fmt_double(agg.qtime_total) + "</span>");
+    {
+        const long long data_ops = agg.read_write_stats.read + agg.read_write_stats.write;
+        if (data_ops > 0)
+            add_stat("Average etime/op", "<span style=\"" + etime_color(agg.etime_total / data_ops) + "\">" + fmt_double(agg.etime_total / data_ops) + "</span>");
+    }
     if (agg.maxetime.has_value()) {
         add_stat("Max operation etime", "<span style=\"" + etime_color(*agg.maxetime) + "\">" + fmt_double(*agg.maxetime) + "</span>");
         add_stat("Max operation user", agg.maxetimeusr);
     }
-    if (agg.maxconnetime.has_value()) {
-        add_stat("Max connection etime", "<span style=\"" + etime_color(*agg.maxconnetime) + "\">" + fmt_double(*agg.maxconnetime) + "</span>");
-        add_stat("Max connection user", agg.maxconnetimeusr);
+    // The costliest account (by etime) fills the free cell at the end of the
+    // table: the cost-per-account verdict's #1, with its average cost and share.
+    if (!agg.app_stats.empty()) {
+        auto top = std::max_element(agg.app_stats.begin(), agg.app_stats.end(),
+            [](const auto& a, const auto& b) {
+                return a.second.etime_total < b.second.etime_total; });
+        if (top != agg.app_stats.end() && top->second.etime_total > 0.0) {
+            const double avg = top->second.count
+                ? top->second.etime_total / top->second.count : 0.0;
+            add_stat("Top consumer",
+                     html_escape(top->first) + " (" + fmt_double(avg) + "/op · " +
+                     fmt_pct_d(top->second.etime_total, agg.etime_total) + ")");
+        }
     }
-    add_stat("Read operations", fmt_int(agg.read_write_stats.read));
-    add_stat("Write operations", fmt_int(agg.read_write_stats.write));
     std::cout << "<table class=\"stats\">\n";
     for (size_t i = 0; i < stat_rows.size(); i += 2) {
         std::cout << "<tr><td class=\"sl-stat-l\">" << stat_rows[i].first << "</td><td>"
@@ -1536,16 +1786,24 @@ void print_html_report(const Aggregator& agg, double duration, bool /*compact*/,
         using V = typename std::decay_t<decltype(m)>::mapped_type;
         const auto pairs = as_pairs(m);
         std::vector<std::pair<long long, std::string>> sorted;
+        long long total = 0;
         for (const auto& [k, v] : pairs) {
-            if constexpr (std::is_integral_v<V>) sorted.emplace_back(*v, std::string(k));
-            else sorted.emplace_back(v->count, std::string(k));
+            long long val;
+            if constexpr (std::is_integral_v<V>) val = *v;
+            else val = v->count;
+            sorted.emplace_back(val, std::string(k));
+            total += val;
         }
         std::sort(sorted.begin(), sorted.end(), std::greater<>());
-        int cnt = 0;
-        for (const auto& [c, key] : sorted) {
-            if (cnt++ >= limit) break;
-            std::cout << "<tr><td>" << key << "</td><td>" << c << "</td></tr>\n";
+        size_t keep = static_cast<size_t>(limit);
+        if (g_compact) {
+            std::vector<double> values;
+            values.reserve(sorted.size());
+            for (const auto& [c, key] : sorted) values.push_back(static_cast<double>(c));
+            keep = compact_cutoff(values, static_cast<double>(total));
         }
+        for (size_t i = 0; i < keep && i < sorted.size(); ++i)
+            std::cout << "<tr><td>" << sorted[i].second << "</td><td>" << sorted[i].first << "</td></tr>\n";
         std::cout << "</table>\n";
     };
     auto print_h_double_table = [&](const std::string& title, const std::string& col1, const auto& m, int limit = 20) {
@@ -1553,13 +1811,21 @@ void print_html_report(const Aggregator& agg, double duration, bool /*compact*/,
         std::cout << "<h2 id=\"" << section_id(title) << "\">" << title << "</h2>\n<table>\n<tr><th>" << col1 << "</th><th>Total etime</th></tr>\n";
         const auto pairs = as_pairs(m);
         std::vector<std::pair<double, std::string>> sorted;
-        for (const auto& [k, v] : pairs) sorted.emplace_back(v->etime_total, std::string(k));
-        std::sort(sorted.begin(), sorted.end(), std::greater<>());
-        int cnt = 0;
-        for (const auto& [t, key] : sorted) {
-            if (cnt++ >= limit) break;
-            std::cout << "<tr><td>" << key << "</td><td><span style=\"" << etime_color(t) << "\">" << fmt_double(t) << "</span></td></tr>\n";
+        double total = 0.0;
+        for (const auto& [k, v] : pairs) {
+            sorted.emplace_back(v->etime_total, std::string(k));
+            total += v->etime_total;
         }
+        std::sort(sorted.begin(), sorted.end(), std::greater<>());
+        size_t keep = static_cast<size_t>(limit);
+        if (g_compact) {
+            std::vector<double> values;
+            values.reserve(sorted.size());
+            for (const auto& [t, key] : sorted) values.push_back(t);
+            keep = compact_cutoff(values, total);
+        }
+        for (size_t i = 0; i < keep && i < sorted.size(); ++i)
+            std::cout << "<tr><td>" << sorted[i].second << "</td><td><span style=\"" << etime_color(sorted[i].first) << "\">" << fmt_double(sorted[i].first) << "</span></td></tr>\n";
         std::cout << "</table>\n";
     };
 
@@ -1746,6 +2012,189 @@ void print_html_report(const Aggregator& agg, double duration, bool /*compact*/,
     }
     std::cout << "</table>\n";
 
+    // Behaviour patterns (on by default; --no-patterns disables collection)
+    if (!agg.app_stats.empty() || !agg.filter_families.empty() || !agg.op_sequences.empty()) {
+        std::cout << "<h2 id=\"sec-patterns\">Behaviour Patterns</h2>\n";
+        std::cout << "<p class=\"note\">The cost of each account and operation type, "
+                     "the generalized search filters, and the repeated operation "
+                     "sequences, per bind account.  On by default; disable with "
+                     "<code>--no-patterns</code>.</p>\n";
+        if (!agg.filter_families.empty() || !agg.op_sequences.empty()) {
+            std::cout << "<p class=\"note\">In a generalized filter, <code>#</code> "
+                         "stands for a run of digits and <code>$</code> for any other "
+                         "literal value; attribute names, operators and <code>*</code> "
+                         "are kept. In <code>SRCH|&lt;filter&gt;|N</code>, N is the "
+                         "search scope: <code>0</code>=base, <code>1</code>=one level, "
+                         "<code>2</code>=subtree.</p>\n";
+        }
+
+        // Resource-hog verdict: accounts whose unindexed filter families dominate.
+        {
+            std::vector<std::string> hogs;
+            for (const auto& it : agg.filter_families) {
+                if (!is_slow_filter(it.key2)) continue;
+                const double share = agg.etime_total > 0.0
+                    ? 100.0 * it.value.etime_total / agg.etime_total : 0.0;
+                if (share < RESOURCE_HOG_SHARE) continue;
+                const double avg = it.value.count ? it.value.etime_total / it.value.count : 0.0;
+                hogs.push_back("<code>" + html_escape(std::string(it.key1)) + "</code> &mdash; " +
+                               fmt_pct_d(it.value.etime_total, agg.etime_total) +
+                               " of etime via <code>" +
+                               html_escape(truncate_pattern(it.key2)) + "</code> (" +
+                               fmt_double(avg) + " avg)");
+            }
+            if (!hogs.empty()) {
+                std::cout << "<p class=\"note\"><strong>Resource hog:</strong> ";
+                for (size_t i = 0; i < hogs.size(); ++i) {
+                    if (i) std::cout << "; ";
+                    std::cout << hogs[i];
+                }
+                std::cout << ".</p>\n";
+            }
+        }
+
+        // Cost per operation (by account).
+        if (!agg.app_stats.empty()) {
+            std::cout << "<h3>Cost per Operation (by Account)</h3>\n";
+            std::cout << "<table>\n<tr><th>Account</th><th>Ops</th><th>Total etime</th>"
+                         "<th>Avg etime/op</th><th>Share</th></tr>\n";
+            std::vector<std::pair<double, std::string>> accts;
+            for (const auto& [name, ai] : agg.app_stats)
+                accts.emplace_back(ai.etime_total, name);
+            std::sort(accts.begin(), accts.end(), std::greater<>());
+            size_t keep = accts.size();
+            if (g_compact) {
+                std::vector<double> values;
+                values.reserve(accts.size());
+                for (const auto& [et, name] : accts) values.push_back(et);
+                keep = compact_cutoff(values, agg.etime_total);
+            }
+            for (size_t i = 0; i < keep && i < accts.size(); ++i) {
+                const auto& [et, name] = accts[i];
+                const auto& ai = agg.app_stats.at(name);
+                const double avg = ai.count ? et / ai.count : 0.0;
+                std::cout << "<tr><td>" << html_escape(name) << "</td><td>" << ai.count
+                          << "</td><td style=\"" << etime_color(et) << "\">" << fmt_double(et)
+                          << "</td><td>" << fmt_double(avg) << "</td><td>"
+                          << fmt_pct_d(et, agg.etime_total) << "</td></tr>\n";
+            }
+            std::cout << "</table>\n";
+        }
+
+        // Cost per operation (by type).
+        if (!agg.op_type_etime.empty()) {
+            std::cout << "<h3>Cost per Operation (by Type)</h3>\n";
+            std::cout << "<table>\n<tr><th>Type</th><th>Ops</th><th>Total etime</th>"
+                         "<th>Avg etime/op</th><th>Share</th></tr>\n";
+            std::vector<std::pair<double, std::string>> types;
+            for (const auto& [t, et] : agg.op_type_etime)
+                types.emplace_back(et, t);
+            std::sort(types.begin(), types.end(), std::greater<>());
+            size_t keep = types.size();
+            if (g_compact) {
+                std::vector<double> values;
+                values.reserve(types.size());
+                for (const auto& [et, t] : types) values.push_back(et);
+                keep = compact_cutoff(values, agg.etime_total);
+            }
+            for (size_t i = 0; i < keep && i < types.size(); ++i) {
+                const auto& [et, t] = types[i];
+                const long long cnt = agg.operation_count.count(t) ? agg.operation_count.at(t) : 0;
+                const double avg = cnt ? et / cnt : 0.0;
+                std::cout << "<tr><td>" << html_escape(t) << "</td><td>" << cnt
+                          << "</td><td style=\"" << etime_color(et) << "\">" << fmt_double(et)
+                          << "</td><td>" << fmt_double(avg) << "</td><td>"
+                          << fmt_pct_d(et, agg.etime_total) << "</td></tr>\n";
+            }
+            std::cout << "</table>\n";
+            print_html_chart(agg, HtmlChart::OpTypeCost);
+        }
+
+        // Top consumer per hour — the #1 account by etime in each hour.
+        if (!agg.etime_by_hour.empty()) {
+            std::cout << "<h3>Top Consumer per Hour</h3>\n";
+            std::cout << "<table>\n<tr><th>Hour</th><th>Top consumer</th><th>Etime</th></tr>\n";
+            for (const auto& [hour, accts] : agg.etime_by_hour) {
+                auto top = std::max_element(accts.begin(), accts.end(),
+                    [](const auto& a, const auto& b) { return a.second < b.second; });
+                if (top == accts.end()) continue;
+                std::cout << "<tr><td>" << format_epoch_seconds(hour * 3600) << "</td><td>"
+                          << html_escape(top->first) << "</td><td style=\""
+                          << etime_color(top->second) << "\">" << fmt_double(top->second)
+                          << "</td></tr>\n";
+            }
+            std::cout << "</table>\n";
+            print_html_chart(agg, HtmlChart::TopConsumers);
+        }
+
+        if (!agg.filter_families.empty()) {
+            std::cout << "<h3>Generalized Search Filter Families</h3>\n";
+            std::cout << "<table>\n<tr><th>Account</th><th>Generalized filter</th><th>Ops</th>"
+                         "<th>Total etime</th><th>Avg etime</th><th>Avg nentries</th></tr>\n";
+            struct FamRow { std::string account, tmpl; const FilterFamily* f; };
+            std::vector<FamRow> fams;
+            double total = 0.0;
+            for (const auto& it : agg.filter_families) {
+                fams.push_back({std::string(it.key1), std::string(it.key2), &it.value});
+                total += it.value.etime_total;
+            }
+            std::sort(fams.begin(), fams.end(), [](const FamRow& a, const FamRow& b) {
+                if (a.f->etime_total != b.f->etime_total)
+                    return a.f->etime_total > b.f->etime_total;
+                if (a.account != b.account) return a.account < b.account;
+                return a.tmpl < b.tmpl;
+            });
+            size_t keep = fams.size();
+            if (g_compact) {
+                std::vector<double> values;
+                values.reserve(fams.size());
+                for (const auto& r : fams) values.push_back(r.f->etime_total);
+                keep = compact_cutoff(values, total);
+            }
+            for (size_t i = 0; i < keep && i < fams.size(); ++i) {
+                const auto& r = fams[i];
+                const double avg_etime = r.f->count ? r.f->etime_total / r.f->count : 0.0;
+                const std::string avg_n =
+                    r.f->count ? fmt_int(r.f->nentries_sum / r.f->count) : "-";
+                std::cout << "<tr><td>" << html_escape(r.account) << "</td><td><code>"
+                          << html_escape(truncate_pattern(r.tmpl)) << "</code></td><td>" << r.f->count
+                          << "</td><td style=\"" << etime_color(r.f->etime_total) << "\">"
+                          << fmt_double(r.f->etime_total) << "</td><td>"
+                          << fmt_double(avg_etime) << "</td><td>" << avg_n << "</td></tr>\n";
+            }
+            std::cout << "</table>\n";
+            print_html_chart(agg, HtmlChart::FilterFamilies);
+        }
+        if (!agg.op_sequences.empty()) {
+            std::cout << "<h3>Repeated Operation Sequences</h3>\n";
+            std::cout << "<table>\n<tr><th>Account</th><th>Operation sequence</th><th>Count</th></tr>\n";
+            std::vector<std::pair<long long, std::pair<std::string, std::string>>> seqs;
+            long long total = 0;
+            for (const auto& it : agg.op_sequences) {
+                seqs.push_back({it.value, {std::string(it.key1), std::string(it.key2)}});
+                total += it.value;
+            }
+            std::sort(seqs.begin(), seqs.end(), [](const auto& a, const auto& b) {
+                if (a.first != b.first) return a.first > b.first;
+                if (a.second.first != b.second.first) return a.second.first < b.second.first;
+                return a.second.second < b.second.second;
+            });
+            size_t keep = seqs.size();
+            if (g_compact) {
+                std::vector<double> values;
+                values.reserve(seqs.size());
+                for (const auto& [cnt, kv] : seqs) values.push_back(static_cast<double>(cnt));
+                keep = compact_cutoff(values, static_cast<double>(total));
+            }
+            for (size_t i = 0; i < keep && i < seqs.size(); ++i) {
+                std::cout << "<tr><td>" << html_escape(seqs[i].second.first) << "</td><td><code>"
+                          << html_escape(truncate_pattern(seqs[i].second.second)) << "</code></td><td>"
+                          << seqs[i].first << "</td></tr>\n";
+            }
+            std::cout << "</table>\n";
+        }
+    }
+
     // Footer
     if (g_show_version)
         std::cout << "<div class=\"footer\">slaplog v" << SLAPLOG_VERSION
@@ -1867,7 +2316,7 @@ void print_html_report(const Aggregator& agg, double duration, bool /*compact*/,
                        'sec-top-wildcard-filters', 'sec-top-requested-attributes',
                        'sec-filters-app', 'sec-qmark',
                        'sec-question-mark-filter-attributes',
-                       'sec-paged', 'sec-indexing']]
+                       'sec-paged', 'sec-indexing', 'sec-patterns']]
     ];
     var group = {};
     for (var g = 0; g < TABS.length; g++)
@@ -2418,6 +2867,93 @@ void print_json_report(const Aggregator& agg, double duration, bool /*compact*/,
         qm[attr] = c;
     }
     report["qmark_filter_attributes"] = qm;
+
+    // Behaviour patterns (--detect-patterns): generalized filter families and
+    // repeated operation sequences, each keyed by the bind account.
+    if (!agg.filter_families.empty()) {
+        json ff = json::object();
+        for (const auto& it : agg.filter_families) {
+            const FilterFamily& f = it.value;
+            json fam = {
+                {"count", f.count},
+                {"etime_total", f.etime_total},
+                {"avg_etime", f.count ? f.etime_total / f.count : 0.0},
+                {"avg_nentries", f.count ? static_cast<double>(f.nentries_sum) / f.count : 0.0},
+            };
+            if (f.nentries_min) fam["nentries_min"] = *f.nentries_min;
+            if (f.nentries_max) fam["nentries_max"] = *f.nentries_max;
+            ff[std::string(it.key1)][std::string(it.key2)] = fam;
+        }
+        report["filter_families"] = ff;
+    }
+    if (!agg.op_sequences.empty()) {
+        json os = json::object();
+        for (const auto& it : agg.op_sequences)
+            os[std::string(it.key1)][std::string(it.key2)] = it.value;
+        report["op_sequences"] = os;
+    }
+
+    // Cost per operation: who (account) and what (type) costs the most.
+    if (!agg.app_stats.empty()) {
+        json ca = json::object();
+        for (const auto& [name, ai] : agg.app_stats) {
+            ca[name] = {
+                {"ops", ai.count},
+                {"etime_total", ai.etime_total},
+                {"avg_etime", ai.count ? ai.etime_total / ai.count : 0.0},
+                {"share", agg.etime_total > 0 ? 100.0 * ai.etime_total / agg.etime_total : 0.0},
+            };
+        }
+        report["cost_by_account"] = ca;
+    }
+    if (!agg.op_type_etime.empty()) {
+        json ct = json::object();
+        for (const auto& [t, et] : agg.op_type_etime) {
+            const long long cnt = agg.operation_count.count(t) ? agg.operation_count.at(t) : 0;
+            ct[t] = {
+                {"ops", cnt},
+                {"etime_total", et},
+                {"avg_etime", cnt ? et / cnt : 0.0},
+                {"share", agg.etime_total > 0 ? 100.0 * et / agg.etime_total : 0.0},
+            };
+        }
+        report["cost_by_type"] = ct;
+    }
+
+    // Resource-hog verdict: unindexed filter families that dominate the etime.
+    {
+        json hogs = json::array();
+        for (const auto& it : agg.filter_families) {
+            if (!is_slow_filter(it.key2)) continue;
+            const double share = agg.etime_total > 0.0
+                ? 100.0 * it.value.etime_total / agg.etime_total : 0.0;
+            if (share < RESOURCE_HOG_SHARE) continue;
+            hogs.push_back({
+                {"account", std::string(it.key1)},
+                {"template", std::string(it.key2)},
+                {"etime_total", it.value.etime_total},
+                {"share", share},
+                {"avg_etime", it.value.count ? it.value.etime_total / it.value.count : 0.0},
+            });
+        }
+        if (!hogs.empty()) report["resource_hogs"] = hogs;
+    }
+
+    // Top consumer per hour.
+    if (!agg.etime_by_hour.empty()) {
+        json tch = json::array();
+        for (const auto& [hour, accts] : agg.etime_by_hour) {
+            auto top = std::max_element(accts.begin(), accts.end(),
+                [](const auto& a, const auto& b) { return a.second < b.second; });
+            if (top == accts.end()) continue;
+            tch.push_back({
+                {"hour", format_epoch_seconds(hour * 3600)},
+                {"account", top->first},
+                {"etime", top->second},
+            });
+        }
+        report["top_consumer_per_hour"] = tch;
+    }
 
     // Pretty-print with 2-space indentation
     std::cout << report.dump(2) << "\n";

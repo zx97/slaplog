@@ -6,7 +6,59 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 The project is distributed under the **AGPL-3.0** license — see [LICENSE](LICENSE).
 
-## [Unreleased]
+## [5.0.0] - 2026-11-06
+
+### Added
+
+- **Behaviour patterns** (on by default): `--no-patterns` turns the collection
+  off, `--pattern-seq-len N` sets the maximum length (default 4) of a repeated
+  operation sequence.  Per bind account, search filters are generalised by
+  masking their literal values — `employeeNumber=0*`…`904*` fold into one
+  `employeenumber=#*` family, and runs of identical clauses into `(|(uid=$)+)` —
+  and repeated operation sequences are counted as contiguous n-grams.  A new
+  `patterns` section reports the filter families and sequences in text, HTML and
+  JSON, with two donuts (*Cost per Operation Type*, *Filter Families by Cost*).
+- **Cost per operation**: each bind account and each operation type ranked by
+  its cumulative and average `etime` and its share of the total, in the
+  `patterns` section (`cost_by_account` / `cost_by_type` in JSON).
+- **Resource-hog verdict**: an account whose unindexed (substring/negated)
+  filter family spends more than 20 % of the cumulative `etime` is named, with
+  its family and share (`resource_hogs` in JSON).
+- **Top consumer per hour**: the #1 account by `etime` in each hour, as a table
+  (`top_consumer_per_hour` in JSON) and two charts — bars whose height is the
+  busiest account's etime, coloured by account so a takeover reads as a run of
+  one colour, plus a stacked area showing how each hour's total load was split
+  between accounts. A durable takeover (an account that was rarely #1 before and
+  leads most of the next 24 h) is marked by a vertical onset line on both charts,
+  with a tooltip spelling it out.
+- Displayed templates and sequences are truncated to 100 characters; the JSON
+  keeps the full string.
+
+### Changed
+
+- `-c`/`--compact` now trims the report to what matters (text and HTML): every
+  ranked table keeps its top 10 rows, then only rows above 1 % of that table's
+  total — instead of the old "top 5 instead of top 20".
+- The *Statistics* section is regrouped into run / scope / traffic / latency,
+  drops the redundant FD-open and replication-log rows, renames "FD close
+  events" to "Connections closed", groups the time range and the connection
+  open/close into single rows, and adds the average `etime` per operation plus
+  the top consumer (costliest account by etime, with its average and share).
+- The analysis state is now schema 6 (schemas 1 through 5 still read): the
+  filter families, operation sequences, per-type etime, detected log format and
+  per-hour etime are stored.
+- The HTML meta bar is reduced to a single discreet line — Generated / OpenLDAP
+  / Servers / detected log format — with the processing and timing figures kept
+  in the Statistics table.
+
+### Fixed
+
+- The CLI progress bar now recognises rotated logs whose compression extension
+  is followed by a date suffix (`slapd.log.02.bz2_2026-10-30`), so the estimated
+  total reflects the decompressed size instead of the on-disk size.
+- When every file is done, the CLI progress bar reaches 100 % with the real
+  total on both sides, instead of stalling below 100 % on a pessimistic
+  estimate.
 
 ## [4.1.2] - 2026-10-20
 
@@ -134,6 +186,11 @@ The project is distributed under the **AGPL-3.0** license — see [LICENSE](LICE
 
 - Initial release.
 
+[5.0.0]: https://github.com/zx97/slaplog/releases/tag/v5.0.0
+[4.1.2]: https://github.com/zx97/slaplog/releases/tag/v4.1.2
+[4.1.1]: https://github.com/zx97/slaplog/releases/tag/v4.1.1
+[4.1.0]: https://github.com/zx97/slaplog/releases/tag/v4.1.0
+[4.0.5]: https://github.com/zx97/slaplog/releases/tag/v4.0.5
 [3.9.0]: https://github.com/zx97/slaplog/releases/tag/v3.9.0
 [3.8.0]: https://github.com/zx97/slaplog/releases/tag/v3.8.0
 [3.7.0]: https://github.com/zx97/slaplog/releases/tag/v3.7.0

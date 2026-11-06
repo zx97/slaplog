@@ -48,6 +48,9 @@ enum class HtmlChart {
     LatencyDensity,       // the shape of that distribution, on a log scale
                           //                                    (same section)
     Accounts,             // resource consumers per bind DN     (after Top Connections)
+    OpTypeCost,           // cost per operation type (etime)    (after cost table)
+    FilterFamilies,       // cost per generalized filter family (after families table)
+    TopConsumers,         // top consumer per hour: bars + stack (after the hourly table)
 };
 
 // True when at least one chart will be drawn, so the report can skip the chart

@@ -2,7 +2,7 @@
 
 **SPDX-License-Identifier:** AGPL-3.0-or-later  
 **License:** GNU Affero General Public License v3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)  
-**Version:** 4.1.2  
+**Version:** 5.0.0  
 **Author:** Manuel FLURY  
 **Copyright:** © 2026 Manuel FLURY. All rights reserved.
 
@@ -234,7 +234,7 @@ slaplog --unknown-lines unknown.txt /var/log/slapd/access.log
 | Option | Description |
 |--------|-------------|
 | `-o, --output FORMAT` | Output format: `text` (plain), `textcolor` (ANSI, default), `html`, `tabhtml` (same report in tabs), `json`, `replay`. Repeatable: `-o html=report.html` writes that report to a file, so several formats come out of one run. At most one report may go to stdout. |
-| `-c, --compact` | Show top 5 instead of top 20 for ranked sections |
+| `-c, --compact` | Trim the report to what matters: every ranked table keeps its top 10 rows, then only the rows above 1 % of that table's total (text and HTML) |
 | `-r, --recursive` | Recurse into directories when collecting log files |
 | `-q, --quiet` | Suppress the progress bar on stderr (useful for batch / cron runs) |
 | `-n, --max-files N` | Analyze only the `N` most recently modified files in a directory scan |
@@ -248,6 +248,8 @@ slaplog --unknown-lines unknown.txt /var/log/slapd/access.log
 | `--unknown-lines FILE` | Write unrecognised lines to FILE, then generate the full report |
 | `--unknown-lines-only FILE` | Like `--unknown-lines` but skip the report |
 | `--no-graph` | Omit the charts from the `html` report (they are drawn by default) |
+| `--no-patterns` | Disable behaviour-pattern detection (on by default) |
+| `--pattern-seq-len N` | Maximum length of a repeated operation sequence counted (default: `4`, minimum `2`) |
 | `--no-version` | Omit the engine name and version from the `html` report footer |
 | `--title TITLE` | Custom subtitle for the rendered reports (text, HTML), appended after the default one, separated by ` - `.  Ignored by `json` and `replay`, whose schemas are fixed. |
 | `--save-state FILE` | Write the analysis state to FILE (xz-compressed), for a later `--resume` |
@@ -285,20 +287,24 @@ to select specific sections:
 | `sessions` | Session Tracking correlation table |
 | `topops` | Top 100 slowest operations (by etime) |
 | `topconns` | Top 100 busiest connections (by cumulative etime) |
+| `patterns` | Generalized filter families and repeated operation sequences per bind account (on by default, disable with `--no-patterns`) |
 
 ## Report Sections Detail
 
 ### Statistics
 
-Shows processing performance, total/unknown lines, connection counts, peak
-active connections (for a run that mixes several servers, the peak of their
-*sum* — the busiest moment — not the busiest server), time range, total
-etime/qtime, and read/write balance.  The
-**server(s)** the log lines name are listed too — read from the syslog/rfc3339
-header prefix, so a log taken with the *debug* format (which names no host)
-carries none and the row is simply absent.  The HTML report lays these metrics
-out **two per row**, because the section holds little data and a single column
-would make it far taller than it needs to be.
+The report's opening summary, grouped by what each figure answers: the **run**
+(processing time and speed, lines processed, unknown lines), the **scope**
+(OpenLDAP version, the server(s) named, and the time range), the **traffic**
+(read/write balance, connections opened and closed, and the peak of *simultaneous*
+active connections — for a run that mixes several servers, the peak of their
+*sum*, the busiest moment, not the busiest server), and the **latency** (total
+`etime`/`qtime`, the average `etime` per data operation, and the single slowest
+operation with who issued it).  The **server(s)** the log lines name are read
+from the syslog/rfc3339 header prefix, so a log taken with the *debug* format
+(which names no host) carries none and the row is simply absent.  The HTML
+report lays these metrics out **two per row**, because the section holds little
+data and a single column would make it far taller than it needs to be.
 
 ### Load by Server
 
@@ -495,6 +501,64 @@ resets).
 The 100 slowest individual operations and the 100 most expensive connections
 by cumulative execution time. Each shows the connection, operation, who,
 search base/filter, and error code.
+
+### Behaviour Patterns
+
+Collected by default and disabled with `--no-patterns`.  This section is the one
+that answers *who* is shaping the load, rather than *what* the load is, and it
+does so by folding the concrete requests down to their shape.
+
+It opens with the **cost per operation** — the verdict in numbers: each bind
+account and each operation type ranked by its cumulative and average `etime` and
+its share of the total.  A healthy directory shows `SRCH` dominating the count
+but not the time; an account issuing unindexed scans stands out with an average
+cost orders of magnitude above the rest.  Two donuts draw this at a glance:
+*Cost per Operation Type* (etime per type) and *Filter Families by Cost* (etime
+per generalized template).
+
+A **resource-hog verdict** leads the section: any account whose unindexed
+(substring or negated) filter family spends more than 20 % of the cumulative
+`etime` is named, with its family and its share — the "one account is slowing
+the whole cluster" diagnosis stated outright (in JSON as `resource_hogs`).
+
+A **top-consumer-per-hour** view then splits the same picture over time: the #1
+account by `etime` in each hour, as a table and a stacked chart, so the moment a
+hog takes over (its onset) is visible instead of only the period-wide winner
+(in JSON as `top_consumer_per_hour`).
+
+- **Generalized filter families.**  Every search filter is reduced to a
+  *template* that masks the literal values while keeping the structure:
+  digits become `#`, any other value character becomes `$`, and the attribute
+  names, the comparison operators (`=` `>=` `<=` `~=`), the wildcard `*`, and
+  the boolean operators `& | ! ( )` are preserved.  So `(employeeNumber=0*)`,
+  `(employeeNumber=1*)`, … `(employeeNumber=100*)` all fold into the single
+  family `(employeenumber=#*)`, and an enumeration over a whole directory shows
+  as one row instead of hundreds.  Consecutive identical clauses are folded
+  further, so an OR of any number of values reads the same:
+  `(|(uid=a)(uid=b)(uid=c))` becomes `(|(uid=$)+)`.  Each family carries its
+  operation count, its
+  cumulative and average `etime`, and the entries it returned (`nentries`) — a
+  family that costs seconds while returning a handful of entries is the
+  signature of a full candidate scan over an unindexed filter.
+
+- **Repeated operation sequences.**  Along each connection, the finalized
+  operations are generalised to symbols (`SRCH|employeenumber=#*|2`, `BIND`,
+  `UNBIND`, …) and the contiguous sequences of length 2 to `--pattern-seq-len`
+  (default 4) are counted per account.  In a `SRCH` symbol the digits and the
+  other literal characters of the filter keep the same `#`/`$` meaning as above,
+  and the number after the filter is the LDAP search scope: `0` = base object,
+  `1` = one level, `2` = whole subtree (a `-` appears when the log omitted it).
+  A directory *walk* reads as a long run
+  of one search symbol repeated back to back; a fixed request *cycle* reads as
+  a short loop such as `BIND → SRCH → UNBIND`.  Only operations that produce a
+  result line are sequenced: `ABANDON` and `UNBIND` have no `RESULT` line in the
+  access log, so a cycle is seen up to the last search or write, not its close.
+
+The two tables are the raw material for the kind of diagnosis that reads "this
+one account issues an unindexed substring/negation scan in volume".  They are
+available in the text, HTML and JSON reports (in JSON as `filter_families` and
+`op_sequences`, keyed by the bind account).  Like the charts, the data is part
+of the analysis state, so `--save-state` / `--resume` carry it across runs.
 
 ## Output Formats
 

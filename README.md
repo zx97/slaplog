@@ -3,7 +3,7 @@
 
 **SPDX-License-Identifier:** AGPL-3.0-or-later  
 **License:** GNU Affero General Public License v3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)  
-**Version:** 4.1.2  
+**Version:** 5.0.0  
 **Author:** Manuel FLURY  
 **Copyright:** © 2026 Manuel FLURY. All rights reserved.
 
@@ -35,6 +35,11 @@ make
 ./slaplog -q -n 5 -r /var/log/slapd/          # 5 most recent files
 ```
 
+Want to see the output first? Open the
+[synthetic sample report](doc/sample/slaplog-sample.html) — a full HTML report
+built from a fictional `dc=example,dc=com` log, with the generator and log in
+[`doc/sample/`](doc/sample/).
+
 ## Features
 
 - **5 output formats**: text/ANSI color, HTML (standalone with CSS), tabbed HTML, JSON, replay (for jMeter/LoadRunner)
@@ -43,13 +48,22 @@ make
 - **Session tracking**: correlates NAT'd IPs to real clients via `[IP=... NAME=... USERNAME=...]`
 - **Section filtering**: `-s all` (default) or select specific sections
 - **Top-N analysis**: 100 slowest ops, busiest connections, most-used filters
-- **HTML charts**: eight inline SVG graphs — simultaneous connections over time
-  (with downtime bands and server start/stop/abrupt-restart markers), errors
-  over time (failing results only, stacked by result code), response-time
-  distribution and its density profile on a log scale, resource consumers by
-  bind account, operation types, every result code (successes included, on a log
-  scale, with the same codes drawn as a pie on the right) and the failing ones by
-  class — all with mouse-following tooltips, each placed under the section it
+- **Behaviour patterns**: on by default (disable with `--no-patterns`), each
+  account's search filters are generalised (masking literal values, so
+  `employeeNumber=0*`…`904*` fold into one `employeenumber=#*` family) and its
+  repeated operation sequences are counted, surfacing a directory walk or an
+  unindexed substring/negation scan in volume — the "one account is slowing the
+  whole cluster" diagnosis
+- **HTML charts**: inline SVG graphs — simultaneous connections over time
+  (with downtime bands and server start/stop/abrupt-restart markers), the load
+  split by server, errors over time (failing results only, stacked by result
+  code), response-time distribution and its density profile on a log scale,
+  resource consumers by bind account, the top consumer per hour (bars coloured
+  by the busiest account, plus a stacked view of the same hours, with an onset
+  line when an account durably takes over), operation types, bind usage
+  (authentication method mix), every result code (successes included, on a log
+  scale, with the same codes drawn as a pie on the right) and the failing ones
+  by class — all with mouse-following tooltips, each placed under the section it
   summarises, no note anywhere (a chart that needs a word says it in its subtitle),
   and result codes coloured
   by who is at fault (information / client-side / refused by configuration /
@@ -69,7 +83,8 @@ Usage: ./slaplog [options] <logfile|directory> [file|dir ...]
 Options:
   -o, --output FORMAT        text | textcolor | html | tabhtml | json | replay
                              Repeatable: FORMAT=FILE writes that report to a file
-  -c, --compact              Top 5 instead of top 20
+  -c, --compact              Trim the report: top 10 per ranked table, then only
+                             rows above 1 % of that table's total
   -r, --recursive            Recurse into directories
   -q, --quiet                Suppress the progress bar (batch mode)
   -n, --max-files N          Analyze only the N most recently modified files
@@ -77,7 +92,7 @@ Options:
   -j, --jobs N               Worker threads (default: CPU cores - 1)
   -s, --section LIST         Comma-sep section list: all,stats,ops,errors,
                              bases,filters,attrs,apps,extops,csn,server,
-                             index,sessions,topops,topconns,...
+                             index,sessions,topops,topconns,patterns,...
   --log-format FORMAT        Input log format: auto, debug, syslog-utc,
                              syslog-localtime, rfc3339-utc, ol26, rfc3339,
                              syslog (default: auto)
@@ -86,6 +101,8 @@ Options:
   --replay-separator SEP     Delimiter for replay output (default: "|")
                              Use "tab" for tabulation, "comma" for CSV
   --replay-limit N           Max ops stored for replay (default: 1000000, 0=unlimited)
+  --no-patterns              Disable behaviour-pattern detection (on by default)
+  --pattern-seq-len N        Max length of a repeated operation sequence (default: 4)
   --unknown-lines FILE       Write unparseable lines to FILE
   --unknown-lines-only FILE  Like above but skip report
   --save-state FILE          Write the analysis state to FILE (xz-compressed)

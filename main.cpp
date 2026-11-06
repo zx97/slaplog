@@ -82,7 +82,11 @@ namespace fs = std::filesystem;
 void print_progress(std::atomic<size_t>& progress, size_t total_size, 
                     std::atomic<size_t>& files_done, size_t total_files) {
     size_t current = progress.load();
-    float percent = (total_size > 0) ? (100.0 * current / total_size) : 100.0;
+    const size_t done = files_done.load();
+    // When every file is done, show 100 % with the real total on both sides:
+    // the estimated total is only a guide and can overshoot the actual bytes.
+    const size_t denom = (done >= total_files) ? current : total_size;
+    float percent = (denom > 0) ? (100.0 * current / denom) : 100.0;
     if (percent > 100.0) percent = 100.0;
     int bar_width = 50;
 
@@ -94,8 +98,8 @@ void print_progress(std::atomic<size_t>& progress, size_t total_size,
         else std::cerr << " ";
     }
     std::cerr << "] " << std::fixed << std::setprecision(1) << percent << "% "
-              << (current / (1024 * 1024)) << "/" << (total_size / (1024 * 1024)) << " MB"
-              << " | Files: " << files_done.load() << "/" << total_files;
+              << (current / (1024 * 1024)) << "/" << (denom / (1024 * 1024)) << " MB"
+              << " | Files: " << done << "/" << total_files;
     std::cerr.flush();
 }
 
@@ -295,7 +299,7 @@ static void usage(const char* prog) {
     std::cerr << "                             bases,filters,wildcards,\n";
     std::cerr << "                             filters_per_app,attrs,apps,extops,\n";
     std::cerr << "                             qmark,csn,server,index,sessions,\n";
-    std::cerr << "                             topops,topconns,paged\n";
+    std::cerr << "                             topops,topconns,paged,patterns\n";
     std::cerr << "  --log-format FORMAT        Input log format: auto (default), debug,\n";
     std::cerr << "                             syslog-utc, syslog-localtime, rfc3339-utc,\n";
     std::cerr << "                             ol26, rfc3339, syslog\n";
@@ -307,6 +311,8 @@ static void usage(const char* prog) {
     std::cerr << "  --unknown-lines FILE       Write unknown lines to FILE\n";
     std::cerr << "  --unknown-lines-only FILE  Like --unknown-lines, no final report\n";
     std::cerr << "  --no-graph                 Omit the charts from the html report\n";
+    std::cerr << "  --no-patterns              Disable behaviour-pattern detection (on by default)\n";
+    std::cerr << "  --pattern-seq-len N        Max length of a repeated operation sequence (default: 4)\n";
     std::cerr << "  --no-version               Omit the engine version from the report footer\n";
     std::cerr << "  --title TITLE              Custom report title (appended after default, separated by \" - \")\n";
     std::cerr << "  --save-state FILE          Write the analysis state to FILE (xz-compressed)\n";
@@ -365,6 +371,8 @@ int main(int argc, char* argv[]) {
     bool quiet = false;
     bool no_graph = false;
     bool no_version = false;
+    bool no_patterns = false;
+    int pattern_seq_len = 4;
     int max_files = 0;
     int mtime_days = 0;
     int jobs = 0;
@@ -419,6 +427,16 @@ int main(int argc, char* argv[]) {
             quiet = true;
         } else if (arg == "--no-graph") {
             no_graph = true;
+        } else if (arg == "--no-patterns") {
+            no_patterns = true;
+        } else if ((arg == "--pattern-seq-len") && i + 1 < argc) {
+            try {
+                pattern_seq_len = std::stoi(argv[++i]);
+            } catch (const std::exception&) {
+                std::cerr << "Error: invalid value for " << arg << " (expected integer)\n";
+                return 1;
+            }
+            if (pattern_seq_len < 2) pattern_seq_len = 2;
         } else if (arg == "--no-version") {
             no_version = true;
         } else if ((arg == "--title") && i + 1 < argc) {
@@ -546,6 +564,9 @@ int main(int argc, char* argv[]) {
     // Unparsed lines are only needed to write them out: don't pay the memory
     // for them otherwise (they are never printed in a report).
     set_collect_unknown_lines(!unknown_lines_file.empty());
+    // Behaviour patterns are collected by default; --no-patterns turns it off.
+    set_collect_patterns(!no_patterns);
+    set_pattern_seq_len(pattern_seq_len);
     // The footer names the engine version unless --no-version was given.
     set_show_version(!no_version);
 
@@ -599,9 +620,16 @@ int main(int argc, char* argv[]) {
     // settings: one 401.8 MB log gives 22.7 MB (.xz), 19.5 MB (.bz2) and
     // 30.3 MB (.gz), i.e. 17.7x, 20.6x and 13.3x.
     auto ratio_of = [](const std::string& name) -> double {
-        if (utils::ends_with(name, ".xz"))  return 17.7;
-        if (utils::ends_with(name, ".bz2")) return 20.6;
-        if (utils::ends_with(name, ".gz"))  return 13.3;
+        // A rotated log appends a date after the compression extension, e.g.
+        // "slapd_2.6.log.02.bz2_2026-10-30": the extension is then followed by
+        // '_' rather than the end of the name.
+        auto comp_ext = [&](const char* e) {
+            return utils::ends_with(name, e) ||
+                   name.find(std::string(e) + "_") != std::string::npos;
+        };
+        if (comp_ext(".xz"))  return 17.7;
+        if (comp_ext(".bz2")) return 20.6;
+        if (comp_ext(".gz"))  return 13.3;
         return 1.0;
     };
     size_t total_size = 0, disk_size = 0;
