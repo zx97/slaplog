@@ -206,8 +206,10 @@ make test-ui     # the jsdom/WebAssembly harnesses (npm install --prefix tests)
 ```
 
 `make test` also runs `make check-anonymity`, which refuses fixtures, samples
-and tests that are not anonymised (reserved `example.*` names and RFC 5737
-addresses only). Enable the same guard on every commit, once per clone:
+and tests that are not anonymised (reserved `example.*` names, RFC 5737
+addresses, and synthetic `uid=`/`o=` values only). Findings name the file, line
+and rule; the offending value is never echoed, so a public CI log cannot leak
+it. Enable the same guard on every commit, once per clone:
 
 ```bash
 git config core.hooksPath .githooks
