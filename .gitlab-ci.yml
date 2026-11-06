@@ -1,0 +1,4 @@
+anonymity:
+  image: python:3
+  script:
+    - python3 tools/check_anonymity.py
