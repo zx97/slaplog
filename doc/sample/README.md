@@ -73,6 +73,11 @@ the dates are shifted by six months, two days and 17:23:12 (the report's
 "Generated" date is kept), `slapo-sock` filter messages become
 `slapo-sock filter rule #<n>`, and oversized filters are shortened.
 
+Critical administrative accounts are renamed too: `cn=admin,cn=config` becomes
+`cn=ldapcfmgr,cn=config`, and the directory-manager DN becomes
+`cn=dirmanager,dc=example,dc=com`. Standard schema entries such as
+`cn=monitor` and `cn=subschema` are kept.
+
 It is here to show what the report makes obvious at a glance — the kind of
 diagnosis that would otherwise take hours of reading raw log lines:
 
