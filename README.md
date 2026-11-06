@@ -36,8 +36,10 @@ make
 ```
 
 Want to see the output first? Open the
-[synthetic sample report](doc/sample/slaplog-sample.html) — a full HTML report
-built from a fictional `dc=example,dc=com` log, with the generator and log in
+[synthetic sample report](doc/sample/slaplog-sample.html) or the
+[simulated report](doc/sample/slaplog-incident-sample.html) — full
+HTML reports built from a fictional `dc=example,dc=com` log (reproducible) and
+from a real log set (anonymised), with the generator and log in
 [`doc/sample/`](doc/sample/).
 
 ## Features
