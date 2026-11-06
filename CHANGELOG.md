@@ -59,6 +59,9 @@ The project is distributed under the **AGPL-3.0** license — see [LICENSE](LICE
 - When every file is done, the CLI progress bar reaches 100 % with the real
   total on both sides, instead of stalling below 100 % on a pessimistic
   estimate.
+- The *Top Long Operations* table now truncates each filter to 100 characters
+  (text and HTML) and HTML-escapes it, so a single generated filter (thousands
+  of clauses) no longer bloats the report.
 
 ## [4.1.2] - 2026-10-20
 

@@ -1063,7 +1063,7 @@ void print_text_report(const Aggregator& agg, double processing_time, bool compa
                     r.nentries.has_value() ? std::to_string(*r.nentries) : "",
                     r.err.has_value() ? std::to_string(*r.err) : "",
                     r.base,
-                    r.filter
+                    truncate_pattern(r.filter)
                 });
             }
             print_table({"etime", "conn", "op", "type", "who", "nentries", "err", "base", "filter"}, top_op_rows);
@@ -1986,7 +1986,8 @@ void print_html_report(const Aggregator& agg, double duration, bool compact, con
         std::cout << "<tr><td style=\"" << etime_color(r.etime) << "\">" << fmt_double(r.etime) << "</td>"
                   << "<td>" << r.conn << "</td><td>" << r.op
                   << "</td><td>" << r.type << "</td><td>" << r.who
-                  << "</td><td>" << r.base << "</td><td>" << r.filter << "</td></tr>\n";
+                  << "</td><td>" << r.base << "</td><td>"
+                  << html_escape(truncate_pattern(r.filter)) << "</td></tr>\n";
     }
     std::cout << "</table>\n";
 
