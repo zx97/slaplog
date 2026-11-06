@@ -213,6 +213,10 @@ addresses only). Enable the same guard on every commit, once per clone:
 git config core.hooksPath .githooks
 ```
 
+A machine-wide equivalent can run the same script from a global `pre-push`
+hook (`git config --global core.hooksPath ...`), for every repository that
+carries `tools/check_anonymity.py`.
+
 ## WebAssembly build (browser)
 
 slaplog can also be compiled to WebAssembly and run **entirely inside a browser
