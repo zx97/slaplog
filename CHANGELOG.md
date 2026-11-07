@@ -6,6 +6,19 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 The project is distributed under the **AGPL-3.0** license — see [LICENSE](LICENSE).
 
+## [Unreleased]
+
+### Added
+
+- **Wrong-file guard**: each input is sampled after decompression (up to 200
+  lines or 512 KiB), and the sample is checked with the parser's own header
+  detection.  A file with no recognisable `slapd` line — an LDIF export read by
+  mistake, a config file, a binary — is skipped with
+  `not an OpenLDAP log file` on stderr instead of filling the report with
+  unknown lines.  The run still succeeds when another file was analysed, and
+  exits 1 when nothing was.  The WebAssembly session applies the same rule and
+  reports the skipped files.
+
 ## [5.0.0] - 2026-11-06
 
 ### Added

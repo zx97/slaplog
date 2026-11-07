@@ -1713,6 +1713,11 @@ All parsing and aggregation logic:
   on `ev.kind` to the correct handler (BIND, SRCH, RESULT, etc.).
 - **`merge_aggregators()`**: Unions two `Aggregator` instances, keeping the
   top 100 for operations and connections.
+- **`LogSniffer` / `process_file()`**: the head of each input is sampled
+  (at most 200 lines or 512 KiB, after decompression) and checked with
+  `try_parse_header()`.  A sample with no recognised header is refused
+  (`FileVerdict::NotLog`) before a single event is folded in, so a mistyped
+  path cannot turn an LDIF export into an empty report.
 - **File I/O**: `process_plain_file`, `process_gzip_file`, `process_bzip2_file`,
   `process_xz_file` — each reads lines and calls `parse_line` + `update_aggregator`.
 

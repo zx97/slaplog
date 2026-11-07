@@ -692,6 +692,11 @@ int main(int argc, char* argv[]) {
     std::mutex merge_mtx;
     std::atomic<size_t> progress(0);
     std::atomic<size_t> files_done(0);
+    std::atomic<size_t> analysed_files(0);
+    // Files that were refused or could not be read, in path order.  Guarded by
+    // merge_mtx; reported once the workers are done so the messages do not
+    // interleave with the progress bar.
+    std::vector<std::pair<std::string, FileVerdict>> skipped_files;
     auto start_time = std::chrono::system_clock::now();
 
     if (want_replay) {
@@ -835,8 +840,20 @@ int main(int argc, char* argv[]) {
                                   << (i + 1) << "/" << files.size() << ")\n";
                     }
                     Aggregator local_agg;
-                    process_file(files[i], local_agg, progress,
-                                 unknown_out, unknown_mtx_ptr);
+                    const FileVerdict verdict =
+                        process_file(files[i], local_agg, progress,
+                                     unknown_out, unknown_mtx_ptr);
+                    if (verdict != FileVerdict::Analysed) {
+                        // Not a log, empty or unreadable: drop it instead of
+                        // folding a pile of unknown lines into the report.
+                        {
+                            std::lock_guard<std::mutex> lock(merge_mtx);
+                            skipped_files.emplace_back(files[i], verdict);
+                        }
+                        files_done++;
+                        continue;
+                    }
+                    analysed_files++;
                     // A resume may only fold in the servers the state holds.
                     // Check the file's own aggregate before it is merged, so a
                     // foreign log stops the run before it costs anything more.
@@ -913,6 +930,38 @@ int main(int argc, char* argv[]) {
                   << ", while the state holds the logs of " << held << ".\n"
                   << "       Nothing was written; give logs from those servers, or start a "
                      "new analysis without --resume.\n";
+        return 1;
+    }
+
+    // ------------------------------------------------------------------
+    // Files that were refused or could not be read.
+    //
+    // Reported after the workers so the messages do not interleave with the
+    // progress bar, and in path order so a run is reproducible.
+    // ------------------------------------------------------------------
+    if (!skipped_files.empty()) {
+        std::sort(skipped_files.begin(), skipped_files.end());
+        for (const auto& skipped : skipped_files) {
+            std::cerr << "slaplog: ";
+            switch (skipped.second) {
+                case FileVerdict::NotLog:
+                    std::cerr << "not an OpenLDAP log file — skipped: ";
+                    break;
+                case FileVerdict::Empty:
+                    std::cerr << "empty file — skipped: ";
+                    break;
+                case FileVerdict::Unreadable:
+                    std::cerr << "cannot read — skipped: ";
+                    break;
+                default:
+                    std::cerr << "skipped: ";
+                    break;
+            }
+            std::cerr << skipped.first << "\n";
+        }
+    }
+    if (analysed_files.load() == 0 && resume_files.empty()) {
+        std::cerr << "Error: no OpenLDAP log file to analyse\n";
         return 1;
     }
 

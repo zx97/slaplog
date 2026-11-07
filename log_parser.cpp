@@ -3186,9 +3186,209 @@ void finalize_connection_counts(Aggregator& agg) {
     agg.active_connections = running;
 }
 
-void process_file(const std::string& filename, Aggregator& agg,
-                  std::atomic<size_t>& progress,
-                  std::ostream* unknown_out, std::mutex* unknown_mtx) {
+// ------------------------------------------------------------------
+// LogSniffer — is this stream an OpenLDAP log at all?
+// ------------------------------------------------------------------
+// The detector delegates to try_parse_header(), the very function parse_line()
+// uses, so it accepts exactly the formats the parser understands and nothing
+// else.  An LDIF export ("version: 1", "dn: ...", "objectClass: ..."), a
+// README, a JSON dump or a config file carries no dated slapd header and is
+// therefore refused instead of being turned into thousands of unknown lines.
+
+LogSniffer::Verdict LogSniffer::feed(const std::string& line) {
+    if (verdict_ != Verdict::Undecided) return verdict_;
+
+    if (!line.empty()) {
+        std::string timestamp, host, proc, rest;
+        if (try_parse_header(line, LogFormat::AUTO, timestamp, host, proc, rest,
+                             nullptr)) {
+            verdict_ = Verdict::Log;
+            return verdict_;
+        }
+    }
+
+    if (++seen_ >= kSniffLines) verdict_ = Verdict::NotLog;
+    return verdict_;
+}
+
+namespace {
+
+// How the file is compressed, from its magic bytes.
+enum class Compression { None, Gzip, Bzip2, Xz };
+
+Compression compression_of(const unsigned char* m) {
+    if (m[0] == 0x1f && m[1] == 0x8b) return Compression::Gzip;
+    if (m[0] == 'B' && m[1] == 'Z' && m[2] == 'h' && m[3] >= '1' && m[3] <= '9')
+        return Compression::Bzip2;
+    if (m[0] == 0xfd && m[1] == '7' && m[2] == 'z' && m[3] == 'X' &&
+        m[4] == 'Z' && m[5] == 0x00)
+        return Compression::Xz;
+    return Compression::None;
+}
+
+// Accumulates the first lines of a decompressed stream, up to the sniffer's
+// limits.  A NUL byte marks the sample as binary; `empty` tells a zero-byte
+// file apart from a file that simply has no line yet.
+class HeadCollector {
+public:
+    void add(const char* data, size_t n) {
+        if (full_) return;
+        if (n > 0) empty_ = false;
+        for (size_t i = 0; i < n && !full_; ++i) {
+            const char c = data[i];
+            if (c == '\0') binary_ = true;
+            if (c == '\n') {
+                push_line();
+            } else if (cur_.size() < kMaxLineBytes) {
+                cur_.push_back(c);
+            }
+            if (++bytes_ >= kMaxBytes) full_ = true;
+        }
+    }
+
+    void finish() {
+        if (!full_ && !cur_.empty()) push_line();
+    }
+
+    const std::vector<std::string>& lines() const { return lines_; }
+    bool binary() const { return binary_; }
+    bool empty() const { return empty_ && cur_.empty(); }
+    bool full() const { return full_; }
+
+private:
+    static constexpr size_t kMaxBytes = 512 * 1024;
+    static constexpr size_t kMaxLineBytes = 64 * 1024;
+
+    void push_line() {
+        lines_.push_back(cur_);
+        cur_.clear();
+        if (static_cast<int>(lines_.size()) >= LogSniffer::kSniffLines)
+            full_ = true;
+    }
+
+    std::string cur_;
+    std::vector<std::string> lines_;
+    size_t bytes_ = 0;
+    bool binary_ = false;
+    bool empty_ = true;
+    bool full_ = false;
+};
+
+struct HeadSample {
+    std::vector<std::string> lines;
+    bool binary = false;
+    bool empty = true;
+    bool ok = false;   // the file could be opened (and decompressed, if needed)
+};
+
+// Read at most kSniffLines decompressed lines from the head of `filename`.
+HeadSample sample_head(const std::string& filename, Compression comp) {
+    HeadCollector head;
+    char buf[65536];
+
+    switch (comp) {
+        case Compression::None: {
+            std::ifstream f(filename, std::ios::binary);
+            if (!f) return HeadSample{};
+            while (!head.full()) {
+                f.read(buf, sizeof(buf));
+                const std::streamsize n = f.gcount();
+                if (n <= 0) break;
+                head.add(buf, static_cast<size_t>(n));
+            }
+            break;
+        }
+        case Compression::Gzip: {
+            gzFile gz = gzopen(filename.c_str(), "rb");
+            if (!gz) return HeadSample{};
+            while (!head.full()) {
+                const int n = gzread(gz, buf, sizeof(buf));
+                if (n <= 0) break;
+                head.add(buf, static_cast<size_t>(n));
+            }
+            gzclose(gz);
+            break;
+        }
+        case Compression::Bzip2: {
+            FILE* f = fopen(filename.c_str(), "rb");
+            if (!f) return HeadSample{};
+            int err = BZ_OK;
+            BZFILE* bz = BZ2_bzReadOpen(&err, f, 0, 0, nullptr, 0);
+            if (err != BZ_OK) {
+                fclose(f);
+                return HeadSample{};
+            }
+            while (!head.full()) {
+                const int n = BZ2_bzRead(&err, bz, buf, sizeof(buf));
+                if (n > 0) head.add(buf, static_cast<size_t>(n));
+                if (err == BZ_STREAM_END || err != BZ_OK) break;
+            }
+            BZ2_bzReadClose(&err, bz);
+            fclose(f);
+            break;
+        }
+        case Compression::Xz: {
+            FILE* f = fopen(filename.c_str(), "rb");
+            if (!f) return HeadSample{};
+            lzma_stream strm = LZMA_STREAM_INIT;
+            if (lzma_stream_decoder(&strm, UINT64_MAX, LZMA_CONCATENATED) !=
+                LZMA_OK) {
+                fclose(f);
+                return HeadSample{};
+            }
+            lzma_action action = LZMA_RUN;
+            while (!head.full()) {
+                if (strm.avail_in == 0) {
+                    const size_t n = fread(buf, 1, sizeof(buf), f);
+                    strm.next_in = reinterpret_cast<const uint8_t*>(buf);
+                    strm.avail_in = n;
+                    if (n == 0) action = LZMA_FINISH;
+                }
+                uint8_t out[65536];
+                strm.next_out = out;
+                strm.avail_out = sizeof(out);
+                const lzma_ret ret = lzma_code(&strm, action);
+                const size_t produced = sizeof(out) - strm.avail_out;
+                if (produced) head.add(reinterpret_cast<const char*>(out), produced);
+                if (ret == LZMA_STREAM_END) break;
+                if (ret != LZMA_OK) break;
+                if (action == LZMA_FINISH && produced == 0 && strm.avail_in == 0)
+                    break;
+            }
+            lzma_end(&strm);
+            fclose(f);
+            break;
+        }
+    }
+
+    head.finish();
+    HeadSample sample;
+    sample.lines = head.lines();
+    sample.binary = head.binary();
+    sample.empty = head.empty();
+    sample.ok = true;
+    return sample;
+}
+
+// True when at least one sampled line carries a header the parser recognises.
+bool sample_is_log(const HeadSample& sample) {
+    LogSniffer sniffer;
+    for (const std::string& line : sample.lines) {
+        if (sniffer.feed(line) == LogSniffer::Verdict::Log) return true;
+        if (sniffer.decided()) return false;   // NotLog: the cap was reached
+    }
+    return false;
+}
+
+} // anonymous namespace
+
+// ------------------------------------------------------------------
+// process_file — Probe the head, then auto-detect compression and dispatch
+// ------------------------------------------------------------------
+
+FileVerdict process_file(const std::string& filename, Aggregator& agg,
+                         std::atomic<size_t>& progress,
+                         std::ostream* unknown_out, std::mutex* unknown_mtx) {
     // Peek at the file's first bytes to detect compression type.
     unsigned char peek[8] = {};
     std::ifstream probe(filename, std::ios::binary);
@@ -3196,18 +3396,31 @@ void process_file(const std::string& filename, Aggregator& agg,
         probe.read(reinterpret_cast<char*>(peek), sizeof(peek));
         probe.close();
     }
+    const Compression comp = compression_of(peek);
 
-    if (peek[0] == 0x1f && peek[1] == 0x8b) {
-        process_gzip_file(filename, agg, progress, unknown_out, unknown_mtx);
-    } else if (peek[0] == 'B' && peek[1] == 'Z' && peek[2] == 'h' &&
-               peek[3] >= '1' && peek[3] <= '9') {
-        process_bzip2_file(filename, agg, progress, unknown_out, unknown_mtx);
-    } else if (peek[0] == 0xfd && peek[1] == '7' && peek[2] == 'z' &&
-               peek[3] == 'X' && peek[4] == 'Z' && peek[5] == 0x00) {
-        process_xz_file(filename, agg, progress, unknown_out, unknown_mtx);
-    } else {
-        process_plain_file(filename, agg, progress, unknown_out, unknown_mtx);
+    // Refuse anything that is not an OpenLDAP log before a single event is
+    // folded in: an LDIF export handed over by mistake would otherwise fill
+    // the report with unknown lines and empty statistics.
+    const HeadSample head = sample_head(filename, comp);
+    if (!head.ok) return FileVerdict::Unreadable;
+    if (head.empty) return FileVerdict::Empty;
+    if (!sample_is_log(head)) return FileVerdict::NotLog;
+
+    switch (comp) {
+        case Compression::Gzip:
+            process_gzip_file(filename, agg, progress, unknown_out, unknown_mtx);
+            break;
+        case Compression::Bzip2:
+            process_bzip2_file(filename, agg, progress, unknown_out, unknown_mtx);
+            break;
+        case Compression::Xz:
+            process_xz_file(filename, agg, progress, unknown_out, unknown_mtx);
+            break;
+        case Compression::None:
+            process_plain_file(filename, agg, progress, unknown_out, unknown_mtx);
+            break;
     }
+    return FileVerdict::Analysed;
 }
 
 // ------------------------------------------------------------------

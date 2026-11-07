@@ -48,6 +48,9 @@ log are in [`doc/sample/`](doc/sample/); the same pages are also served from
 - **5 output formats**: text/ANSI color, HTML (standalone with CSS), tabbed HTML, JSON, replay (for jMeter/LoadRunner)
 - **Parallel processing**: bounded worker pool (`-j`, capped at the file count), each worker merging its file under one mutex
 - **Compressed logs**: `.gz`, `.bz2`, `.xz` transparently handled
+- **Wrong-file guard**: every input is sniffed after decompression; a file
+  with no recognisable `slapd` line (an LDIF export, a config file) is skipped
+  with a clear message instead of producing an empty report
 - **Session tracking**: correlates NAT'd IPs to real clients via `[IP=... NAME=... USERNAME=...]`
 - **Section filtering**: `-s all` (default) or select specific sections
 - **Top-N analysis**: 100 slowest ops, busiest connections, most-used filters

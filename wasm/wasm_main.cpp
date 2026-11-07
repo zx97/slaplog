@@ -205,6 +205,14 @@ struct Session {
     // this is not a resume, and the file is dropped instead of mixed in.
     std::set<std::string> resume_servers;
     std::string mismatch;        // set once such a log has been seen
+    // Plain-text inputs are sniffed before being parsed: a file with no
+    // recognisable log header (an LDIF export, say) is refused rather than
+    // folded in as unknown lines.  Lines are held in `pending` until the
+    // sniffer answers, which happens on the first real log line.
+    LogSniffer sniff;
+    std::vector<std::string> pending;
+    bool input_refused = false;  // the current input is not a log
+    bool input_empty = true;     // no line seen in the current input
     std::atomic<size_t> progress{0};   // bytes consumed so far
     std::chrono::system_clock::time_point start;
 };
@@ -259,6 +267,10 @@ void begin_input() {
         merge_aggregators(g_session->total, g_session->current);
     }
     g_session->current = Aggregator{};
+    g_session->sniff.reset();
+    g_session->pending.clear();
+    g_session->input_refused = false;
+    g_session->input_empty = true;
     g_session->input_open = true;
 }
 
@@ -266,8 +278,21 @@ void begin_input() {
 // the resumed state does not hold is dropped: folding it in would mix two
 // networks, and the caller learns about it from the non-zero return of
 // slaplog_input_end()/slaplog_add_file() (and from slaplog_end()).
+// An input whose lines never matched a log header is dropped the same way.
 void end_input() {
     if (!g_session->input_open) return;
+
+    if (!g_session->input_empty &&
+        g_session->sniff.finish() == LogSniffer::Verdict::NotLog) {
+        g_session->input_refused = true;
+    }
+    if (g_session->input_refused) {
+        g_session->pending.clear();
+        g_session->current = Aggregator{};
+        g_session->input_open = false;
+        return;
+    }
+
     const std::vector<std::string> foreign =
         servers_not_in(g_session->current, g_session->resume_servers);
     if (!foreign.empty()) {
@@ -290,27 +315,49 @@ void end_input() {
 // process_plain_file() exactly: '\n' terminates a line, '\r' is kept, and a
 // final line without a trailing newline is processed too.  Callers must split
 // only at line boundaries so that a line is never broken across two calls.
+//
+// Lines are held in Session::pending until LogSniffer has decided whether the
+// stream is an OpenLDAP log, so a refused file leaves the aggregate untouched.
 size_t feed_text(const char* data, size_t len) {
     if (!g_session->input_open) begin_input();
+    Session& s = *g_session;
     size_t lines = 0;
+
+    auto take = [&](const std::string& line) {
+        Event ev = parse_line(line);
+        update_aggregator(s.current, ev, nullptr, nullptr);
+        s.progress += line.size() + 1;
+    };
+    auto handle = [&](const std::string& line) {
+        ++lines;
+        s.input_empty = false;
+        if (s.input_refused) return;
+        switch (s.sniff.feed(line)) {
+            case LogSniffer::Verdict::Undecided:
+                s.pending.push_back(line);
+                return;
+            case LogSniffer::Verdict::NotLog:
+                s.pending.clear();
+                s.input_refused = true;
+                return;
+            case LogSniffer::Verdict::Log:
+                for (const std::string& held : s.pending) take(held);
+                s.pending.clear();
+                take(line);
+                return;
+        }
+    };
+
     const char* end = data + len;
     const char* start = data;
     for (const char* p = data; p < end; ++p) {
         if (*p == '\n') {
-            std::string line(start, static_cast<size_t>(p - start));
-            Event ev = parse_line(line);
-            update_aggregator(g_session->current, ev, nullptr, nullptr);
-            g_session->progress += line.size() + 1;
-            ++lines;
+            handle(std::string(start, static_cast<size_t>(p - start)));
             start = p + 1;
         }
     }
     if (start < end) {
-        std::string line(start, static_cast<size_t>(end - start));
-        Event ev = parse_line(line);
-        update_aggregator(g_session->current, ev, nullptr, nullptr);
-        g_session->progress += line.size() + 1;
-        ++lines;
+        handle(std::string(start, static_cast<size_t>(end - start)));
     }
     // Stop as soon as the chunk names a server the state does not hold: the
     // file is dropped, and the caller stops sending its chunks.
@@ -414,20 +461,41 @@ extern "C" EMSCRIPTEN_KEEPALIVE int slaplog_input_begin(void) {
 }
 
 // Finish the current input and fold it into the running total.
+// Returns 0 on success, 1 when the logs do not belong to the resumed state,
+// 2 when the input is not an OpenLDAP log (it was dropped).
 extern "C" EMSCRIPTEN_KEEPALIVE int slaplog_input_end(void) {
     if (!g_session) return -1;
     end_input();
-    return g_session->mismatch.empty() ? 0 : 1;   // 1: not a resume
+    if (!g_session->mismatch.empty()) return 1;   // not a resume
+    if (g_session->input_refused) return 2;       // not a log: dropped
+    return 0;
 }
 
 // Process one whole file (plain, .gz, .bz2 or .xz — detected from its magic
 // bytes) as a single input.
+// Returns 0 on success, 1 when the logs do not belong to the resumed state,
+// 2 when the file is not an OpenLDAP log, 3 when it is empty, 4 when it cannot
+// be read.
 extern "C" EMSCRIPTEN_KEEPALIVE int slaplog_add_file(const char* path) {
     if (!g_session || !path) return -1;
     begin_input();
-    process_file(path, g_session->current, g_session->progress, nullptr, nullptr);
+    const FileVerdict verdict =
+        process_file(path, g_session->current, g_session->progress, nullptr, nullptr);
     end_input();
-    return g_session->mismatch.empty() ? 0 : 1;   // 1: not a resume
+    if (!g_session->mismatch.empty()) return 1;   // not a resume
+    switch (verdict) {
+        case FileVerdict::NotLog:
+            std::cerr << "slaplog(wasm): not an OpenLDAP log file: " << path << "\n";
+            return 2;
+        case FileVerdict::Empty:
+            return 3;
+        case FileVerdict::Unreadable:
+            std::cerr << "slaplog(wasm): cannot read: " << path << "\n";
+            return 4;
+        case FileVerdict::Analysed:
+            break;
+    }
+    return 0;
 }
 
 // Process a chunk of plain text, held in the caller-allocated WASM heap block
@@ -435,10 +503,14 @@ extern "C" EMSCRIPTEN_KEEPALIVE int slaplog_add_file(const char* path) {
 // slaplog_input_begin()/slaplog_input_end().  The chunk must start at a line
 // start and end right after a newline (a trailing partial line is allowed, for
 // the last chunk).
+// Returns 0 to keep going, 1 when the logs do not belong to the resumed state,
+// 2 when the input is not an OpenLDAP log (the caller should stop sending it).
 extern "C" EMSCRIPTEN_KEEPALIVE int slaplog_add_text(const char* data, int len) {
     if (!g_session || !data || len <= 0) return -1;
     feed_text(data, static_cast<size_t>(len));
-    return g_session->mismatch.empty() ? 0 : 1;   // 1: stop sending this file
+    if (!g_session->mismatch.empty()) return 1;   // stop sending this file
+    if (g_session->input_refused) return 2;       // not a log: stop sending it
+    return 0;
 }
 
 // Emit the aggregated report to stdout and close the session.
@@ -484,10 +556,18 @@ extern "C" EMSCRIPTEN_KEEPALIVE int slaplog_run(const char* args) {
         return 1;
     }
     if (!start_session(std::move(opts))) return 1;
+    size_t analysed = 0;
     for (const auto& f : inputs) {
         begin_input();
-        process_file(f, g_session->current, g_session->progress, nullptr, nullptr);
+        if (process_file(f, g_session->current, g_session->progress, nullptr,
+                         nullptr) == FileVerdict::Analysed)
+            ++analysed;
         end_input();
+    }
+    if (analysed == 0 && g_session->resume_servers.empty()) {
+        std::cerr << "slaplog(wasm): no OpenLDAP log file to analyse\n";
+        teardown_session();
+        return 1;
     }
     return emit_report();
 }
@@ -505,10 +585,18 @@ int main(int argc, char** argv) {
     }
     std::vector<std::string> inputs = opts.inputs;
     if (!start_session(std::move(opts))) return 1;
+    size_t analysed = 0;
     for (const auto& f : inputs) {
         begin_input();
-        process_file(f, g_session->current, g_session->progress, nullptr, nullptr);
+        if (process_file(f, g_session->current, g_session->progress, nullptr,
+                         nullptr) == FileVerdict::Analysed)
+            ++analysed;
         end_input();
+    }
+    if (analysed == 0 && g_session->resume_servers.empty()) {
+        std::cerr << "slaplog(wasm): no OpenLDAP log file to analyse\n";
+        teardown_session();
+        return 1;
     }
     return emit_report();
 }

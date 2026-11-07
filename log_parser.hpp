@@ -864,14 +864,62 @@ void finalize_connection_counts(Aggregator& agg);
 std::vector<std::string> servers_not_in(const Aggregator& agg,
                                         const std::set<std::string>& known);
 
+// Verdict on one input file.  A file that carries no recognisable OpenLDAP log
+// line in its first LogSniffer::kSniffLines lines is refused instead of being
+// folded in as a pile of unknown events: passing an LDIF export (or any other
+// text file) by mistake must produce a clear message, not an empty report.
+enum class FileVerdict {
+    Analysed,     // at least one log line was found and parsed
+    Empty,        // nothing to parse (no line at all)
+    NotLog,       // readable content, but not an OpenLDAP log
+    Unreadable    // cannot be opened or decompressed
+};
+
+// Line-by-line "is this an OpenLDAP log?" detector.  It uses the parser's own
+// header detection, so a file this class accepts is a file parse_line() can
+// read.  Feed lines until it returns something other than Undecided: it answers
+// Log as soon as one line carries a recognised header, and NotLog once
+// kSniffLines lines have gone by without one.
+class LogSniffer {
+public:
+    enum class Verdict { Undecided, Log, NotLog };
+
+    Verdict feed(const std::string& line);
+
+    // Close the question: a stream that ends undecided is not a log.  An empty
+    // stream is reported as NotLog too; callers that care about emptiness check
+    // it before calling this.
+    Verdict finish() {
+        if (verdict_ == Verdict::Undecided) verdict_ = Verdict::NotLog;
+        return verdict_;
+    }
+
+    Verdict verdict() const { return verdict_; }
+    bool decided() const { return verdict_ != Verdict::Undecided; }
+    void reset() { seen_ = 0; verdict_ = Verdict::Undecided; }
+
+    // A rotated log may open with a banner, a blank line or a handful of
+    // continuation lines; 200 lines leave a wide margin without reading a
+    // whole multi-gigabyte file.
+    static constexpr int kSniffLines = 200;
+
+private:
+    int seen_ = 0;
+    Verdict verdict_ = Verdict::Undecided;
+};
+
 // Process a single file by auto-detecting its compression type (plain,
 // gzip, bzip2, xz) and calling the appropriate handler.  Uses an atomic
 // progress counter for reporting.
 // unknown_out / unknown_mtx are forwarded to update_aggregator (see above).
-void process_file(const std::string& filename, Aggregator& agg,
-                  std::atomic<size_t>& progress,
-                  std::ostream* unknown_out = nullptr,
-                  std::mutex* unknown_mtx = nullptr);
+//
+// The head of the file is sampled first (after decompression): when no sampled
+// line looks like an OpenLDAP log line, nothing is parsed and FileVerdict::NotLog
+// is returned.
+FileVerdict process_file(const std::string& filename, Aggregator& agg,
+                         std::atomic<size_t>& progress,
+                         std::ostream* unknown_out = nullptr,
+                         std::mutex* unknown_mtx = nullptr);
 
 void process_plain_file(const std::string& filename, Aggregator& agg,
                         std::atomic<size_t>& progress,
