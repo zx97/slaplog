@@ -6,6 +6,23 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 The project is distributed under the **AGPL-3.0** license — see [LICENSE](LICENSE).
 
+## [5.0.3] - 2026-11-07
+
+### Changed
+
+- **Parsing is another ~8 % faster** on the 21.6 GB / 134 M-line corpus
+  (42.4 s → 38.8 s, i.e. 2.1× since 5.0.1), with byte-identical reports:
+  - auto-detection now derives from the line's first bytes *which header
+    formats can possibly match* and only tries those.  Each predicate is a
+    necessary condition of the corresponding regex, so the detected format
+    cannot change; it only skips attempts that were guaranteed to fail (the
+    debug pattern used to be tried on every line of an rfc3339 log);
+  - the `conn=N op=M` prefix — matched on almost every line and the second
+    most expensive pattern in the profile — is parsed by hand, with exactly
+    the shape of `RE_CONN_OP`.  Lines that do not have that shape (a negative
+    or oversized id, another prefix) still take the original regex path, so
+    the result is unchanged.
+
 ## [5.0.2] - 2026-11-07
 
 ### Added
@@ -267,6 +284,7 @@ The project is distributed under the **AGPL-3.0** license — see [LICENSE](LICE
 
 - Initial release.
 
+[5.0.3]: https://github.com/zx97/slaplog/releases/tag/v5.0.3
 [5.0.2]: https://github.com/zx97/slaplog/releases/tag/v5.0.2
 [5.0.1]: https://github.com/zx97/slaplog/releases/tag/v5.0.1
 [5.0.0]: https://github.com/zx97/slaplog/releases/tag/v5.0.0

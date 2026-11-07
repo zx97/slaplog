@@ -1054,6 +1054,39 @@ std::string format_epoch_seconds(long long t) {
         }
     }
 
+    // Which header formats a line can possibly match, judged from its first
+    // bytes.  Every predicate below is a *necessary* condition of the matching
+    // regex, so skipping a format whose predicate is false can never change the
+    // result — it only avoids attempts that were guaranteed to fail.  In auto
+    // mode the debug pattern used to be tried on every line of an rfc3339 log.
+    enum HeaderShape : unsigned {
+        SHAPE_DEBUG   = 1u << 0,
+        SHAPE_RFC3339 = 1u << 1,
+        SHAPE_OL26    = 1u << 2,
+        SHAPE_SYSLOG  = 1u << 3,
+    };
+
+    static unsigned header_shape(std::string_view line) {
+        if (line.empty()) return 0;
+        unsigned s = 0;
+        const char c0 = line[0];
+        if (c0 == '[') s |= SHAPE_OL26;
+        if (line.size() >= 11 && line[4] == '-' && line[7] == '-' && line[10] == 'T')
+            s |= SHAPE_RFC3339;
+        if ((c0 >= '0' && c0 <= '9') || (c0 >= 'a' && c0 <= 'f')) {
+            size_t i = 0;
+            while (i < line.size() && ((line[i] >= '0' && line[i] <= '9') ||
+                                       (line[i] >= 'a' && line[i] <= 'f'))) ++i;
+            if (i > 0 && i < line.size() && line[i] == '.') s |= SHAPE_DEBUG;
+        }
+        if (line.size() >= 4 && c0 >= 'A' && c0 <= 'Z' &&
+            line[1] >= 'a' && line[1] <= 'z' &&
+            line[2] >= 'a' && line[2] <= 'z' &&
+            std::isspace(static_cast<unsigned char>(line[3])))
+            s |= SHAPE_SYSLOG;
+        return s;
+    }
+
     bool try_parse_header(std::string_view line, LogFormat fmt,
                           std::string& timestamp, std::string& host,
                           std::string& proc, std::string& rest,
@@ -1133,13 +1166,21 @@ std::string format_epoch_seconds(long long t) {
             }
             case LogFormat::AUTO:
             default: {
-                // Try all formats in order of specificity
-                if (try_parse_header(line, LogFormat::DEBUG, timestamp, host, proc, rest, detected_fmt)) return true;
-                if (try_parse_header(line, LogFormat::RFC3339_UTC, timestamp, host, proc, rest, detected_fmt)) return true;
-                if (try_parse_header(line, LogFormat::OL26, timestamp, host, proc, rest, detected_fmt)) return true;
-                if (try_parse_header(line, LogFormat::RFC3339, timestamp, host, proc, rest, detected_fmt)) return true;
-                if (try_parse_header(line, LogFormat::SYSLOG_UTC, timestamp, host, proc, rest, detected_fmt)) return true;
-                if (try_parse_header(line, LogFormat::SYSLOG_LOCALTIME, timestamp, host, proc, rest, detected_fmt)) return true;
+                // Same order of specificity, but only the formats the line can
+                // possibly match are attempted (see header_shape()).
+                const unsigned shape = header_shape(line);
+                if ((shape & SHAPE_DEBUG) &&
+                    try_parse_header(line, LogFormat::DEBUG, timestamp, host, proc, rest, detected_fmt)) return true;
+                if ((shape & SHAPE_RFC3339) &&
+                    try_parse_header(line, LogFormat::RFC3339_UTC, timestamp, host, proc, rest, detected_fmt)) return true;
+                if ((shape & SHAPE_OL26) &&
+                    try_parse_header(line, LogFormat::OL26, timestamp, host, proc, rest, detected_fmt)) return true;
+                if ((shape & SHAPE_RFC3339) &&
+                    try_parse_header(line, LogFormat::RFC3339, timestamp, host, proc, rest, detected_fmt)) return true;
+                if ((shape & SHAPE_SYSLOG) &&
+                    try_parse_header(line, LogFormat::SYSLOG_UTC, timestamp, host, proc, rest, detected_fmt)) return true;
+                if ((shape & SHAPE_SYSLOG) &&
+                    try_parse_header(line, LogFormat::SYSLOG_LOCALTIME, timestamp, host, proc, rest, detected_fmt)) return true;
                 break;
             }
         }
@@ -1530,6 +1571,53 @@ std::string format_epoch_seconds(long long t) {
 // of the remainder string (after header/conn/op/session are stripped).
 // This eliminates the vast majority of regex attempts on each line.
 
+// "conn=N op=M..." is the prefix of almost every log line and was matched
+// once per line: RE_CONN_OP was the second most expensive pattern in the
+// profile.  Hand-parsed here with exactly that pattern's shape:
+//     ^conn=(\d+)\s+op=(\d+)\s*:?\s*(.*)$
+// `conn_ok` alone means the line is "conn=N ..." without an "op=M" field
+// (ACCEPT/closed/TLS lines): the caller then only needs the "op=" search.
+struct ConnOpPrefix {
+    bool conn_ok = false;
+    bool op_ok = false;
+    int conn = 0;
+    int op = 0;
+    size_t rest = 0;   // offset of the payload, valid when op_ok
+};
+
+static ConnOpPrefix parse_conn_op(std::string_view s) {
+    ConnOpPrefix r;
+    if (s.size() < 5 || s.compare(0, 5, "conn=") != 0) return r;
+    size_t p = 5;
+    auto number = [&](int& out) -> bool {
+        const size_t start = p;
+        unsigned long long v = 0;
+        while (p < s.size() && s[p] >= '0' && s[p] <= '9') {
+            v = v * 10 + static_cast<unsigned>(s[p] - '0');
+            if (v > 2147483647ULL) return false;   // let the regex path decide
+            ++p;
+        }
+        if (p == start) return false;
+        out = static_cast<int>(v);
+        return true;
+    };
+    if (!number(r.conn)) return r;
+    r.conn_ok = true;
+    const size_t ws = p;
+    while (p < s.size() && std::isspace(static_cast<unsigned char>(s[p]))) ++p;
+    if (p == ws) return r;                        // \s+ required before "op="
+    if (s.size() - p < 3 || s.compare(p, 3, "op=") != 0) return r;
+    p += 3;
+    if (!number(r.op)) return r;
+    // \s*:?\s* before the payload
+    while (p < s.size() && std::isspace(static_cast<unsigned char>(s[p]))) ++p;
+    if (p < s.size() && s[p] == ':') ++p;
+    while (p < s.size() && std::isspace(static_cast<unsigned char>(s[p]))) ++p;
+    r.op_ok = true;
+    r.rest = p;
+    return r;
+}
+
 Event parse_line(std::string_view line) {
     Event ev;
     ev.raw.assign(line.data(), line.size());
@@ -1562,13 +1650,25 @@ Event parse_line(std::string_view line) {
 
     slaplog_rx::MatchResults m;
 
-    if (slaplog_rx::regex_match(rest, m, slaplog_rx::RE_CONN_OP)) {
-        ev.conn = to_int(m[1]);
-        ev.op = to_int(m[2]);
-        rest = m[3];
-    } else {
-        if (slaplog_rx::regex_search(rest, m, slaplog_rx::RE_CONN)) ev.conn = to_int(m[1]);
+    const ConnOpPrefix co = parse_conn_op(rest);
+    if (co.op_ok) {
+        ev.conn = co.conn;
+        ev.op = co.op;
+        rest.assign(rest.data() + co.rest, rest.size() - co.rest);
+    } else if (co.conn_ok) {
+        // "conn=N fd=..." with no op= field: the old chain ended up doing
+        // exactly this (RE_CONN_OP failed, RE_CONN found the same number).
+        ev.conn = co.conn;
         if (slaplog_rx::regex_search(rest, m, slaplog_rx::RE_OP)) ev.op = to_int(m[1]);
+    } else {
+        if (slaplog_rx::regex_match(rest, m, slaplog_rx::RE_CONN_OP)) {
+            ev.conn = to_int(m[1]);
+            ev.op = to_int(m[2]);
+            rest = m[3];
+        } else {
+            if (slaplog_rx::regex_search(rest, m, slaplog_rx::RE_CONN)) ev.conn = to_int(m[1]);
+            if (slaplog_rx::regex_search(rest, m, slaplog_rx::RE_OP)) ev.op = to_int(m[1]);
+        }
     }
 
     // ------------------------------------------------------------------
