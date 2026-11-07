@@ -99,9 +99,9 @@ Options:
   -s, --section LIST         Comma-sep section list: all,stats,ops,errors,
                              bases,filters,attrs,apps,extops,csn,server,
                              index,sessions,topops,topconns,patterns,...
-  --log-format FORMAT        Input log format: auto, debug, syslog-utc,
-                             syslog-localtime, rfc3339-utc, ol26, rfc3339,
-                             syslog (default: auto)
+  --log-format FORMAT        Input log format: auto, debug (or default),
+                             syslog-utc, syslog-localtime, rfc3339-utc,
+                             ol26, rfc3339, syslog (default: auto)
   --output-date-format FMT   Output date format in reports: rfc3339, iso8601,
                              syslog, epoch, preserve (default: rfc3339)
   --replay-separator SEP     Delimiter for replay output (default: "|")
@@ -141,11 +141,12 @@ slaplog supports all OpenLDAP log formats with automatic per-line detection:
 |--------|---------|-------------|
 | `auto` | (default) | Tries all formats per line, supports mixed formats in a single file |
 | `debug` | `411d2b6a.1f4b2c3a 0x7f9c1e33a700` | Hex timestamp + thread ID |
+| `default` | (same as `debug`) | Alias of `debug` — the `olcLogFileFormat` default value |
 | `syslog-utc` | `Aug  5 14:23:01` | Syslog format in UTC |
 | `syslog-localtime` | `Aug  5 14:23:01` | Syslog format in local time |
 | `rfc3339-utc` | `2026-08-05T14:23:01.123456Z` | RFC3339 UTC with fractional seconds |
 | `ol26` | `[2026-08-05T14:23:01.123Z]` | Bracket-style timestamp |
-| `rfc3339` | `2026-08-05T14:23:01Z` | Generic RFC3339 |
+| `rfc3339` | `2026-08-05T14:23:01Z` | Generic RFC3339 (zone designator honoured) |
 | `syslog` | `Aug  5 14:23:01` | Generic syslog |
 
 Use `--log-format` to specify a fixed format for faster parsing when you know all lines share the same format.

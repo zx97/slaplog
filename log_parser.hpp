@@ -30,6 +30,7 @@
 #define LOG_PARSER_HPP
 
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <map>
 #include <vector>
@@ -76,7 +77,12 @@ inline LogFormat parse_log_format(const std::string& s) {
     std::string lower = s;
     std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
     if (lower == "auto") return LogFormat::AUTO;
-    if (lower == "debug") return LogFormat::DEBUG;
+    // "default" is a valid olcLogFileFormat value and slapd writes it exactly
+    // like "debug" (logging.c: `if ( logfile_format > LFMT_DEBUG )` is false
+    // for both LFMT_DEFAULT and LFMT_DEBUG).  Accepting it here keeps the CLI
+    // vocabulary aligned with the directive; ignoring it used to fall back to
+    // auto-detection without telling anyone.
+    if (lower == "debug" || lower == "default") return LogFormat::DEBUG;
     if (lower == "syslog-utc") return LogFormat::SYSLOG_UTC;
     if (lower == "syslog-localtime") return LogFormat::SYSLOG_LOCALTIME;
     if (lower == "rfc3339-utc") return LogFormat::RFC3339_UTC;
@@ -201,7 +207,7 @@ SystemTimePoint parse_any_timestamp(const std::string& timestamp);
  */
 std::string format_timestamp(SystemTimePoint tp, const std::string& format);
 
-bool try_parse_header(const std::string& line, LogFormat fmt,
+bool try_parse_header(std::string_view line, LogFormat fmt,
                       std::string& timestamp, std::string& host,
                       std::string& proc, std::string& rest,
                       LogFormat* detected_fmt = nullptr);
@@ -831,7 +837,10 @@ struct Aggregator {
 // ---- Function declarations ----
 
 // Parse a single log line and return a fully populated Event struct.
-Event parse_line(const std::string& line);
+// Takes a view: the hot loop maps a file and yields spans, so materialising a
+// std::string per line just to copy it into `Event::raw` doubled the per-line
+// allocation cost.
+Event parse_line(std::string_view line);
 
 // Incorporate the data from one parsed Event into the Aggregator,
 // updating counters, per-connection state, top-N lists, etc.

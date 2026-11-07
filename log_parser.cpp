@@ -227,6 +227,22 @@ std::string format_etime_log_bin(int bin) {
 // result…) never matches because a whitespace or line start must precede
 // "slapd" and a "(" must follow the number.
 static std::optional<std::string> parse_openldap_version(const std::string& line) {
+    // Cheap rejection before the two regexes: a version banner always spells
+    // "slapd" followed by whitespace and a digit ("$OpenLDAP: slapd 2.6.9"),
+    // whereas a normal access-log line carries at most the syslog tag
+    // "slapd[1234]:" — the digit test then fails on the '[' immediately.
+    // Without this guard the analyser ran two PCRE2 searches on *every* line
+    // of any log that has no banner at all, which is the common case.
+    size_t at = line.find("slapd");
+    while (at != std::string::npos) {
+        size_t q = at + 5;
+        while (q < line.size() && std::isspace(static_cast<unsigned char>(line[q])))
+            ++q;
+        if (q < line.size() && line[q] >= '0' && line[q] <= '9') break;
+        at = line.find("slapd", at + 5);
+    }
+    if (at == std::string::npos) return std::nullopt;
+
     static const slaplog_rx::Regex banner(R"(@\(#\)\s*\$OpenLDAP:\s*slapd\s+(\d+\.\d+(?:\.\d+)?))");
     static const slaplog_rx::Regex plain(R"((?:^|\s)slapd\s+(\d+\.\d+(?:\.\d+)?)\s*\()");
     slaplog_rx::MatchResults m;
@@ -827,6 +843,89 @@ std::string format_epoch_seconds(long long t) {
         return oss.str();
     }
 
+    // Parse an RFC3339 / ISO8601 civil timestamp into a UTC instant.
+    //
+    // Accepted shape (the "[...]" OL26 decoration is stripped first):
+    //     YYYY-MM-DD[T ]HH:MM:SS[.fraction][Z|+HH:MM|-HH:MM|+HHMM|-HHMM]
+    //
+    // A missing zone designator means UTC, the tool's reference frame.  The
+    // previous implementation used get_time()+mktime(), which read a UTC
+    // string as *local* time: every ol26/rfc3339 timestamp was shifted by the
+    // analysing host's UTC offset, the fraction was dropped, and an explicit
+    // "+02:00" was ignored.  The civil fields are converted arithmetically
+    // (days_from_civil), so the result never depends on the host's TZ.
+    static bool parse_rfc3339_timestamp(const std::string& timestamp,
+                                        SystemTimePoint& out) {
+        // Copy without the OL26 brackets so the buffer is NUL-terminated.
+        std::string s = timestamp;
+        if (s.size() >= 2 && s.front() == '[' && s.back() == ']')
+            s = s.substr(1, s.size() - 2);
+
+        int y = 0, mo = 0, d = 0, h = 0, mi = 0, sec = 0, pos = 0;
+        // %*[Tt ] swallows the date/time separator ('T' per RFC3339, 't' by
+        // the standard's case-insensitivity, or a space as some emitters do).
+        if (std::sscanf(s.c_str(), "%4d-%2d-%2d%*[Tt ]%2d:%2d:%2d%n",
+                        &y, &mo, &d, &h, &mi, &sec, &pos) != 6)
+            return false;
+        if (mo < 1 || mo > 12 || d < 1 || d > 31 || h > 23 || mi > 59 || sec > 60)
+            return false;
+
+        size_t p = static_cast<size_t>(pos);
+
+        // Fractional seconds -> nanoseconds.  Extra digits are truncated, the
+        // way every other nanosecond-resolution parser does.
+        long long nsec = 0;
+        if (p < s.size() && s[p] == '.') {
+            ++p;
+            const size_t first = p;
+            int digits = 0;
+            while (p < s.size() && s[p] >= '0' && s[p] <= '9') {
+                if (digits < 9) { nsec = nsec * 10 + (s[p] - '0'); ++digits; }
+                ++p;
+            }
+            if (p == first) return false;          // "123." with no digits
+            while (digits++ < 9) nsec *= 10;
+        }
+
+        // Zone designator: Z, ±HH:MM, ±HHMM, or absent (= UTC).
+        long long offset_sec = 0;
+        if (p < s.size()) {
+            const char c = s[p];
+            if (c == 'Z' || c == 'z') {
+                ++p;
+            } else if (c == '+' || c == '-') {
+                std::string rest = s.substr(p + 1);
+                while (!rest.empty() &&
+                       std::isspace(static_cast<unsigned char>(rest.back())))
+                    rest.pop_back();
+                int oh = 0, om = 0, used = 0;
+                if (std::sscanf(rest.c_str(), "%2d:%2d%n", &oh, &om, &used) != 2 ||
+                    used != static_cast<int>(rest.size())) {
+                    used = 0;
+                    if (std::sscanf(rest.c_str(), "%2d%2d%n", &oh, &om, &used) != 2 ||
+                        used != static_cast<int>(rest.size()))
+                        return false;
+                }
+                if (oh > 23 || om > 59) return false;
+                offset_sec = (oh * 3600LL + om * 60LL) * (c == '-' ? -1 : 1);
+                p = s.size();
+            } else {
+                return false;
+            }
+        }
+        while (p < s.size() && std::isspace(static_cast<unsigned char>(s[p]))) ++p;
+        if (p != s.size()) return false;
+
+        const long long secs = days_from_civil(y, mo, d) * 86400LL
+                             + h * 3600LL + mi * 60LL + sec - offset_sec;
+        // SystemTimePoint ticks in nanoseconds: reject instants whose epoch
+        // would overflow int64 instead of invoking signed-overflow UB.
+        if (secs < -9223372035LL || secs > 9223372035LL) return false;
+
+        out = SystemTimePoint(std::chrono::nanoseconds(secs * 1000000000LL + nsec));
+        return true;
+    }
+
     std::string convert_to_rfc3339_utc(const std::string& timestamp, LogFormat fmt) {
         SystemTimePoint tp;
 
@@ -851,27 +950,12 @@ std::string format_epoch_seconds(long long t) {
                 // Example: "2026-08-05T14:23:01.123456789Z"
                 return timestamp;
             }
-            case LogFormat::OL26: {
-                // Format: "[2024-01-15T08:30:00+00:00]" - strip brackets
-                std::string ts = timestamp;
-                if (ts.size() >= 2 && ts.front() == '[' && ts.back() == ']') {
-                    ts = ts.substr(1, ts.size() - 2);
-                }
-                // Parse as RFC3339
-                std::tm tm = {};
-                std::istringstream ss(ts);
-                ss >> std::get_time(&tm, "%Y-%m-%dT%H:%M:%S");
-                if (ss.fail()) return "";
-                tp = std::chrono::system_clock::from_time_t(std::mktime(&tm));
-                break;
-            }
+            case LogFormat::OL26:
             case LogFormat::RFC3339: {
-                // Generic RFC3339
-                std::tm tm = {};
-                std::istringstream ss(timestamp);
-                ss >> std::get_time(&tm, "%Y-%m-%dT%H:%M:%S");
-                if (ss.fail()) return "";
-                tp = std::chrono::system_clock::from_time_t(std::mktime(&tm));
+                // Plain RFC3339 (OL26 additionally wraps it in brackets).
+                // Read as UTC with the zone designator honoured — never with
+                // mktime(), which would apply the analyser's own offset.
+                if (!parse_rfc3339_timestamp(timestamp, tp)) return "";
                 break;
             }
             case LogFormat::SYSLOG: {
@@ -895,12 +979,12 @@ std::string format_epoch_seconds(long long t) {
         static const slaplog_rx::Regex rfc3339(R"(^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2}))");
         slaplog_rx::MatchResults m;
         if (slaplog_rx::regex_search(timestamp, m, rfc3339)) {
-            std::tm tm = {};
-            std::istringstream ss(timestamp);
-            ss >> std::get_time(&tm, "%Y-%m-%dT%H:%M:%S");
-            if (!ss.fail()) {
-                return std::chrono::system_clock::from_time_t(std::mktime(&tm));
-            }
+            // parse_rfc3339_timestamp() reads the fields as UTC and honours an
+            // explicit offset.  This path is used by "-o replay" on timestamps
+            // that are already normalised, so applying mktime() here shifted
+            // every replay row by the analyser's own UTC offset.
+            SystemTimePoint tp;
+            if (parse_rfc3339_timestamp(timestamp, tp)) return tp;
         }
 
         // Try syslog format
@@ -946,7 +1030,7 @@ std::string format_epoch_seconds(long long t) {
         }
     }
 
-    bool try_parse_header(const std::string& line, LogFormat fmt,
+    bool try_parse_header(std::string_view line, LogFormat fmt,
                           std::string& timestamp, std::string& host,
                           std::string& proc, std::string& rest,
                           LogFormat* detected_fmt) {
@@ -1279,12 +1363,19 @@ std::string format_epoch_seconds(long long t) {
             agg.op_etime_hist[etime_bucket_index(row.etime)]++;
             agg.op_etime_log_hist[etime_log_bin(row.etime)]++;
         }
-        agg.top_ops.push_back(row);
         write_replay_row(row);
-        if (agg.top_ops.size() > 100) {
-            std::sort(agg.top_ops.begin(), agg.top_ops.end(), top_op_before);
-            agg.top_ops.resize(100);
-        }
+
+        // Keep the 100 slowest operations.  The list is kept sorted, so the
+        // last row is the worst one: reject the common case (an ordinary op)
+        // without touching the vector, then insert in place.  Re-sorting the
+        // 101 rows after *every* completed operation used to cost more than
+        // parsing the line.
+        if (agg.top_ops.size() >= 100 && !top_op_before(row, agg.top_ops.back()))
+            return;
+        auto pos = std::lower_bound(agg.top_ops.begin(), agg.top_ops.end(),
+                                    row, top_op_before);
+        agg.top_ops.insert(pos, row);
+        if (agg.top_ops.size() > 100) agg.top_ops.pop_back();
     }
 
     // Fold a finalized operation into the behaviour-pattern aggregates, when
@@ -1367,10 +1458,16 @@ std::string format_epoch_seconds(long long t) {
 
         std::string who = app_for_conn(agg, server, cid);
         long long ops_cnt = conn.completed_ops + conn.ops.size();
-        agg.top_conns.push_back({conn.total_etime, server, cid, who, conn.src, ops_cnt, conn.binddn, reason});
-        if (agg.top_conns.size() > 100) {
-            std::sort(agg.top_conns.begin(), agg.top_conns.end(), top_conn_before);
-            agg.top_conns.resize(100);
+        TopConnRow row{conn.total_etime, server, cid, who, conn.src, ops_cnt,
+                       conn.binddn, reason};
+        // Same bounded-sorted-insert as add_top_op(): the list is sorted, the
+        // worst row sits at the end, and an ordinary connection never reaches
+        // the top 100.
+        if (agg.top_conns.size() < 100 || top_conn_before(row, agg.top_conns.back())) {
+            auto pos = std::lower_bound(agg.top_conns.begin(), agg.top_conns.end(),
+                                        row, top_conn_before);
+            agg.top_conns.insert(pos, row);
+            if (agg.top_conns.size() > 100) agg.top_conns.pop_back();
         }
 
         // Keep the slowest connection.  On an exact tie, order the winner on
@@ -1409,9 +1506,9 @@ std::string format_epoch_seconds(long long t) {
 // of the remainder string (after header/conn/op/session are stripped).
 // This eliminates the vast majority of regex attempts on each line.
 
-Event parse_line(const std::string& line) {
+Event parse_line(std::string_view line) {
     Event ev;
-    ev.raw = line;
+    ev.raw.assign(line.data(), line.size());
 
     std::string timestamp, host, proc, rest;
 
@@ -3454,9 +3551,10 @@ void process_plain_file(const std::string& filename, Aggregator& agg,
     
     std::string_view line;
     while (!(line = lp.next()).empty()) {
-        // parse_line expects std::string, so we construct one
-        // This avoids copying for most lines since string_view is cheap
-        Event ev = parse_line(std::string(line));
+        // parse_line() takes the view directly and copies into Event::raw only
+        // once; materialising a std::string here used to add a second
+        // allocation and copy for every single line.
+        Event ev = parse_line(line);
         update_aggregator(agg, ev, unknown_out, unknown_mtx);
         progress += line.size() + 1;
     }

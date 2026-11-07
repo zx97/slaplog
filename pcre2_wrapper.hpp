@@ -190,7 +190,13 @@ public:
     void compile(const std::string& pattern, flag_type flags = None) {
         pattern_ = pattern;
         
-        int pcre2_flags = PCRE2_UTF | PCRE2_UCP;
+        // No PCRE2_UTF / PCRE2_UCP: every pattern here is ASCII, and UTF mode
+        // makes pcre2_match() validate the subject on *each* call
+        // (_pcre2_valid_utf_8 was 8.5% of the profile) and reject a line that
+        // carries a byte outside UTF-8 — a Latin-1 DN then became an unknown
+        // line.  Byte semantics also match the line-oriented parser: `.` and
+        // `\S` still consume exactly the bytes of a multi-byte character.
+        int pcre2_flags = 0;
         if (flags & icase) pcre2_flags |= PCRE2_CASELESS;
         
         int error_code = 0;

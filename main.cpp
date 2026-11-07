@@ -269,8 +269,9 @@ static std::vector<std::string> collect_input_files(const std::vector<std::strin
 //   -m, --mtime DAYS           Analyze only files modified within the last DAYS days.
 //   -j, --jobs N               Worker thread count (default: CPU cores - 1).
 //   -s, --section LIST         Comma-separated list of report sections to include.
-//   --log-format FORMAT        Input log format: auto, debug, syslog-utc, syslog-localtime,
-//                               rfc3339-utc, ol26, rfc3339, syslog (default: auto).
+//   --log-format FORMAT        Input log format: auto, debug (or default), syslog-utc,
+//                               syslog-localtime, rfc3339-utc, ol26, rfc3339, syslog
+//                               (default: auto).
 //   --output-date-format FMT   Output date format: rfc3339, iso8601, syslog, epoch, preserve.
 //   --replay-separator SEP     Delimiter for replay output (default: "|").
 //   --replay-limit N           Max ops stored for replay (default: 1000000, 0=unlimited).
@@ -300,8 +301,9 @@ static void usage(const char* prog) {
     std::cerr << "                             filters_per_app,attrs,apps,extops,\n";
     std::cerr << "                             qmark,csn,server,index,sessions,\n";
     std::cerr << "                             topops,topconns,paged,patterns\n";
-    std::cerr << "  --log-format FORMAT        Input log format: auto (default), debug,\n";
-    std::cerr << "                             syslog-utc, syslog-localtime, rfc3339-utc,\n";
+    std::cerr << "  --log-format FORMAT        Input log format: auto (default), debug\n";
+    std::cerr << "                             (or its alias default), syslog-utc,\n";
+    std::cerr << "                             syslog-localtime, rfc3339-utc,\n";
     std::cerr << "                             ol26, rfc3339, syslog\n";
     std::cerr << "  --output-date-format FMT   Output date format: rfc3339 (default), iso8601,\n";
     std::cerr << "                             syslog, epoch, preserve\n";

@@ -790,11 +790,12 @@ slaplog supports all OpenLDAP log formats with automatic per-line detection:
 |--------|---------|-------------|
 | `auto` | (default) | Tries all formats per line, supports mixed formats in a single file |
 | `debug` | `411d2b6a.1f4b2c3a 0x7f9c1e33a700` | Hex timestamp + thread ID |
+| `default` | (same as `debug`) | Alias of `debug` — the `olcLogFileFormat` default value |
 | `syslog-utc` | `Aug  5 14:23:01` | Syslog format in UTC |
 | `syslog-localtime` | `Aug  5 14:23:01` | Syslog format in local time |
 | `rfc3339-utc` | `2026-08-05T14:23:01.123456Z` | RFC3339 UTC with fractional seconds |
 | `ol26` | `[2026-08-05T14:23:01.123Z]` | Bracket-style timestamp |
-| `rfc3339` | `2026-08-05T14:23:01Z` | Generic RFC3339 |
+| `rfc3339` | `2026-08-05T14:23:01Z` | Generic RFC3339 (zone designator honoured) |
 | `syslog` | `Aug  5 14:23:01` | Generic syslog |
 
 Use `--log-format` to specify a fixed format for faster parsing when you know all lines share the same format.
@@ -939,7 +940,7 @@ slaplog --unknown-lines unknown.txt /var/log/slapd/access.log
 | `-m, --mtime DAYS` | Analyze only files modified within the last `DAYS` days (like `find -mtime`) |
 | `-j, --jobs N` | Worker thread count (default: CPU cores - 1) |
 | `-s, --section LIST` | Comma-separated list of sections to display (see below) |
-| `--log-format FORMAT` | Input log format: `auto` (default), `debug`, `syslog-utc`, `syslog-localtime`, `rfc3339-utc`, `ol26`, `rfc3339`, `syslog` |
+| `--log-format FORMAT` | Input log format: `auto` (default), `debug` (or its alias `default`), `syslog-utc`, `syslog-localtime`, `rfc3339-utc`, `ol26`, `rfc3339`, `syslog` |
 | `--output-date-format FMT` | Output date format in reports: `rfc3339` (default), `iso8601`, `syslog`, `epoch`, `preserve` |
 | `--replay-separator SEP` | Delimiter for replay output (default: `\|`). Use `tab` for tabulation, `comma` for CSV |
 | `--replay-limit N` | Max operations written to the replay temp file (default: `1000000`, `0` = unlimited). Acts as a safety cap; a warning is printed when ops are dropped. |
@@ -1728,6 +1729,35 @@ JIT in the native build) through the `std::regex`-like façade in
 `pcre2_wrapper.hpp`. Organised into groups: headers, connection identifiers,
 connection events, BIND patterns, operations, results, sub-patterns,
 replication CSN, session tracking, and miscellaneous.
+
+#### Why PCRE2 and not Hyperscan
+
+Hyperscan (Intel; the maintained fork is Vectorscan) is the fastest
+multi-pattern matcher, but it **cannot report capture groups**. Its own
+compilation reference states that parenthesised groups are accepted and
+*ignored*, and lists "capturing sub-expressions" among the unsupported
+constructs (`doc/dev-reference/compilation.rst` in the Hyperscan tree). Every
+pattern here exists to hand its captures to the parser — `conn=`, `op=`, the
+DN, the filter, the result tag, the timing fields — so Hyperscan cannot act
+as a drop-in engine.
+
+The capture-capable variant shipped in the Hyperscan tree, **Chimera**, is a
+Hyperscan + **PCRE1** hybrid. It keeps full PCRE syntax, but in the project's
+own words it adds "extra performance overhead compared to Hyperscan-only
+solution … always use Hyperscan for better performance unless you must need
+full PCRE syntax support". For one pattern at a time on a few-hundred-byte
+line, PCRE2-JIT — already used here — is the faster and lighter choice, and
+Chimera would add a `libpcre` dependency and a second regex dialect beside
+PCRE2.
+
+The one architecture that could genuinely be faster is a single multi-pattern
+Hyperscan database used as a **prefilter**: one scan per line yields the
+candidate patterns, and PCRE2 runs only on those to extract the captures.
+It is deliberately not implemented: it would mean rebuilding `parse_line()`'s
+dispatch around a match set, and validating every report format
+differentially against the current engine. The gain would have to be
+demonstrated by benchmark before taking that risk, since the parser is
+already in the few-microseconds-per-line range.
 
 ### `report.hpp` / `report.cpp`
 

@@ -6,6 +6,53 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 The project is distributed under the **AGPL-3.0** license — see [LICENSE](LICENSE).
 
+## [Unreleased]
+
+### Added
+
+- **`--log-format default`**: `default` is accepted as an alias of `debug`.
+  It is a valid `olcLogFileFormat` value and slapd writes it exactly like
+  `debug` (`logging.c` only takes the syslog/rfc3339 branch when
+  `logfile_format > LFMT_DEBUG`), but the option used to fall back to
+  auto-detection without saying so.
+
+### Changed
+
+- **Parsing is ~2.3× faster** on a single thread (1 M-line fixture: 8.28 s →
+  3.47 s, ~120 k → ~290 k lines/s).  Three costs found with a profile were
+  removed, with byte-identical reports (`-o json`, `-o replay`, `-o text`,
+  `-o html`) on every fixture:
+  - the top-100 operation table re-sorted all 101 rows after *every*
+    completed operation; it is now a bounded sorted insert that rejects the
+    common case in one comparison — this alone was more than half the parse
+    time;
+  - two PCRE2 searches per line were run to look for an OpenLDAP version
+    banner even in logs that carry none; a byte-level pre-check now skips
+    them (`"slapd"` followed by whitespace and a digit);
+  - `parse_line()` takes a `std::string_view`, so the mapped line is no
+    longer materialised into a `std::string` before being copied into
+    `Event::raw`.
+
+### Fixed
+
+- **The top-operations and top-connections tables are now ranked for small
+  logs.** The list was only sorted once it exceeded 100 rows, so a log with
+  fewer operations printed them in insertion order — the "Top operations"
+  table of a short sample was not sorted by `etime` at all.  Both lists are
+  now kept in order at every size.
+- **`ol26` and generic `rfc3339` timestamps were read as local time.**  Both
+  formats went through `get_time()` + `mktime()`, so a UTC string was decoded
+  with the analysing host's UTC offset: every timestamp was shifted, the
+  fractional seconds were dropped, and an explicit `+02:00` designator was
+  ignored.  They now use an arithmetic RFC3339 parser (`days_from_civil`) that
+  honours `Z` / `±HH:MM` / `±HHMM`, defaults to UTC when the designator is
+  missing, and keeps the nanosecond fraction.  The instant no longer depends
+  on `TZ` (pinned by the new `tests/native/timestamps.sh`).
+- **`-o replay` timestamps carried the same shift.**  The replay path
+  re-parses an already-normalised UTC timestamp with
+  `parse_any_timestamp()`, which used the same `mktime()` chain; replay rows
+  now carry the exact UTC instant of the operation, fraction included.
+
 ## [5.0.1] - 2026-11-07
 
 ### Added
