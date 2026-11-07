@@ -6,7 +6,7 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 The project is distributed under the **AGPL-3.0** license — see [LICENSE](LICENSE).
 
-## [Unreleased]
+## [5.0.1] - 2026-11-07
 
 ### Added
 
@@ -202,6 +202,7 @@ The project is distributed under the **AGPL-3.0** license — see [LICENSE](LICE
 
 - Initial release.
 
+[5.0.1]: https://github.com/zx97/slaplog/releases/tag/v5.0.1
 [5.0.0]: https://github.com/zx97/slaplog/releases/tag/v5.0.0
 [4.1.2]: https://github.com/zx97/slaplog/releases/tag/v4.1.2
 [4.1.1]: https://github.com/zx97/slaplog/releases/tag/v4.1.1
