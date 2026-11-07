@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>slaplog — sample reports</title>
+<style>
+  :root { color-scheme: light dark; }
+  body {
+    margin: 0; padding: 2.5rem 1.5rem;
+    font: 16px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    max-width: 52rem; margin-inline: auto;
+  }
+  h1 { font-size: 1.6rem; margin: 0 0 .3rem; }
+  .lead { margin: 0 0 2rem; opacity: .75; }
+  .card {
+    display: block; padding: 1rem 1.15rem; margin: 0 0 .9rem;
+    border: 1px solid rgba(128,128,128,.35); border-radius: .6rem;
+    text-decoration: none; color: inherit;
+  }
+  .card:hover, .card:focus { border-color: #2b7de9; background: rgba(43,125,233,.06); }
+  .card strong { color: #2b7de9; }
+  .card span { display: block; opacity: .8; font-size: .93rem; margin-top: .25rem; }
+  footer { margin-top: 2rem; font-size: .85rem; opacity: .7; }
+  code { font-size: .9em; }
+</style>
+</head>
+<body>
+
+<h1>slaplog — sample reports</h1>
+<p class="lead">Two complete HTML reports produced by slaplog, served as static pages.</p>
+
+<a class="card" href="slaplog-incident-sample.html">
+  <strong>Simulated incident report</strong>
+  <span>A full incident snapshot: latency, errors, replication, bind failures and
+  the diagnosis the report makes obvious at a glance.</span>
+</a>
+
+<a class="card" href="slaplog-sample.html">
+  <strong>Synthetic sample report</strong>
+  <span>Generated from a small reproducible log set that tells a four-day
+  incident story.</span>
+</a>
+
+<footer>
+  Both reports contain only reserved names (<code>example.com</code> /
+  <code>example.org</code> / <code>example.net</code>, RFC 2606) and
+  documentation addresses (RFC 5737).
+</footer>
+
+</body>
+</html>

@@ -13,6 +13,10 @@ Both contain only reserved names: `example.com` / `example.org` /
 `198.51.100.0/24`, `203.0.113.0/24`). No production identity, hostname,
 address or directory content appears in either.
 
+They are published as rendered pages at
+<https://slaplog.pages.dev/sample/> — the repository view shows the HTML
+source, so share that link rather than a `blob`/`raw` URL.
+
 ---
 
 ## 1. Synthetic sample (reproducible)

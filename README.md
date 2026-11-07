@@ -36,12 +36,12 @@ make
 ```
 
 Want to see the output first? Open the
-[synthetic sample report](doc/sample/slaplog-sample.html) or the
-[simulated incident sample](doc/sample/slaplog-incident-sample.html) — full
-HTML reports: one built from a fictional `dc=example,dc=com` log
-(reproducible) and one simulated incident snapshot, with the generator and
-log in
-[`doc/sample/`](doc/sample/).
+[synthetic sample report](https://slaplog.pages.dev/sample/slaplog-sample.html)
+or the
+[simulated incident sample](https://slaplog.pages.dev/sample/slaplog-incident-sample.html)
+— full HTML reports, rendered in the browser. The sources, the generator and the
+log are in [`doc/sample/`](doc/sample/); the same pages are also served from
+<https://slaplog.pages.dev/sample/>.
 
 ## Features
 

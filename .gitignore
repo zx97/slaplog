@@ -50,6 +50,8 @@ session*.md
 /wasm/prebuilt/
 /wasm/web/slaplog.js
 /wasm/web/slaplog.wasm
+# Sample reports staged for the Pages deployment by wasm/deploy.sh.
+/wasm/web/sample/
 
 # === Tests ===
 # The deny-all rule above would hide the whole suite; jsdom is a local

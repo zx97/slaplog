@@ -5,6 +5,7 @@
 #
 #   ./wasm/deploy.sh                     # build + deploy to the production branch
 #   SKIP_BUILD=1 ./wasm/deploy.sh        # deploy the current artefacts as-is
+#   INCLUDE_SAMPLES=0 ./wasm/deploy.sh   # do not publish doc/sample/ as /sample/
 #   PROJECT=other ./wasm/deploy.sh       # target another Pages project
 #   BRANCH=preview ./wasm/deploy.sh      # deploy to a preview branch
 #
@@ -42,6 +43,16 @@ fi
 for f in index.html slaplog.js slaplog.wasm; do
     [[ -f "$WEB_DIR/$f" ]] || die "$WEB_DIR/$f is missing — run 'make wasm' first"
 done
+
+# The sample reports are static HTML: served from here they display as rendered
+# pages, while the repository blob view (and raw.githubusercontent) sends them
+# as text/plain.  Copy them so that <project>.pages.dev/sample/ is shareable.
+if [[ "${INCLUDE_SAMPLES:-1}" == "1" ]]; then
+    log "staging the sample reports"
+    rm -rf "$WEB_DIR/sample"
+    mkdir -p "$WEB_DIR/sample"
+    cp "$ROOT_DIR"/doc/sample/*.html "$WEB_DIR/sample/"
+fi
 
 log "deploying $(du -sh "$WEB_DIR" | cut -f1) to Pages project '$PROJECT' (branch '$BRANCH')"
 # shellcheck disable=SC2086
