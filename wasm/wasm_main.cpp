@@ -264,7 +264,8 @@ bool start_session(Options opts) {
 // working aggregator.
 void begin_input() {
     if (g_session->input_open) {
-        merge_aggregators(g_session->total, g_session->current);
+        merge_aggregators(g_session->total, g_session->current,
+                      g_session->opts.output_format == "replay");
     }
     g_session->current = Aggregator{};
     g_session->sniff.reset();
@@ -306,7 +307,8 @@ void end_input() {
         g_session->input_open = false;
         return;
     }
-    merge_aggregators(g_session->total, g_session->current);
+    merge_aggregators(g_session->total, g_session->current,
+                      g_session->opts.output_format == "replay");
     g_session->current = Aggregator{};
     g_session->input_open = false;
 }

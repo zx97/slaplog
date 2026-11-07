@@ -864,7 +864,7 @@ int main(int argc, char* argv[]) {
                     {
                         std::lock_guard<std::mutex> lock(merge_mtx);
                         if (foreign.empty()) {
-                            merge_aggregators(final_agg, local_agg);
+                            merge_aggregators(final_agg, local_agg, want_replay);
                         } else if (!resume_mismatch.exchange(true)) {
                             std::string m = files[i] + " names ";
                             for (size_t k = 0; k < foreign.size(); ++k)

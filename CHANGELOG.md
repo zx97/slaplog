@@ -19,9 +19,10 @@ The project is distributed under the **AGPL-3.0** license — see [LICENSE](LICE
 ### Changed
 
 - **Parsing is ~2.3× faster** on a single thread (1 M-line fixture: 8.28 s →
-  3.47 s, ~120 k → ~290 k lines/s).  Three costs found with a profile were
-  removed, with byte-identical reports (`-o json`, `-o replay`, `-o text`,
-  `-o html`) on every fixture:
+  3.47 s, ~120 k → ~290 k lines/s) and **~1.9× faster** on a 21.6 GB /
+  134 M-line rotated corpus (79.8 s → 42.5 s, 35 files, 24 of them `.bz2`).
+  Six costs found with a profile were removed, with byte-identical reports
+  (`-o json`, `-o replay`, `-o text`, `-o html`) on every fixture:
   - the top-100 operation table re-sorted all 101 rows after *every*
     completed operation; it is now a bounded sorted insert that rejects the
     common case in one comparison — this alone was more than half the parse
@@ -31,7 +32,24 @@ The project is distributed under the **AGPL-3.0** license — see [LICENSE](LICE
     them (`"slapd"` followed by whitespace and a digit);
   - `parse_line()` takes a `std::string_view`, so the mapped line is no
     longer materialised into a `std::string` before being copied into
-    `Event::raw`.
+    `Event::raw`;
+  - PCRE2 is compiled **without `PCRE2_UTF`/`PCRE2_UCP`**: every pattern is
+    ASCII and the parser is line-oriented, while UTF mode validated the whole
+    subject on every `pcre2_match()` call (`_pcre2_valid_utf_8` was 8.5 % of
+    the profile);
+  - the three per-file working maps (`conn_state`, `binddn_by_conn`,
+    `src_by_conn`) were deep-copied into the merged aggregate, although only
+    the replay output reads them and every other output drops them at the end
+    of the run; they are now merged only when replay is requested (the most
+    expensive part of the per-file merge);
+  - the compressed readers (bzip2, xz, decompression pipes) memmoved the rest
+    of the 64 KiB block for *every* line (`erase(0, pos + 1)`, an O(n²)
+    pattern); they now keep a read offset and drop the consumed prefix once
+    per block;
+  - `ts_sort_key()` — the per-line time-range bookkeeping — ran a regex three
+    times per line (once for the line, twice for the running bounds); the
+    RFC3339 branch is now parsed by hand and the bounds' sort keys are cached,
+    so a line costs one key instead of three.
 
 ### Fixed
 

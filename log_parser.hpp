@@ -588,6 +588,12 @@ struct Aggregator {
     // -- Time range --
     std::string firsttime; // Timestamp of the earliest log line processed.
     std::string lasttime;  // Timestamp of the latest log line processed.
+    // ts_sort_key() of firsttime/lasttime, cached.  Recomputing both on every
+    // line was three regex calls per line; they only change on a new extreme.
+    // Cleared by merge_aggregators() when the timestamp itself changes, and
+    // recomputed lazily by update_time_bounds().
+    std::string first_key;
+    std::string last_key;
 
     // -- Slowest operation (by etime) --
     std::optional<double> maxetime;   // Highest etime value seen.
@@ -859,7 +865,11 @@ void flush_inflight_ops(Aggregator& agg);
 
 // Merge the contents of `src` into `dest`.  Used when combining results
 // from multiple files processed in parallel.
-void merge_aggregators(Aggregator& dest, const Aggregator& src);
+// include_working_state also copies conn_state / binddn_by_conn / src_by_conn.
+// Only the replay path reads them (flush_inflight_ops); every other output
+// discards them right after the run, so copying them per file is pure cost.
+void merge_aggregators(Aggregator& dest, const Aggregator& src,
+                       bool include_working_state = false);
 
 // Recompute the concurrent-connection peak from the merged timeline.  Needed
 // for runs that mix several servers: see the definition in log_parser.cpp.

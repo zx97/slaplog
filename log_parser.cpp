@@ -571,14 +571,30 @@ void set_replay_ops_limit(long long limit) {
  */
     std::string ts_sort_key(const std::string& ts) {
         if (ts.empty()) return "";
-        static const slaplog_rx::Regex rfc3339(R"(^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2}))");
+        // RFC3339 "YYYY-MM-DDTHH:MM:SS..." -> "YYYYMMDDHHMMSS", by hand.  This
+        // runs for every line (twice more for the running bounds) and a regex
+        // here was the second hottest pattern in the profile.
+        if (ts.size() >= 19 && ts[4] == '-' && ts[7] == '-' && ts[10] == 'T' &&
+            ts[13] == ':' && ts[16] == ':') {
+            static const int kPos[6] = {0, 5, 8, 11, 14, 17};
+            static const int kLen[6] = {4, 2, 2, 2, 2, 2};
+            bool ok = true;
+            for (int g = 0; g < 6 && ok; ++g)
+                for (int i = 0; i < kLen[g]; ++i) {
+                    const char c = ts[static_cast<size_t>(kPos[g] + i)];
+                    if (c < '0' || c > '9') { ok = false; break; }
+                }
+            if (ok) {
+                std::string key;
+                key.reserve(14);
+                for (int g = 0; g < 6; ++g)
+                    key.append(ts, static_cast<size_t>(kPos[g]),
+                               static_cast<size_t>(kLen[g]));
+                return key;
+            }
+        }
         static const slaplog_rx::Regex syslog(R"(^([A-Z][a-z]{2})\s+(\d+)\s+(\d{2}):(\d{2}):(\d{2})$)");
         slaplog_rx::MatchResults m;
-        if (slaplog_rx::regex_search(ts, m, rfc3339)) {
-            std::ostringstream oss;
-            oss << m[1] << m[2] << m[3] << m[4] << m[5] << m[6];
-            return oss.str();
-        }
         if (slaplog_rx::regex_match(ts, m, syslog)) {
             static const std::map<std::string, int> mon = {{"Jan", 1}, {"Feb", 2}, {"Mar", 3}, {"Apr", 4},
                 {"May", 5}, {"Jun", 6}, {"Jul", 7}, {"Aug", 8},
@@ -609,11 +625,19 @@ void set_replay_ops_limit(long long limit) {
 void update_time_bounds(Aggregator& agg, const std::string& ts, const std::string& host) {
         if (ts.empty()) return;
         const std::string key = ts_sort_key(ts);
-        if (agg.firsttime.empty() || key < ts_sort_key(agg.firsttime)) {
+        if (agg.firsttime.empty()) {
             agg.firsttime = ts;
+            agg.first_key = key;
+        } else {
+            if (agg.first_key.empty()) agg.first_key = ts_sort_key(agg.firsttime);
+            if (key < agg.first_key) { agg.firsttime = ts; agg.first_key = key; }
         }
-        if (agg.lasttime.empty() || key > ts_sort_key(agg.lasttime)) {
+        if (agg.lasttime.empty()) {
             agg.lasttime = ts;
+            agg.last_key = key;
+        } else {
+            if (agg.last_key.empty()) agg.last_key = ts_sort_key(agg.lasttime);
+            if (key > agg.last_key) { agg.lasttime = ts; agg.last_key = key; }
         }
         if (host.empty()) return;
         auto& w = agg.time_by_server[host];
@@ -2963,7 +2987,8 @@ void update_aggregator(Aggregator& agg, const Event& ev,
 //     each field within a correlation key).
 //   - Unknown lines and server event lists are concatenated.
 
-void merge_aggregators(Aggregator& dest, const Aggregator& src) {
+void merge_aggregators(Aggregator& dest, const Aggregator& src,
+                       bool include_working_state) {
 
     // --- Scalar stats ---
     dest.stats.lines += src.stats.lines;
@@ -2986,19 +3011,30 @@ void merge_aggregators(Aggregator& dest, const Aggregator& src) {
     dest.read_write_stats.read += src.read_write_stats.read;
     dest.read_write_stats.write += src.read_write_stats.write;
 
-    // --- Per-connection state maps (overwrite — conn IDs are unique) ---
-    for (const auto& [k, v] : src.conn_state)
-        dest.conn_state[k] = v;
-    for (const auto& [k, v] : src.binddn_by_conn)
-        dest.binddn_by_conn[k] = v;
-    for (const auto& [k, v] : src.src_by_conn)
-        dest.src_by_conn[k] = v;
+    // --- Per-connection working maps ---
+    // Only flush_inflight_ops() (replay output) reads these after parsing, and
+    // every other output drops them at the end of the run.  Copying a whole
+    // per-file connection map was the single most expensive part of the merge
+    // (ConnState holds an ops map and several strings), so it is now opt-in.
+    // They are keyed on (server, conn) and overwritten, as before.
+    if (include_working_state) {
+        for (const auto& [k, v] : src.conn_state)
+            dest.conn_state[k] = v;
+        for (const auto& [k, v] : src.binddn_by_conn)
+            dest.binddn_by_conn[k] = v;
+        for (const auto& [k, v] : src.src_by_conn)
+            dest.src_by_conn[k] = v;
+    }
 
     // --- Time range (widen to cover both sources) ---
-    if (!src.firsttime.empty() && (dest.firsttime.empty() || src.firsttime < dest.firsttime))
+    if (!src.firsttime.empty() && (dest.firsttime.empty() || src.firsttime < dest.firsttime)) {
         dest.firsttime = src.firsttime;
-    if (!src.lasttime.empty() && (dest.lasttime.empty() || src.lasttime > dest.lasttime))
+        dest.first_key.clear();   // recomputed lazily by update_time_bounds()
+    }
+    if (!src.lasttime.empty() && (dest.lasttime.empty() || src.lasttime > dest.lasttime)) {
         dest.lasttime = src.lasttime;
+        dest.last_key.clear();
+    }
 
     // --- Per-server time coverage (widen each server's own window) ---
     // Compared on the sort keys the parser already kept, not on the raw text:
@@ -3582,6 +3618,31 @@ namespace {
     }
 #endif
 
+    // Parse every complete line in `buf` from `consumed` onward, then drop the
+    // consumed prefix with a single memmove.
+    //
+    // The old loop did `line.erase(0, pos + 1)` for every line, which memmoves
+    // the rest of the buffer each time: on a 64 KiB read block of ~400 lines
+    // that is ~200x the bytes read, and it dominated the decompressed paths
+    // (24 of the 35 files in a typical rotated corpus are .bz2).  `consumed`
+    // lives across calls, so a line split between two reads is still found.
+    void consume_lines(std::string& buf, size_t& consumed, Aggregator& agg,
+                       std::atomic<size_t>& progress,
+                       std::ostream* unknown_out, std::mutex* unknown_mtx) {
+        size_t pos;
+        while ((pos = buf.find('\n', consumed)) != std::string::npos) {
+            std::string_view l(buf.data() + consumed, pos - consumed);
+            Event ev = parse_line(l);
+            update_aggregator(agg, ev, unknown_out, unknown_mtx);
+            progress += l.size() + 1;
+            consumed = pos + 1;
+        }
+        if (consumed) {
+            buf.erase(0, consumed);
+            consumed = 0;
+        }
+    }
+
     // Process a file through a decompression pipe
     // The pipe is expected to output plain text to stdout
     void process_decompress_pipe(const std::string& filename, const char* cmd_template,
@@ -3591,24 +3652,16 @@ namespace {
         FILE* pipe = ::popen(cmd.c_str(), "r");
         if (!pipe) return;
         
-        // Use the same chunked line splitting as bzip2/xz paths
         char buffer[65536];
         std::string line;
-        
+        size_t consumed = 0;
+
         while (true) {
             size_t n = ::fread(buffer, 1, sizeof(buffer), pipe);
             if (n == 0) break;
-            
+
             line.append(buffer, n);
-            
-            size_t pos;
-            while ((pos = line.find('\n')) != std::string::npos) {
-                std::string l = line.substr(0, pos);
-                Event ev = parse_line(l);
-                update_aggregator(agg, ev, unknown_out, unknown_mtx);
-                progress += l.size() + 1;
-                line.erase(0, pos + 1);
-            }
+            consume_lines(line, consumed, agg, progress, unknown_out, unknown_mtx);
         }
         
         if (!line.empty()) {
@@ -3690,18 +3743,12 @@ void process_bzip2_file(const std::string& filename, Aggregator& agg,
     if (bzerror != BZ_OK) { fclose(file); return; }
     char buffer[65536];
     std::string line;
+    size_t consumed = 0;
     while (true) {
         int bytes = BZ2_bzRead(&bzerror, bzfile, buffer, sizeof(buffer));
         if (bytes <= 0) break;
         line.append(buffer, bytes);
-        size_t pos;
-        while ((pos = line.find('\n')) != std::string::npos) {
-            std::string l = line.substr(0, pos);
-            Event ev = parse_line(l);
-            update_aggregator(agg, ev, unknown_out, unknown_mtx);
-            progress += l.size() + 1;
-            line.erase(0, pos + 1);
-        }
+        consume_lines(line, consumed, agg, progress, unknown_out, unknown_mtx);
     }
     if (!line.empty()) {
         Event ev = parse_line(line);
@@ -3750,6 +3797,7 @@ void process_xz_file(const std::string& filename, Aggregator& agg,
     strm.next_out = reinterpret_cast<uint8_t*>(outbuf);
     strm.avail_out = sizeof(outbuf);
     std::string line;
+    size_t consumed = 0;
     while (true) {
         if (strm.avail_in == 0) {
             strm.next_in = reinterpret_cast<const uint8_t*>(inbuf);
@@ -3759,14 +3807,7 @@ void process_xz_file(const std::string& filename, Aggregator& agg,
         if (strm.avail_out == 0 || ret == LZMA_STREAM_END) {
             size_t write_size = sizeof(outbuf) - strm.avail_out;
             line.append((char*)outbuf, write_size);
-            size_t pos;
-            while ((pos = line.find('\n')) != std::string::npos) {
-                std::string l = line.substr(0, pos);
-                Event ev = parse_line(l);
-                update_aggregator(agg, ev, unknown_out, unknown_mtx);
-                progress += l.size() + 1;
-                line.erase(0, pos + 1);
-            }
+            consume_lines(line, consumed, agg, progress, unknown_out, unknown_mtx);
             strm.next_out = reinterpret_cast<uint8_t*>(outbuf);
             strm.avail_out = sizeof(outbuf);
         }
