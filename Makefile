@@ -156,6 +156,12 @@ WASM_SRCS := $(WASM_DIR)/wasm_main.cpp \
              $(ROOT_DIR)html_chart.cpp \
              $(ROOT_DIR)state_io.cpp
 
+# The wasm build compiles every source in one command, so it has no -MMD
+# dependency files: without this, a change to a header (version.hpp, the regex
+# wrapper, the embedded documentation) left the .wasm stale and a release could
+# ship the previous version.
+WASM_HDRS := $(wildcard $(ROOT_DIR)*.hpp) $(wildcard $(WASM_DIR)*.hpp)
+
 WASM_FLAGS := -std=c++17 -O3 -Wall -Wextra \
               -ffp-contract=off \
               -I$(ROOT_DIR) -I$(WASM_INC) \
@@ -177,7 +183,7 @@ WASM_FLAGS := -std=c++17 -O3 -Wall -Wextra \
 
 wasm: $(WASM_OUT)
 
-$(WASM_OUT): $(WASM_SRCS) $(WASM_PRE)/liblzma.a $(WASM_PRE)/lib/libpcre2-8.a $(WASM_INC)/nlohmann/json.hpp $(BUILD_FILE)
+$(WASM_OUT): $(WASM_SRCS) $(WASM_HDRS) $(WASM_PRE)/liblzma.a $(WASM_PRE)/lib/libpcre2-8.a $(WASM_INC)/nlohmann/json.hpp $(BUILD_FILE)
 	$(EMXX) $(WASM_FLAGS) -DBUILD_NUMBER=$$(cat $(BUILD_FILE)) \
 	        $(WASM_SRCS) $(WASM_PRE)/liblzma.a $(WASM_PRE)/lib/libpcre2-8.a -o $@
 
