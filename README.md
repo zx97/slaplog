@@ -80,6 +80,7 @@ log are in [`doc/sample/`](doc/sample/); the same pages are also served from
 - **Server events**: start/stop/shutdown detection
 - **Restart-aware**: handles slapd connection-ID counter resets
 - **Multi-format support**: parses debug, syslog-utc, syslog-localtime, rfc3339-utc formats with auto-detection
+- **389 Directory Server**: text, JSON and json-pretty access logs are detected per file and analysed with the same reports
 
 ## Usage
 

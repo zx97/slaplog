@@ -429,6 +429,12 @@ public:
         }
     }
     
+    // True when every line has been returned.  next() returns an empty view
+    // both for the end and for a genuinely empty line, so callers must test
+    // done() rather than the view's emptiness — a blank line in the middle of
+    // a log (389-ds writes one after the title) otherwise truncates the run.
+    bool done() const { return current_ >= line_starts_.size(); }
+
     // Get next line as string_view
     // Returns empty string_view at end
     ::std::string_view next() {

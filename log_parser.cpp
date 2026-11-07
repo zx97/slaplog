@@ -67,6 +67,7 @@
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <unistd.h>
+#include <nlohmann/json.hpp>
 
 // using namespace slaplog_rx;
 
@@ -801,6 +802,53 @@ std::string format_epoch_seconds(long long t) {
             static_cast<std::time_t>(epoch));
     }
 
+    // 389 Directory Server text timestamp: "07/Nov/2026:20:15:30.123456789 +0100"
+    // (the brackets are stripped by the header regex).  The year and the
+    // numeric offset are both in the string, so this needs neither the
+    // current-year assumption of syslog nor the analyser's own timezone.
+    static SystemTimePoint parse_ds389_timestamp(const std::string& ts) {
+        static const char* kMonths[12] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                                          "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
+        int day = 0, year = 0, hh = 0, mi = 0, ss = 0, used = 0;
+        char mon[4] = {};
+        if (std::sscanf(ts.c_str(), "%2d/%3[A-Za-z]/%4d:%2d:%2d:%2d%n",
+                        &day, mon, &year, &hh, &mi, &ss, &used) != 6)
+            return {};
+        size_t p = static_cast<size_t>(used);
+        if (p >= ts.size() || ts[p] != '.') return {};
+        ++p;
+        long long nsec = 0;
+        int digits = 0;
+        while (p < ts.size() && ts[p] >= '0' && ts[p] <= '9') {
+            if (digits < 9) { nsec = nsec * 10 + (ts[p] - '0'); ++digits; }
+            ++p;
+        }
+        if (digits == 0) return {};
+        while (digits++ < 9) nsec *= 10;
+        while (p < ts.size() && std::isspace(static_cast<unsigned char>(ts[p]))) ++p;
+        if (p >= ts.size() || (ts[p] != '+' && ts[p] != '-')) return {};
+        const int sign = (ts[p] == '-') ? -1 : 1;
+        ++p;
+        if (p + 4 > ts.size()) return {};
+        for (int i = 0; i < 4; ++i)
+            if (ts[p + static_cast<size_t>(i)] < '0' || ts[p + static_cast<size_t>(i)] > '9')
+                return {};
+        const int oh = (ts[p] - '0') * 10 + (ts[p + 1] - '0');
+        const int om = (ts[p + 2] - '0') * 10 + (ts[p + 3] - '0');
+        p += 4;
+        while (p < ts.size() && std::isspace(static_cast<unsigned char>(ts[p]))) ++p;
+        if (p != ts.size() || oh > 23 || om > 59) return {};
+        int mo = 0;
+        for (int i = 0; i < 12; ++i)
+            if (std::strncmp(mon, kMonths[i], 3) == 0) { mo = i + 1; break; }
+        if (mo == 0 || day < 1 || day > 31 || hh > 23 || mi > 59 || ss > 60) return {};
+        const long long epoch = days_from_civil(year, mo, day) * 86400LL +
+                                hh * 3600LL + mi * 60LL + ss -
+                                sign * (oh * 3600LL + om * 60LL);
+        if (epoch < -9223372035LL || epoch > 9223372035LL) return {};
+        return SystemTimePoint(std::chrono::nanoseconds(epoch * 1000000000LL + nsec));
+    }
+
     // Parse debug format hex timestamp (e.g., "411d2b6a.1f4b2c3a")
     static SystemTimePoint parse_debug_timestamp(const std::string& ts) {
         size_t dot_pos = ts.find('.');
@@ -911,7 +959,9 @@ std::string format_epoch_seconds(long long t) {
             while (digits++ < 9) nsec *= 10;
         }
 
-        // Zone designator: Z, ±HH:MM, ±HHMM, or absent (= UTC).
+        // Zone designator: Z, ±HH:MM, ±HHMM, or absent (= UTC).  389-ds
+        // separates it with a space ("2026-10-17T02:31:10.748000000 +0200").
+        while (p < s.size() && std::isspace(static_cast<unsigned char>(s[p]))) ++p;
         long long offset_sec = 0;
         if (p < s.size()) {
             const char c = s[p];
@@ -985,6 +1035,11 @@ std::string format_epoch_seconds(long long t) {
             case LogFormat::SYSLOG: {
                 // Generic syslog - try UTC first
                 tp = parse_syslog_timestamp(timestamp, true);
+                break;
+            }
+            case LogFormat::DS389: {
+                // 389-ds text access/error: local time with a numeric offset.
+                tp = parse_ds389_timestamp(timestamp);
                 break;
             }
             case LogFormat::AUTO:
@@ -1064,13 +1119,20 @@ std::string format_epoch_seconds(long long t) {
         SHAPE_RFC3339 = 1u << 1,
         SHAPE_OL26    = 1u << 2,
         SHAPE_SYSLOG  = 1u << 3,
+        SHAPE_DS389   = 1u << 4,
     };
 
     static unsigned header_shape(std::string_view line) {
         if (line.empty()) return 0;
         unsigned s = 0;
         const char c0 = line[0];
-        if (c0 == '[') s |= SHAPE_OL26;
+        if (c0 == '[') {
+            if (line.size() >= 4 && line[1] >= '0' && line[1] <= '9' &&
+                line[2] >= '0' && line[2] <= '9' && line[3] == '/')
+                s |= SHAPE_DS389;
+            else
+                s |= SHAPE_OL26;
+        }
         if (line.size() >= 11 && line[4] == '-' && line[7] == '-' && line[10] == 'T')
             s |= SHAPE_RFC3339;
         if ((c0 >= '0' && c0 <= '9') || (c0 >= 'a' && c0 <= 'f')) {
@@ -1144,6 +1206,15 @@ std::string format_epoch_seconds(long long t) {
                 }
                 break;
             }
+            case LogFormat::DS389: {
+                if (slaplog_rx::regex_match(line, m, slaplog_rx::RE_HDR_DS389)) {
+                    timestamp = m[1];
+                    rest = m[2];
+                    if (detected_fmt) *detected_fmt = LogFormat::DS389;
+                    return true;
+                }
+                break;
+            }
             case LogFormat::OL26: {
                 if (slaplog_rx::regex_match(line, m, slaplog_rx::RE_HDR_OL26)) {
                     timestamp = m[1];
@@ -1175,6 +1246,8 @@ std::string format_epoch_seconds(long long t) {
                     try_parse_header(line, LogFormat::RFC3339_UTC, timestamp, host, proc, rest, detected_fmt)) return true;
                 if ((shape & SHAPE_OL26) &&
                     try_parse_header(line, LogFormat::OL26, timestamp, host, proc, rest, detected_fmt)) return true;
+                if ((shape & SHAPE_DS389) &&
+                    try_parse_header(line, LogFormat::DS389, timestamp, host, proc, rest, detected_fmt)) return true;
                 if ((shape & SHAPE_RFC3339) &&
                     try_parse_header(line, LogFormat::RFC3339, timestamp, host, proc, rest, detected_fmt)) return true;
                 if ((shape & SHAPE_SYSLOG) &&
@@ -2173,6 +2246,468 @@ Event parse_line(std::string_view line) {
 //   6. Operation-level events update per-op state and may finalise it.
 //   7. Server events (start/stop/shutdown) are recorded last.
 
+// =========================================================================
+// 389 Directory Server — text access log
+// =========================================================================
+// The payload after the timestamp is close to OpenLDAP's: the same conn=/op=
+// prefix and the same BIND/SRCH/RESULT/CMP verbs.  It is parsed by a separate
+// function so the OpenLDAP path keeps its exact patterns and speed: BIND
+// carries version=/mech=, SRCH has no deref= and uses attrs=, and the RESULT
+// tail is an unordered set of key=value tokens.
+//
+// Internal operations use one of two prefixes:
+//     conn=Internal(<id>) op=<op>(<internal>)(<nested>) ...
+//     conn=<id> (Internal) op=<op>(<internal>)(<nested>) ...
+
+static bool ds_take(std::string_view& s, std::string_view lit) {
+    if (s.size() < lit.size() || s.compare(0, lit.size(), lit) != 0) return false;
+    s.remove_prefix(lit.size());
+    return true;
+}
+
+static bool ds_space(std::string_view& s) {
+    size_t i = 0;
+    while (i < s.size() && s[i] == ' ') ++i;
+    s.remove_prefix(i);
+    return i > 0;
+}
+
+static bool ds_uint(std::string_view& s, int& out) {
+    size_t i = 0;
+    unsigned v = 0;
+    while (i < s.size() && s[i] >= '0' && s[i] <= '9') {
+        v = v * 10 + static_cast<unsigned>(s[i] - '0');
+        if (v > 2147483647u) return false;
+        ++i;
+    }
+    if (i == 0) return false;
+    out = static_cast<int>(v);
+    s.remove_prefix(i);
+    return true;
+}
+
+static bool ds_quoted(std::string_view& s, std::string& out) {
+    if (s.empty() || s[0] != '"') return false;
+    const size_t end = s.find('"', 1);
+    if (end == std::string_view::npos) return false;
+    out.assign(s.data() + 1, end - 1);
+    s.remove_prefix(end + 1);
+    return true;
+}
+
+// Take one space-delimited token (the value of a key=value pair).
+static std::string_view ds_token(std::string_view& s) {
+    const size_t sp = s.find(' ');
+    std::string_view v = (sp == std::string_view::npos) ? s : s.substr(0, sp);
+    s.remove_prefix(sp == std::string_view::npos ? s.size() : sp);
+    return v;
+}
+
+static int ds_int(std::string_view v) {
+    return to_int(std::string(v));
+}
+
+// conn=/op= prefix, including the two internal shapes above.  Leaves `s` at
+// the payload (the verb).  Returns false only when the line has no conn=.
+static bool ds_parse_conn_op(std::string_view& s, Event& ev) {
+    if (!ds_take(s, "conn=")) return false;
+    if (s.compare(0, 9, "Internal(") == 0) {
+        s.remove_prefix(9);
+        int cid = 0;
+        if (!ds_uint(s, cid) || !ds_take(s, ")")) return false;
+        ev.conn = cid;
+    } else {
+        int cid = 0;
+        if (!ds_uint(s, cid)) return false;
+        ev.conn = cid;
+        if (s.compare(0, 11, " (Internal)") == 0) s.remove_prefix(11);
+    }
+    if (!ds_space(s)) return true;
+    if (ds_take(s, "op=")) {
+        int oid = 0;
+        if (!ds_uint(s, oid)) return false;
+        ev.op = oid;
+        // optional (<internal-id>)(<nested-count>)
+        for (int k = 0; k < 2 && !s.empty() && s[0] == '('; ++k) {
+            int v = 0;
+            if (!ds_take(s, "(") || !ds_uint(s, v) || !ds_take(s, ")")) break;
+        }
+        ds_space(s);
+    }
+    return true;
+}
+
+static Event ds_parse_payload(std::string_view s, Event& ev) {
+    // "fd=<n> slot=<n> [SSL ]connection from <ip> to <ip>"  → connection opened
+    // "fd=<n> Disconnect - <reason>"                          → connection closed
+    if (ds_take(s, "fd=")) {
+        int fd = 0;
+        if (ds_uint(s, fd)) ev.fd = fd;
+        ds_space(s);
+        if (ds_take(s, "slot=")) { int slot = 0; ds_uint(s, slot); ds_space(s); }
+        if (ds_take(s, "SSL ")) { /* TLS connection, no dedicated event */ }
+        if (ds_take(s, "connection from ")) {
+            const size_t to = s.find(" to ");
+            ev.src.assign(s.data(), to == std::string_view::npos ? s.size() : to);
+            ev.kind = "ACCEPT";
+            return ev;
+        }
+        if (ds_take(s, "Disconnect - ")) {
+            ev.reason.assign(s.data(), s.size());
+            ev.kind = "CLOSED";
+            return ev;
+        }
+        ev.kind = "UNKNOWN_OP";
+        return ev;
+    }
+
+    if (ds_take(s, "TLSv")) { ev.kind = "TLS"; return ev; }
+
+    if (ds_take(s, "BIND ")) {
+        ev.kind = "BIND";
+        if (ds_take(s, "dn=")) ds_quoted(s, ev.binddn);
+        ev.dn = ev.binddn;   // track_bind_usage() reads the DN here
+        ds_space(s);
+        if (ds_take(s, "method=")) {
+            if (ds_take(s, "sasl")) {
+                ev.mech = "sasl";
+            } else {
+                int m = 0;
+                if (ds_uint(s, m)) ev.method = m;
+            }
+        }
+        // version=<n>, mech="<name>", free text
+        while (ds_space(s) && !s.empty()) {
+            if (ds_take(s, "version=")) { int v = 0; ds_uint(s, v); }
+            else if (ds_take(s, "mech=")) {
+                std::string mech;
+                if (ds_quoted(s, mech)) ev.mech = mech;
+                else ev.mech.assign(ds_token(s));
+            } else break;
+        }
+        return ev;
+    }
+
+    if (ds_take(s, "UNBIND")) { ev.kind = "UNBIND"; return ev; }
+
+    if (ds_take(s, "SRCH ")) {
+        ev.kind = "SRCH";
+        if (ds_take(s, "base=")) ds_quoted(s, ev.base);
+        ds_space(s);
+        if (ds_take(s, "scope=")) { int sc = 0; if (ds_uint(s, sc)) ev.scope = sc; }
+        ds_space(s);
+        if (ds_take(s, "filter=")) ds_quoted(s, ev.filter);
+        ds_space(s);
+        if (ds_take(s, "attrs=")) {
+            if (!ds_quoted(s, ev.attrs)) ev.attrs.assign(ds_token(s));
+        }
+        // options=persistent, authzid="..."
+        while (ds_space(s) && !s.empty()) {
+            if (ds_take(s, "options=persistent")) { /* paged search */ }
+            else if (ds_take(s, "authzid=")) { ds_quoted(s, ev.authzid); }
+            else break;
+        }
+        return ev;
+    }
+
+    // RESULT: unordered key=value tokens; "- <text>" ends the line.
+    if (ds_take(s, "RESULT ")) {
+        ev.kind = "RESULT";
+        while (!s.empty()) {
+            ds_space(s);
+            if (s.empty()) break;
+            if (s[0] == '-') {                       // " - <result text>"
+                s.remove_prefix(1);
+                ds_space(s);
+                ev.text.assign(s.data(), s.size());
+                break;
+            }
+            const size_t eq = s.find('=');
+            if (eq == std::string_view::npos) {
+                ev.text.assign(s.data(), s.size());
+                break;
+            }
+            const std::string_view key = s.substr(0, eq);
+            s.remove_prefix(eq + 1);
+            std::string val;
+            if (!s.empty() && s[0] == '"') {
+                if (!ds_quoted(s, val)) val.assign(ds_token(s));
+            } else {
+                val.assign(ds_token(s));
+            }
+            if (key == "err") ev.err = ds_int(val);
+            else if (key == "tag") ev.tag = ds_int(val);
+            else if (key == "nentries") ev.nentries = ds_int(val);
+            else if (key == "etime") ev.etime = std::strtod(val.c_str(), nullptr);
+            else if (key == "wqtime") ev.qtime = std::strtod(val.c_str(), nullptr);
+            else if (key == "csn") ev.csn = val;
+            else if (key == "dn") ev.dn = val;
+            // wtime/optime/writetime/wbusy/wmax/wqdepth/notes/sid/pr_* : no
+            // field of their own in Event (the report uses etime and the tag).
+        }
+        if (ev.tag.has_value() && *ev.tag == 101) ev.kind = "SEARCH_RESULT";
+        return ev;
+    }
+
+    if (ds_take(s, "CMP ")) {
+        ev.kind = "CMP";
+        if (ds_take(s, "dn=")) ds_quoted(s, ev.dn);
+        ds_space(s);
+        if (ds_take(s, "attr=")) ds_quoted(s, ev.attrs);
+        return ev;
+    }
+
+    if (ds_take(s, "MODRDN ")) {
+        ev.kind = "MODRDN";
+        if (ds_take(s, "dn=")) ds_quoted(s, ev.dn);
+        return ev;
+    }
+    if (ds_take(s, "MOD ")) {
+        ev.kind = "MOD";
+        if (ds_take(s, "dn=")) ds_quoted(s, ev.dn);
+        while (ds_space(s) && !s.empty())
+            if (ds_take(s, "authzid=")) ds_quoted(s, ev.authzid); else break;
+        return ev;
+    }
+    if (ds_take(s, "ADD ")) {
+        ev.kind = "ADD";
+        if (ds_take(s, "dn=")) ds_quoted(s, ev.dn);
+        while (ds_space(s) && !s.empty())
+            if (ds_take(s, "authzid=")) ds_quoted(s, ev.authzid); else break;
+        return ev;
+    }
+    if (ds_take(s, "DEL ")) {
+        ev.kind = "DEL";
+        if (ds_take(s, "dn=")) ds_quoted(s, ev.dn);
+        while (ds_space(s) && !s.empty())
+            if (ds_take(s, "authzid=")) ds_quoted(s, ev.authzid); else break;
+        return ev;
+    }
+
+    if (ds_take(s, "EXT ")) {
+        ev.kind = "EXT";
+        if (ds_take(s, "oid=")) ds_quoted(s, ev.oid);
+        ds_space(s);
+        if (ds_take(s, "name=")) { std::string n; ds_quoted(s, n); }
+        return ev;
+    }
+
+    if (ds_take(s, "ABANDON ")) {
+        ev.kind = "ABANDON";
+        while (ds_space(s) && !s.empty()) {
+            if (ds_take(s, "targetop=")) { ds_token(s); }
+            else if (ds_take(s, "msgid=")) { int v = 0; ds_uint(s, v); ev.msgid = v; }
+            else if (ds_take(s, "nentries=")) { int v = 0; ds_uint(s, v); ev.nentries = v; }
+            else if (ds_take(s, "etime=")) {
+                const std::string_view v = ds_token(s);
+                ev.etime = std::strtod(std::string(v).c_str(), nullptr);
+            }
+            else if (ds_take(s, "sid=")) { std::string v; ds_quoted(s, v); }
+            else break;
+        }
+        return ev;
+    }
+
+    if (ds_take(s, "AUTOBIND")) {
+        ev.kind = "BIND_ANON";
+        ds_space(s);
+        if (ds_take(s, "dn=")) ds_quoted(s, ev.binddn);
+        return ev;
+    }
+
+    if (ds_take(s, "UNPROCESSED OPERATION")) {
+        ev.kind = "UNPROCESSED";
+        ev.reason.assign(s.data(), s.size());
+        return ev;
+    }
+    if (ds_take(s, "ENTRY")) { ev.kind = "ENTRY"; return ev; }
+    if (ds_take(s, "REFERRAL")) { ev.kind = "REFERRAL"; return ev; }
+    if (ds_take(s, "STAT ")) { ev.kind = "STAT"; return ev; }
+    if (ds_take(s, "VLV ")) { ev.kind = "VLV"; return ev; }
+    if (ds_take(s, "SORT ")) { ev.kind = "SORT"; return ev; }
+
+    ev.kind = "UNKNOWN_OP";
+    return ev;
+}
+
+Event parse_ds389_line(std::string_view line) {
+    Event ev;
+    ev.raw.assign(line.data(), line.size());
+    ev.format = LogFormat::DS389;
+
+    // Log title: two tab-prefixed lines and the blank line after them.
+    if (line.empty() || line[0] == '\t') {
+        ev.kind = "TITLE";
+        return ev;
+    }
+
+    std::string timestamp, host, proc, rest;
+    if (!try_parse_header(line, LogFormat::DS389, timestamp, host, proc, rest,
+                          nullptr)) {
+        ev.kind = "UNKNOWN_LINE";
+        return ev;
+    }
+    const std::string rfc = convert_to_rfc3339_utc(timestamp, LogFormat::DS389);
+    ev.ts = rfc.empty() ? timestamp : rfc;
+
+    std::string_view payload(rest);
+    if (!ds_parse_conn_op(payload, ev)) {
+        ev.kind = "UNKNOWN_LINE";
+        return ev;
+    }
+    return ds_parse_payload(payload, ev);
+}
+
+// 389-ds access log in JSON mode: one object per line (json) or one record
+// assembled by the reader (json-pretty).  Node keys are documented in the
+// shared reference; only the ones the report uses are read.
+Event parse_ds389_json_line(std::string_view text) {
+    Event ev;
+    ev.raw.assign(text.data(), text.size());
+    ev.format = LogFormat::DS389;
+
+    nlohmann::json j;
+    try {
+        j = nlohmann::json::parse(text.begin(), text.end());
+    } catch (...) {
+        ev.kind = "UNKNOWN_LINE";
+        return ev;
+    }
+    if (!j.is_object()) { ev.kind = "UNKNOWN_LINE"; return ev; }
+    if (j.contains("header")) { ev.kind = "TITLE"; return ev; }
+
+    // local_time is "<ISO>.<ns> ±HHMM": local civil time, offset authoritative.
+    if (j.contains("local_time") && j["local_time"].is_string()) {
+        const std::string lt = j["local_time"].get<std::string>();
+        std::string rfc = convert_to_rfc3339_utc(lt, LogFormat::RFC3339);
+        ev.ts = rfc.empty() ? lt : rfc;
+    }
+    if (j.contains("conn_id") && j["conn_id"].is_number_integer()) {
+        const int cid = j["conn_id"].get<int>();
+        ev.conn = cid < 0 ? 0 : cid;   // internal operation: conn_id = -1
+    }
+    if (j.contains("op_id") && j["op_id"].is_number_integer()) {
+        const int oid = j["op_id"].get<int>();
+        if (oid >= 0) ev.op = oid;
+    }
+
+    const auto str = [&](const char* k) -> std::string {
+        const auto it = j.find(k);
+        return (it != j.end() && it->is_string()) ? it->get<std::string>() : std::string();
+    };
+    const auto num = [&](const char* k) -> std::optional<int> {
+        const auto it = j.find(k);
+        if (it != j.end() && it->is_number_integer()) return it->get<int>();
+        return std::nullopt;
+    };
+    const auto secs = [&](const char* k) -> std::optional<double> {
+        const auto it = j.find(k);
+        if (it == j.end()) return std::nullopt;
+        if (it->is_string()) return std::strtod(it->get<std::string>().c_str(), nullptr);
+        if (it->is_number()) return it->get<double>();
+        return std::nullopt;
+    };
+
+    const std::string op = str("operation");
+    if (op == "CONNECTION") {
+        ev.kind = "ACCEPT";
+        ev.src = str("client_ip");
+        ev.fd = num("fd");
+    } else if (op == "DISCONNECT") {
+        ev.kind = "CLOSED";
+        ev.reason = str("close_reason");
+        ev.fd = num("fd");
+    } else if (op == "BIND") {
+        ev.kind = "BIND";
+        ev.binddn = str("bind_dn");
+        ev.dn = ev.binddn;   // track_bind_usage() reads the DN here
+        const std::string m = str("method");
+        if (m == "sasl") ev.mech = "sasl";
+        else if (!m.empty()) ev.method = to_int(m);
+        const std::string mech = str("mech");
+        if (!mech.empty()) ev.mech = mech;
+    } else if (op == "AUTOBIND") {
+        ev.kind = "BIND_ANON";
+        ev.binddn = str("bind_dn");
+    } else if (op == "UNBIND") {
+        ev.kind = "UNBIND";
+    } else if (op == "SEARCH") {
+        ev.kind = "SRCH";
+        ev.base = str("base_dn");
+        ev.scope = num("scope");
+        ev.filter = str("filter");
+        std::string attrs;
+        const auto it = j.find("attrs");
+        if (it != j.end() && it->is_array()) {
+            for (const auto& a : *it) {
+                if (!a.is_string()) continue;
+                if (!attrs.empty()) attrs += ',';
+                attrs += a.get<std::string>();
+            }
+        }
+        ev.attrs = attrs.empty() ? "ALL" : attrs;
+    } else if (op == "RESULT") {
+        ev.kind = "RESULT";
+        ev.err = num("err");
+        ev.tag = num("tag");
+        ev.nentries = num("nentries");
+        ev.etime = secs("etime");
+        ev.qtime = secs("wqtime");
+        ev.text = str("msg");
+        ev.csn = str("csn");
+        if (ev.tag.has_value() && *ev.tag == 101) ev.kind = "SEARCH_RESULT";
+    } else if (op == "ADD" || op == "DELETE" || op == "MODIFY" || op == "MODRDN" ||
+               op == "COMPARE") {
+        ev.kind = (op == "ADD")      ? "ADD"
+                  : (op == "DELETE") ? "DEL"
+                  : (op == "MODIFY") ? "MOD"
+                  : (op == "MODRDN") ? "MODRDN"
+                                     : "CMP";
+        ev.dn = str("target_dn");
+        if (op == "COMPARE") ev.attrs = str("cmp_attr");
+    } else if (op == "EXTENDED_OP") {
+        ev.kind = "EXT";
+        ev.oid = str("oid");
+        if (ev.oid.empty()) ev.oid = str("name");
+    } else if (op == "ABANDON") {
+        ev.kind = "ABANDON";
+        ev.msgid = num("msgid");
+        ev.nentries = num("nentries");
+        ev.etime = secs("etime");
+    } else if (op == "ENTRY") {
+        ev.kind = "ENTRY";
+    } else if (op == "REFERRAL") {
+        ev.kind = "REFERRAL";
+    } else if (op == "STAT") {
+        ev.kind = "STAT";
+    } else if (op == "VLV") {
+        ev.kind = "VLV";
+    } else if (op == "SORT") {
+        ev.kind = "SORT";
+    } else if (op == "TLS_INFO" || op == "TLS_CLIENT_INFO") {
+        ev.kind = "TLS";
+    } else if (op == "ERROR") {
+        ev.kind = "UNPROCESSED";
+        ev.reason = str("msg");
+    } else if (op == "HAPROXY") {
+        ev.kind = "HAPROXY";
+    } else {
+        ev.kind = "UNKNOWN_OP";
+    }
+    return ev;
+}
+
+// One switch per line, selected once per file by the reader.
+static inline Event decode_line(std::string_view line, ParseMode mode) {
+    switch (mode) {
+        case ParseMode::DS389Text: return parse_ds389_line(line);
+        case ParseMode::DS389Json:
+        case ParseMode::DS389JsonPretty: return parse_ds389_json_line(line);
+        case ParseMode::OpenLDAP:
+        default: return parse_line(line);
+    }
+}
+
 void update_aggregator(Aggregator& agg, const Event& ev,
                        std::ostream* unknown_out, std::mutex* unknown_mtx) {
 
@@ -2204,6 +2739,21 @@ void update_aggregator(Aggregator& agg, const Event& ev,
                    agg.unknown_lines.size() < MAX_STORED_UNKNOWN_LINES) {
             agg.unknown_lines.push_back(ev.raw);
         }
+        return;
+    }
+
+    // Lines the parser recognises but that carry no analysable event: the
+    // 389-ds log title, STAT/ENTRY/REFERRAL lines, HAPROXY headers and
+    // "UNPROCESSED OPERATION" notices.  They count as processed — not as
+    // unknown, which the final fallback would do otherwise.
+    // The format test keeps this out of the OpenLDAP hot path: only the
+    // 389-ds parsers produce these kinds, and the string comparisons below
+    // cost more than they look when run on every line.
+    if (ev.format == LogFormat::DS389 &&
+        (ev.kind == "TITLE" || ev.kind == "STAT" || ev.kind == "ENTRY" ||
+         ev.kind == "REFERRAL" || ev.kind == "VLV" || ev.kind == "SORT" ||
+         ev.kind == "HAPROXY" || ev.kind == "UNPROCESSED")) {
+        agg.stats.lines++;
         return;
     }
 
@@ -3613,6 +4163,58 @@ bool sample_is_log(const HeadSample& sample) {
     return false;
 }
 
+// Classify the head sample.  Tab-prefixed title lines and blanks are skipped;
+// the first data line decides.  The predicates mirror the 389-ds writers
+// (see the shared reference): text lines start with "[dd/Mon/yyyy:",
+// JSON access lines carry "operation", the other JSON streams carry
+// "severity" / "gm_time" / "utc_time" / "event", and an audit LDIF record
+// starts with "time: ".
+FileKind classify_head(const HeadSample& sample) {
+    bool saw_json = false;
+    bool pretty = false;
+    for (const std::string& raw : sample.lines) {
+        std::string_view line(raw);
+        while (!line.empty() && (line.back() == '\r' || line.back() == '\n'))
+            line.remove_suffix(1);
+        if (line.empty()) continue;
+
+        if (!saw_json) {
+            if (line[0] == '\t') continue;                   // text/JSON log title
+            if (line.compare(0, 8, "LOGINFO:") == 0) return FileKind::DS389Other;
+            if (line.compare(0, 6, "time: ") == 0) return FileKind::DS389Other;
+            if (line[0] == '[') {
+                // 389-ds text access and error logs share the timestamp; only
+                // the access log carries a conn= payload (errors start with "- ").
+                if (line.size() >= 4 && line[1] >= '0' && line[1] <= '9' &&
+                    line[2] >= '0' && line[2] <= '9' && line[3] == '/') {
+                    const size_t close = line.find("] ");
+                    if (close != std::string_view::npos &&
+                        line.compare(close + 2, 5, "conn=") != 0)
+                        return FileKind::DS389Other;          // errors log
+                    return FileKind::DS389Text;
+                }
+                break;                                        // "[YYYY-...": OL26
+            }
+            if (line[0] != '{') break;                        // not 389-ds
+            saw_json = true;
+            if (line.size() == 1) pretty = true;              // json-pretty
+        }
+
+        // JSON: scan every line of the record for a discriminating key.
+        const auto has = [&](const char* k) {
+            return line.find(k) != std::string_view::npos;
+        };
+        if (has("\"severity\"") || has("\"gm_time\"") || has("\"utc_time\"") ||
+            has("\"event\""))
+            return FileKind::DS389Other;                      // errors / audit / security
+        if (has("\"operation\""))
+            return pretty ? FileKind::DS389JsonPretty : FileKind::DS389Json;
+    }
+    if (saw_json) return FileKind::DS389Other;                // JSON, no operation seen
+    return sample_is_log(sample) ? FileKind::OpenLDAP : FileKind::NotLog;
+}
+
+
 } // anonymous namespace
 
 // ------------------------------------------------------------------
@@ -3621,7 +4223,8 @@ bool sample_is_log(const HeadSample& sample) {
 
 FileVerdict process_file(const std::string& filename, Aggregator& agg,
                          std::atomic<size_t>& progress,
-                         std::ostream* unknown_out, std::mutex* unknown_mtx) {
+                         std::ostream* unknown_out, std::mutex* unknown_mtx,
+                         FileKind* kind_out, std::optional<FileKind> required) {
     // Peek at the file's first bytes to detect compression type.
     unsigned char peek[8] = {};
     std::ifstream probe(filename, std::ios::binary);
@@ -3637,23 +4240,116 @@ FileVerdict process_file(const std::string& filename, Aggregator& agg,
     const HeadSample head = sample_head(filename, comp);
     if (!head.ok) return FileVerdict::Unreadable;
     if (head.empty) return FileVerdict::Empty;
-    if (!sample_is_log(head)) return FileVerdict::NotLog;
+
+    // Pick the parser once per file, from the head sample (never per line).
+    const FileKind kind = classify_head(head);
+    if (kind_out) *kind_out = kind;
+    if (kind == FileKind::NotLog) return FileVerdict::NotLog;
+    if (kind == FileKind::DS389Other) return FileVerdict::UnsupportedStream;
+    if (required.has_value() && kind != *required) return FileVerdict::SkippedKind;
+
+    ParseMode mode = ParseMode::OpenLDAP;
+    switch (kind) {
+        case FileKind::DS389Text:       mode = ParseMode::DS389Text; break;
+        case FileKind::DS389Json:       mode = ParseMode::DS389Json; break;
+        case FileKind::DS389JsonPretty: mode = ParseMode::DS389JsonPretty; break;
+        default: break;
+    }
 
     switch (comp) {
         case Compression::Gzip:
-            process_gzip_file(filename, agg, progress, unknown_out, unknown_mtx);
+            process_gzip_file(filename, agg, progress, unknown_out, unknown_mtx, mode);
             break;
         case Compression::Bzip2:
-            process_bzip2_file(filename, agg, progress, unknown_out, unknown_mtx);
+            process_bzip2_file(filename, agg, progress, unknown_out, unknown_mtx, mode);
             break;
         case Compression::Xz:
-            process_xz_file(filename, agg, progress, unknown_out, unknown_mtx);
+            process_xz_file(filename, agg, progress, unknown_out, unknown_mtx, mode);
             break;
         case Compression::None:
-            process_plain_file(filename, agg, progress, unknown_out, unknown_mtx);
+            process_plain_file(filename, agg, progress, unknown_out, unknown_mtx, mode);
             break;
     }
     return FileVerdict::Analysed;
+}
+
+// Parse every complete line in `buf` from `consumed` onward, then drop the
+// consumed prefix with a single memmove.
+//
+// The old loop did `line.erase(0, pos + 1)` for every line, which memmoves
+// the rest of the buffer each time: on a 64 KiB read block of ~400 lines
+// that is ~200x the bytes read, and it dominated the decompressed paths
+// (24 of the 35 files in a typical rotated corpus are .bz2).  `consumed`
+// lives across calls, so a line split between two reads is still found.
+void consume_lines(std::string& buf, size_t& consumed, Aggregator& agg,
+                   std::atomic<size_t>& progress,
+                   std::ostream* unknown_out, std::mutex* unknown_mtx,
+                   ParseMode mode) {
+    if (mode == ParseMode::DS389JsonPretty) {
+        // One JSON object per record, spread over several lines: assemble
+        // until the braces balance (strings and escapes respected), then
+        // hand the whole record to the JSON parser.
+        size_t i = consumed;
+        while (true) {
+            while (i < buf.size() && std::isspace(static_cast<unsigned char>(buf[i]))) ++i;
+            if (i >= buf.size()) break;
+            const size_t start = i;
+            int depth = 0;
+            bool in_str = false, esc = false, complete = false;
+            size_t j = i;
+            for (; j < buf.size(); ++j) {
+                const char c = buf[j];
+                if (in_str) {
+                    if (esc) esc = false;
+                    else if (c == '\\') esc = true;
+                    else if (c == '"') in_str = false;
+                    continue;
+                }
+                if (c == '"') in_str = true;
+                else if (c == '{') ++depth;
+                else if (c == '}') {
+                    if (--depth == 0) { complete = true; ++j; break; }
+                }
+            }
+            if (!complete) break;                  // wait for the next read
+            Event ev = parse_ds389_json_line(
+                std::string_view(buf.data() + start, j - start));
+            update_aggregator(agg, ev, unknown_out, unknown_mtx);
+            progress += j - start;
+            consumed = j;
+            i = j;
+        }
+        if (consumed) { buf.erase(0, consumed); consumed = 0; }
+        return;
+    }
+    size_t pos;
+    while ((pos = buf.find('\n', consumed)) != std::string::npos) {
+        std::string_view l(buf.data() + consumed, pos - consumed);
+        if (!l.empty() && l.back() == '\r') l.remove_suffix(1);
+        Event ev = decode_line(l, mode);
+        update_aggregator(agg, ev, unknown_out, unknown_mtx);
+        progress += l.size() + 1;
+        consumed = pos + 1;
+    }
+    if (consumed) {
+        buf.erase(0, consumed);
+        consumed = 0;
+    }
+}
+
+// Classify a file from its head sample, without parsing it.  Used by main to
+// fix one parser per run before the workers start.
+bool classify_file(const std::string& filename, FileKind& kind) {
+    unsigned char peek[8] = {};
+    std::ifstream probe(filename, std::ios::binary);
+    if (probe) {
+        probe.read(reinterpret_cast<char*>(peek), sizeof(peek));
+        probe.close();
+    }
+    const HeadSample head = sample_head(filename, compression_of(peek));
+    if (!head.ok || head.empty) return false;
+    kind = classify_head(head);
+    return true;
 }
 
 // ------------------------------------------------------------------
@@ -3665,7 +4361,8 @@ FileVerdict process_file(const std::string& filename, Aggregator& agg,
 
 void process_plain_file(const std::string& filename, Aggregator& agg,
                         std::atomic<size_t>& progress,
-                        std::ostream* unknown_out, std::mutex* unknown_mtx) {
+                        std::ostream* unknown_out, std::mutex* unknown_mtx,
+                        ParseMode mode) {
     slaplog_simd::MmapReader reader;
     if (!reader.open(filename.c_str())) {
         // Fallback to std::ifstream if mmap fails
@@ -3673,7 +4370,7 @@ void process_plain_file(const std::string& filename, Aggregator& agg,
         if (!file) return;
         std::string line;
         while (std::getline(file, line)) {
-            Event ev = parse_line(line);
+            Event ev = decode_line(line, mode);
             update_aggregator(agg, ev, unknown_out, unknown_mtx);
             progress += line.size() + 1;
         }
@@ -3681,16 +4378,26 @@ void process_plain_file(const std::string& filename, Aggregator& agg,
     }
     
     if (reader.empty()) return;
-    
+
+    if (mode == ParseMode::DS389JsonPretty) {
+        // json-pretty spreads one record over several lines: assemble them from
+        // a buffer copy (the mmap is read-only, consume_lines compacts its
+        // buffer).  These files are small next to the text logs.
+        std::string buf(reader.data(), reader.size());
+        size_t consumed = 0;
+        consume_lines(buf, consumed, agg, progress, unknown_out, unknown_mtx, mode);
+        return;
+    }
+
     // Use SIMD-accelerated line processor
     slaplog_simd::LineProcessor lp(reader.data(), reader.size());
     
-    std::string_view line;
-    while (!(line = lp.next()).empty()) {
-        // parse_line() takes the view directly and copies into Event::raw only
+    while (!lp.done()) {
+        const std::string_view line = lp.next();
+        // decode_line() takes the view directly and copies into Event::raw only
         // once; materialising a std::string here used to add a second
         // allocation and copy for every single line.
-        Event ev = parse_line(line);
+        Event ev = decode_line(line, mode);
         update_aggregator(agg, ev, unknown_out, unknown_mtx);
         progress += line.size() + 1;
     }
@@ -3718,36 +4425,13 @@ namespace {
     }
 #endif
 
-    // Parse every complete line in `buf` from `consumed` onward, then drop the
-    // consumed prefix with a single memmove.
-    //
-    // The old loop did `line.erase(0, pos + 1)` for every line, which memmoves
-    // the rest of the buffer each time: on a 64 KiB read block of ~400 lines
-    // that is ~200x the bytes read, and it dominated the decompressed paths
-    // (24 of the 35 files in a typical rotated corpus are .bz2).  `consumed`
-    // lives across calls, so a line split between two reads is still found.
-    void consume_lines(std::string& buf, size_t& consumed, Aggregator& agg,
-                       std::atomic<size_t>& progress,
-                       std::ostream* unknown_out, std::mutex* unknown_mtx) {
-        size_t pos;
-        while ((pos = buf.find('\n', consumed)) != std::string::npos) {
-            std::string_view l(buf.data() + consumed, pos - consumed);
-            Event ev = parse_line(l);
-            update_aggregator(agg, ev, unknown_out, unknown_mtx);
-            progress += l.size() + 1;
-            consumed = pos + 1;
-        }
-        if (consumed) {
-            buf.erase(0, consumed);
-            consumed = 0;
-        }
-    }
 
     // Process a file through a decompression pipe
     // The pipe is expected to output plain text to stdout
     void process_decompress_pipe(const std::string& filename, const char* cmd_template,
                                  Aggregator& agg, std::atomic<size_t>& progress,
-                                 std::ostream* unknown_out, std::mutex* unknown_mtx) {
+                                 std::ostream* unknown_out, std::mutex* unknown_mtx,
+                                 ParseMode mode) {
         std::string cmd = std::string(cmd_template) + " \"" + filename + "\"";
         FILE* pipe = ::popen(cmd.c_str(), "r");
         if (!pipe) return;
@@ -3761,7 +4445,7 @@ namespace {
             if (n == 0) break;
 
             line.append(buffer, n);
-            consume_lines(line, consumed, agg, progress, unknown_out, unknown_mtx);
+            consume_lines(line, consumed, agg, progress, unknown_out, unknown_mtx, mode);
         }
         
         if (!line.empty()) {
@@ -3782,7 +4466,8 @@ namespace {
 
 void process_gzip_file(const std::string& filename, Aggregator& agg,
                        std::atomic<size_t>& progress,
-                       std::ostream* unknown_out, std::mutex* unknown_mtx) {
+                       std::ostream* unknown_out, std::mutex* unknown_mtx,
+                       ParseMode mode) {
     // Try parallel decompression with pigz first
     static bool pigz_checked = false;
     static bool pigz_available = false;
@@ -3793,7 +4478,7 @@ void process_gzip_file(const std::string& filename, Aggregator& agg,
     }
     
     if (pigz_available) {
-        process_decompress_pipe(filename, "pigz -dc", agg, progress, unknown_out, unknown_mtx);
+        process_decompress_pipe(filename, "pigz -dc", agg, progress, unknown_out, unknown_mtx, mode);
         return;
     }
     
@@ -3805,7 +4490,7 @@ void process_gzip_file(const std::string& filename, Aggregator& agg,
     while (gzgets(file, buffer, sizeof(buffer))) {
         line = buffer;
         if (!line.empty() && line.back() == '\n') line.pop_back();
-        Event ev = parse_line(line);
+        Event ev = decode_line(line, mode);
         update_aggregator(agg, ev, unknown_out, unknown_mtx);
         progress += line.size() + 1;
     }
@@ -3820,7 +4505,8 @@ void process_gzip_file(const std::string& filename, Aggregator& agg,
 
 void process_bzip2_file(const std::string& filename, Aggregator& agg,
                         std::atomic<size_t>& progress,
-                        std::ostream* unknown_out, std::mutex* unknown_mtx) {
+                        std::ostream* unknown_out, std::mutex* unknown_mtx,
+                        ParseMode mode) {
     // Try parallel decompression with lbzip2 first
     static bool lbzip2_checked = false;
     static bool lbzip2_available = false;
@@ -3831,7 +4517,7 @@ void process_bzip2_file(const std::string& filename, Aggregator& agg,
     }
     
     if (lbzip2_available) {
-        process_decompress_pipe(filename, "lbzip2 -dc", agg, progress, unknown_out, unknown_mtx);
+        process_decompress_pipe(filename, "lbzip2 -dc", agg, progress, unknown_out, unknown_mtx, mode);
         return;
     }
     
@@ -3848,10 +4534,10 @@ void process_bzip2_file(const std::string& filename, Aggregator& agg,
         int bytes = BZ2_bzRead(&bzerror, bzfile, buffer, sizeof(buffer));
         if (bytes <= 0) break;
         line.append(buffer, bytes);
-        consume_lines(line, consumed, agg, progress, unknown_out, unknown_mtx);
+        consume_lines(line, consumed, agg, progress, unknown_out, unknown_mtx, mode);
     }
     if (!line.empty()) {
-        Event ev = parse_line(line);
+        Event ev = decode_line(line, mode);
         update_aggregator(agg, ev, unknown_out, unknown_mtx);
         progress += line.size() + 1;
     }
@@ -3867,7 +4553,8 @@ void process_bzip2_file(const std::string& filename, Aggregator& agg,
 
 void process_xz_file(const std::string& filename, Aggregator& agg,
                      std::atomic<size_t>& progress,
-                     std::ostream* unknown_out, std::mutex* unknown_mtx) {
+                     std::ostream* unknown_out, std::mutex* unknown_mtx,
+                     ParseMode mode) {
     // Try parallel decompression with xz -T0 first
     static bool xz_checked = false;
     static bool xz_available = false;
@@ -3878,7 +4565,7 @@ void process_xz_file(const std::string& filename, Aggregator& agg,
     }
     
     if (xz_available) {
-        process_decompress_pipe(filename, "xz -T0 -dc", agg, progress, unknown_out, unknown_mtx);
+        process_decompress_pipe(filename, "xz -T0 -dc", agg, progress, unknown_out, unknown_mtx, mode);
         return;
     }
     
@@ -3907,14 +4594,14 @@ void process_xz_file(const std::string& filename, Aggregator& agg,
         if (strm.avail_out == 0 || ret == LZMA_STREAM_END) {
             size_t write_size = sizeof(outbuf) - strm.avail_out;
             line.append((char*)outbuf, write_size);
-            consume_lines(line, consumed, agg, progress, unknown_out, unknown_mtx);
+            consume_lines(line, consumed, agg, progress, unknown_out, unknown_mtx, mode);
             strm.next_out = reinterpret_cast<uint8_t*>(outbuf);
             strm.avail_out = sizeof(outbuf);
         }
         if (ret == LZMA_STREAM_END) break;
     }
     if (!line.empty()) {
-        Event ev = parse_line(line);
+        Event ev = decode_line(line, mode);
         update_aggregator(agg, ev, unknown_out, unknown_mtx);
         progress += line.size() + 1;
     }

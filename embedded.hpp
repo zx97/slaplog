@@ -700,7 +700,7 @@ For more information on this, and how to apply and follow the GNU AGPL, see
 
 **SPDX-License-Identifier:** AGPL-3.0-or-later  
 **License:** GNU Affero General Public License v3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)  
-**Version:** 5.0.3  
+**Version:** 5.1.0  
 **Author:** Manuel FLURY  
 **Copyright:** © 2026 Manuel FLURY. All rights reserved.
 
@@ -799,6 +799,41 @@ slaplog supports all OpenLDAP log formats with automatic per-line detection:
 | `syslog` | `Aug  5 14:23:01` | Generic syslog |
 
 Use `--log-format` to specify a fixed format for faster parsing when you know all lines share the same format.
+
+### 389 Directory Server
+
+Access logs from 389 Directory Server (`ns-slapd`) are recognised per file and
+analysed by the same report engine.  The format is detected from the head of
+each file, never per line, so an OpenLDAP run pays nothing for this.
+
+| File | Detected as | Notes |
+|------|-------------|-------|
+| text access (`nsslapd-accesslog-log-format: default`) | `389ds` | prefix `[dd/Mon/yyyy:HH:MM:SS.nnnnnnnnn ±HHMM] ` |
+| JSON access (`json`) | `389ds-json` | one object per line |
+| JSON access (`json-pretty`) | `389ds-json-pretty` | multi-line objects, assembled by the reader |
+| errors, audit, security | recognised, **skipped** | not access logs; named on stderr |
+
+- The prefix is **local time with a numeric offset**; it is converted to RFC
+  3339 UTC, so a multi-host analysis compares instants and never assumes a
+  timezone.
+- `RESULT` fields are read as an **unordered set of `key=value` tokens** (389-ds
+  does not keep OpenLDAP's column order); `tag=101` becomes a search result,
+  `wqtime` is reported as queue time, `etime` as total time.
+- Internal operations (`conn=Internal(0) …`, `conn=42 (Internal) …`) are
+  analysed like other operations; `Disconnect` closes the connection; the
+  `connection from … to …` line carries the client address.
+- **One format per run.**  The first file fixes the parser; a file of another
+  format (text vs JSON, or json-pretty) is skipped with a message, so the
+  per-line loop stays monomorphic.  Combine the runs with a state:
+
+```bash
+slaplog access*      -o html=text.html --save-state text.state
+slaplog access-json* -o html=json.html --save-state json.state
+slaplog --resume text.state --resume json.state -o html=all.html
+```
+
+The other 389-ds streams (errors, audit, security) are diagnostics, not
+operation logs; slaplog names them and leaves them out of the report.
 
 If a line does not match any header format, it is marked as `UNKNOWN_LINE` and
 collected for diagnostic output.

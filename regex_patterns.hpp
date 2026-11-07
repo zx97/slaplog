@@ -94,6 +94,12 @@ namespace slaplog_rx {
     // [group  4] rest of the line (payload)
     inline const Regex RE_HDR_SYSLOG_LOCAL(R"xx(^([A-Z][a-z]{2}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2})\s+(\S+)\s+(\S+):\s+(.*)$)xx");
 
+    // 389 Directory Server text access/error header:
+    //   [dd/Mon/yyyy:HH:MM:SS.nnnnnnnnn +HHMM] <payload>
+    // [group 1] timestamp (without the brackets), offset included
+    // [group 2] rest of the line (payload)
+    inline const Regex RE_HDR_DS389(R"xx(^\[(\d{1,2}/[A-Za-z]{3}/\d{4}:\d{2}:\d{2}:\d{2}\.\d{1,9} [+-]\d{4})\] (.*)$)xx");
+
     // rfc3339-utc format: RFC3339 UTC with fractional seconds
     // Format: "%Y-%m-%dT%H:%M:%S.%09ldZ" (CLOCK_GETTIME) or "%Y-%m-%dT%H:%M:%S.%06ldZ" (gettimeofday)
     // [group  1] full RFC3339 timestamp with fractional seconds and Z suffix

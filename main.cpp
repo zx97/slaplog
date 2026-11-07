@@ -699,6 +699,22 @@ int main(int argc, char* argv[]) {
     // merge_mtx; reported once the workers are done so the messages do not
     // interleave with the progress bar.
     std::vector<std::pair<std::string, FileVerdict>> skipped_files;
+
+    // One parser per run.  The first file whose head names an access log fixes
+    // the format for the whole run; a file of another format is skipped rather
+    // than parsed with a second engine (combine the runs with
+    // --save-state/--resume).  This keeps the per-line loop monomorphic.
+    std::optional<FileKind> run_kind;
+    for (const auto& f : files) {
+        FileKind k = FileKind::NotLog;
+        if (classify_file(f, k) &&
+            (k == FileKind::OpenLDAP || k == FileKind::DS389Text ||
+             k == FileKind::DS389Json || k == FileKind::DS389JsonPretty)) {
+            run_kind = k;
+            break;
+        }
+    }
+
     auto start_time = std::chrono::system_clock::now();
 
     if (want_replay) {
@@ -842,9 +858,11 @@ int main(int argc, char* argv[]) {
                                   << (i + 1) << "/" << files.size() << ")\n";
                     }
                     Aggregator local_agg;
+                    FileKind file_kind = FileKind::NotLog;
                     const FileVerdict verdict =
                         process_file(files[i], local_agg, progress,
-                                     unknown_out, unknown_mtx_ptr);
+                                     unknown_out, unknown_mtx_ptr, &file_kind,
+                                     run_kind);
                     if (verdict != FileVerdict::Analysed) {
                         // Not a log, empty or unreadable: drop it instead of
                         // folding a pile of unknown lines into the report.
@@ -954,6 +972,15 @@ int main(int argc, char* argv[]) {
                     break;
                 case FileVerdict::Unreadable:
                     std::cerr << "cannot read — skipped: ";
+                    break;
+                case FileVerdict::UnsupportedStream:
+                    std::cerr << "389-ds stream that is not an access log "
+                                 "(errors/audit/security) — skipped: ";
+                    break;
+                case FileVerdict::SkippedKind:
+                    std::cerr << "different log format for this run ("
+                              << (run_kind ? file_kind_name(*run_kind) : "unknown")
+                              << ") — skipped, use --save-state/--resume to combine: ";
                     break;
                 default:
                     std::cerr << "skipped: ";

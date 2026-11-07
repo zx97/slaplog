@@ -56,7 +56,8 @@ enum class LogFormat {
     RFC3339_UTC,
     OL26,
     RFC3339,
-    SYSLOG
+    SYSLOG,
+    DS389          // 389 Directory Server text access/error: [dd/Mon/yyyy:HH:MM:SS.nnnnnnnnn +HHMM]
 };
 
 inline std::string log_format_to_string(LogFormat fmt) {
@@ -69,6 +70,7 @@ inline std::string log_format_to_string(LogFormat fmt) {
         case LogFormat::OL26: return "ol26";
         case LogFormat::RFC3339: return "rfc3339";
         case LogFormat::SYSLOG: return "syslog";
+        case LogFormat::DS389: return "389ds";
     }
     return "unknown";
 }
@@ -89,6 +91,7 @@ inline LogFormat parse_log_format(const std::string& s) {
     if (lower == "ol26") return LogFormat::OL26;
     if (lower == "rfc3339") return LogFormat::RFC3339;
     if (lower == "syslog") return LogFormat::SYSLOG;
+    if (lower == "389ds") return LogFormat::DS389;
     return LogFormat::AUTO;
 }
 
@@ -891,8 +894,44 @@ enum class FileVerdict {
     Analysed,     // at least one log line was found and parsed
     Empty,        // nothing to parse (no line at all)
     NotLog,       // readable content, but not an OpenLDAP log
-    Unreadable    // cannot be opened or decompressed
+    Unreadable,   // cannot be opened or decompressed
+    UnsupportedStream,  // a 389-ds stream that is not an access log
+    SkippedKind   // a valid log of a format another file already fixed for this run
 };
+
+// Which parser a file is read with.  The choice is made once per file from its
+// head sample, outside the per-line loop: the OpenLDAP path keeps its exact
+// code and speed, and a 389-ds file never pays for the OpenLDAP dispatch.
+enum class ParseMode {
+    OpenLDAP,         // slapd access log (all its timestamp formats)
+    DS389Text,        // 389-ds text access log: [dd/Mon/yyyy:HH:MM:SS.ns +HHMM]
+    DS389Json,        // 389-ds access log, one JSON object per line
+    DS389JsonPretty   // same, multi-line JSON objects
+};
+
+// The stream a file was recognised as.  Only the access logs are analysed;
+// the other 389-ds streams are recognised so the run can say why it skipped
+// them instead of filling the report with unknown lines.
+enum class FileKind {
+    NotLog,
+    OpenLDAP,
+    DS389Text,
+    DS389Json,
+    DS389JsonPretty,
+    DS389Other
+};
+
+inline const char* file_kind_name(FileKind k) {
+    switch (k) {
+        case FileKind::OpenLDAP: return "OpenLDAP access";
+        case FileKind::DS389Text: return "389-ds text access";
+        case FileKind::DS389Json: return "389-ds JSON access";
+        case FileKind::DS389JsonPretty: return "389-ds json-pretty access";
+        case FileKind::DS389Other: return "389-ds non-access stream";
+        case FileKind::NotLog:
+        default: return "not a log";
+    }
+}
 
 // Line-by-line "is this an OpenLDAP log?" detector.  It uses the parser's own
 // header detection, so a file this class accepts is a file parse_line() can
@@ -938,23 +977,33 @@ private:
 FileVerdict process_file(const std::string& filename, Aggregator& agg,
                          std::atomic<size_t>& progress,
                          std::ostream* unknown_out = nullptr,
-                         std::mutex* unknown_mtx = nullptr);
+                         std::mutex* unknown_mtx = nullptr,
+                         FileKind* kind_out = nullptr,
+                         std::optional<FileKind> required = std::nullopt);
+
+// Classify a file without parsing it (head sample only).  Returns false when
+// the file cannot be opened or is empty.
+bool classify_file(const std::string& filename, FileKind& kind);
 
 void process_plain_file(const std::string& filename, Aggregator& agg,
                         std::atomic<size_t>& progress,
                         std::ostream* unknown_out = nullptr,
-                        std::mutex* unknown_mtx = nullptr);
+                        std::mutex* unknown_mtx = nullptr,
+                        ParseMode mode = ParseMode::OpenLDAP);
 void process_gzip_file(const std::string& filename, Aggregator& agg,
                        std::atomic<size_t>& progress,
                        std::ostream* unknown_out = nullptr,
-                       std::mutex* unknown_mtx = nullptr);
+                       std::mutex* unknown_mtx = nullptr,
+                        ParseMode mode = ParseMode::OpenLDAP);
 void process_bzip2_file(const std::string& filename, Aggregator& agg,
                         std::atomic<size_t>& progress,
                         std::ostream* unknown_out = nullptr,
-                        std::mutex* unknown_mtx = nullptr);
+                        std::mutex* unknown_mtx = nullptr,
+                        ParseMode mode = ParseMode::OpenLDAP);
 void process_xz_file(const std::string& filename, Aggregator& agg,
                      std::atomic<size_t>& progress,
                      std::ostream* unknown_out = nullptr,
-                     std::mutex* unknown_mtx = nullptr);
+                     std::mutex* unknown_mtx = nullptr,
+                        ParseMode mode = ParseMode::OpenLDAP);
 
 #endif // LOG_PARSER_HPP

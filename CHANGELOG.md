@@ -6,6 +6,32 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 The project is distributed under the **AGPL-3.0** license — see [LICENSE](LICENSE).
 
+## [5.1.0] - 2026-11-08
+
+### Added
+
+- **389 Directory Server access logs.**  `ns-slapd` text, JSON and `json-pretty`
+  access logs are detected from the head of each file and analysed by the same
+  report engine (operations, connections, binds, filters, errors, latencies).
+  The prefix is local time with a numeric offset and is converted to RFC 3339
+  UTC; `RESULT` fields are read as an unordered set of `key=value` tokens;
+  internal operations (`conn=Internal(n)`, `conn=n (Internal)`) are analysed
+  too.  The errors, audit and security streams are recognised and skipped with
+  a named reason.
+- **One parser per run.**  The first file fixes the format (text, JSON or
+  json-pretty); a file of another format is skipped with a message rather than
+  parsed with a second engine, so the per-line loop stays monomorphic.
+  Combine the runs with `--save-state` / `--resume`:
+  `slaplog access* --save-state a.state` then `slaplog access-json* --save-state
+  b.state` and finally `slaplog --resume a.state --resume b.state`.
+  OpenLDAP files are unaffected: a 21.6 GB / 134M-line run shows no regression.
+
+### Fixed
+
+- A blank line in the middle of a log no longer truncates the analysis: the
+  mmap reader stopped at the first empty line, and 389-ds writes one after the
+  log title.
+
 ## [5.0.3] - 2026-11-07
 
 ### Changed
@@ -284,6 +310,7 @@ The project is distributed under the **AGPL-3.0** license — see [LICENSE](LICE
 
 - Initial release.
 
+[5.1.0]: https://github.com/zx97/slaplog/releases/tag/v5.1.0
 [5.0.3]: https://github.com/zx97/slaplog/releases/tag/v5.0.3
 [5.0.2]: https://github.com/zx97/slaplog/releases/tag/v5.0.2
 [5.0.1]: https://github.com/zx97/slaplog/releases/tag/v5.0.1
