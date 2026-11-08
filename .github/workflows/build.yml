@@ -13,6 +13,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            build-essential libpcre2-dev zlib1g-dev libbz2-dev liblzma-dev python3
+            build-essential libpcre2-dev zlib1g-dev libbz2-dev liblzma-dev \
+            python3 nlohmann-json3-dev time
       - name: Build and run the native test suite
         run: make -j"$(nproc)" check

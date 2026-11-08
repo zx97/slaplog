@@ -60,10 +60,13 @@ $(BUILD_FILE): FORCE
 
 # main.cpp always recompiles (depends on changing build number)
 main.o: main.cpp $(BUILD_FILE)
-	$(CXX) $(CXXFLAGS) -DBUILD_NUMBER=$$(cat $(BUILD_FILE)) -c $< -o $@
+	$(CXX) $(CXXFLAGS) -DBUILD_NUMBER=$$(cat $(BUILD_FILE) 2>/dev/null || echo 0) -c $< -o $@
 
-%.o: %.cpp Makefile
-	$(CXX) $(CXXFLAGS) -DBUILD_NUMBER=$$(cat $(BUILD_FILE)) -c $< -o $@
+# Every object depends on the generated build number, otherwise a parallel
+# build (or a fresh clone, where the file does not exist yet) compiles with an
+# empty -DBUILD_NUMBER=.
+%.o: %.cpp Makefile $(BUILD_FILE)
+	$(CXX) $(CXXFLAGS) -DBUILD_NUMBER=$$(cat $(BUILD_FILE) 2>/dev/null || echo 0) -c $< -o $@
 
 $(TARGET): $(OBJS)
 	$(CXX) $(CXXFLAGS) $^ -o $@ $(LDFLAGS)
@@ -184,7 +187,7 @@ WASM_FLAGS := -std=c++17 -O3 -Wall -Wextra \
 wasm: $(WASM_OUT)
 
 $(WASM_OUT): $(WASM_SRCS) $(WASM_HDRS) $(WASM_PRE)/liblzma.a $(WASM_PRE)/lib/libpcre2-8.a $(WASM_INC)/nlohmann/json.hpp $(BUILD_FILE)
-	$(EMXX) $(WASM_FLAGS) -DBUILD_NUMBER=$$(cat $(BUILD_FILE)) \
+	$(EMXX) $(WASM_FLAGS) -DBUILD_NUMBER=$$(cat $(BUILD_FILE) 2>/dev/null || echo 0) \
 	        $(WASM_SRCS) $(WASM_PRE)/liblzma.a $(WASM_PRE)/lib/libpcre2-8.a -o $@
 
 # liblzma (xz) has no Emscripten port: cross-build it once.
