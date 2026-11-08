@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>slaplog — OpenLDAP Log Analyzer (WebAssembly)</title>
+<title>slaplog — LDAP Log Analyzer (WebAssembly)</title>
 <style>
   :root {
     --bg: #0f1419;
@@ -179,7 +179,7 @@
     <span class="badge">100% local — nothing uploaded</span>
   </div>
   <div class="tagline">
-    OpenLDAP <code>slapd</code> access-log analyzer — parses, aggregates and reports
+    LDAP access-log analyzer — parses, aggregates and reports
     BIND / SRCH / write operations, results and errors, search bases, filters,
     attributes, sessions, replication CSN events and operation timings.
     One or more log files, in text (ANSI), HTML, JSON or jMeter/LoadRunner replay form.
@@ -188,7 +188,7 @@
 
 <main>
   <div id="drop" tabindex="0" role="button" aria-label="Drop one or more log files here">
-    <div class="big">Drop OpenLDAP <code>slapd</code> access logs here</div>
+    <div class="big">Drop LDAP access logs here</div>
     <div class="hint">
       or click to choose files, or <b>add a folder</b> — a folder is walked
       recursively, which is how the logs of several servers are gathered in one
@@ -334,7 +334,7 @@
 </main>
 
 <footer>
-  slaplog <span id="version"></span> — OpenLDAP Log Analysis Tool · AGPL-3.0-or-later · © 2026 Manuel FLURY ·
+  slaplog <span id="version"></span> — LDAP Log Analysis Tool · AGPL-3.0-or-later · © 2026 Manuel FLURY ·
   <a href="https://github.com/zx97/slaplog" target="_blank" rel="noopener">source</a>
 </footer>
 
@@ -862,7 +862,7 @@
   // A file with no recognisable slapd log line (an LDIF export, a config
   // file, …) is refused instead of being analysed as a pile of unknown lines.
   const NOT_A_LOG =
-    "not an OpenLDAP log file (no dated slapd line found) — it was skipped";
+    "not a supported LDAP log file (no dated slapd line found) — it was skipped";
 
   // The state files of this run: those chosen in the field, plus any dropped in
   // the log area that the browser would not let us mirror into it.
@@ -1076,7 +1076,7 @@
       const text = captured.join("\n") + (captured.length ? "\n" : "");
       let diag = captured.filter((l) => /^slaplog\(wasm\)/.test(l)).join("\n");
       if (skipped.length) {
-        const note = skipped.map((s) => `slaplog(wasm): not an OpenLDAP log file — skipped: ${s}`)
+        const note = skipped.map((s) => `slaplog(wasm): not a supported LDAP log file — skipped: ${s}`)
                             .join("\n");
         diag = diag ? diag + "\n" + note : note;
       }

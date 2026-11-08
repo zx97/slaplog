@@ -495,7 +495,7 @@ extern "C" EMSCRIPTEN_KEEPALIVE int slaplog_add_file(const char* path) {
     if (!g_session->mismatch.empty()) return 1;   // not a resume
     switch (verdict) {
         case FileVerdict::NotLog:
-            std::cerr << "slaplog(wasm): not an OpenLDAP log file: " << path << "\n";
+            std::cerr << "slaplog(wasm): not a supported LDAP log file: " << path << "\n";
             return 2;
         case FileVerdict::Empty:
             return 3;
@@ -575,7 +575,7 @@ extern "C" EMSCRIPTEN_KEEPALIVE int slaplog_run(const char* args) {
         end_input();
     }
     if (analysed == 0 && g_session->resume_servers.empty()) {
-        std::cerr << "slaplog(wasm): no OpenLDAP log file to analyse\n";
+        std::cerr << "slaplog(wasm): no LDAP log file to analyse\n";
         teardown_session();
         return 1;
     }
@@ -604,7 +604,7 @@ int main(int argc, char** argv) {
         end_input();
     }
     if (analysed == 0 && g_session->resume_servers.empty()) {
-        std::cerr << "slaplog(wasm): no OpenLDAP log file to analyse\n";
+        std::cerr << "slaplog(wasm): no LDAP log file to analyse\n";
         teardown_session();
         return 1;
     }

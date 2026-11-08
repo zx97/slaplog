@@ -93,4 +93,59 @@ else
     echo "opendj: mixed run names the skipped format FAIL"; fail=1
 fi
 
+# --- shapes seen in a real OpenDJ 5.2 access log ---------------------------
+# OpenDJ spells the rename "MODIFYDN" (older documents say "MODDN"), COMPARE
+# names its attribute with attr=, and the handler protocol is on CONNECT.
+cat > "$SCRATCH/real.log" <<'LOG'
+[08/Nov/2026:10:51:32 +0000] CONNECT conn=1 from=192.0.2.10:33000 to=192.0.2.20:1636 protocol=LDAPS
+[08/Nov/2026:10:51:32 +0000] BIND REQ conn=1 op=0 msgID=1 version=3 type=SIMPLE dn="cn=Directory Manager"
+[08/Nov/2026:10:51:32 +0000] BIND RES conn=1 op=0 msgID=1 result=0 authDN="cn=Directory Manager,cn=Root DNs,cn=config" etime=3
+[08/Nov/2026:10:51:32 +0000] COMPARE REQ conn=1 op=1 msgID=2 dn="uid=user01,ou=People,dc=example,dc=org" attr=cn
+[08/Nov/2026:10:51:32 +0000] COMPARE RES conn=1 op=1 msgID=2 result=6 etime=1
+[08/Nov/2026:10:51:32 +0000] MODIFYDN REQ conn=1 op=2 msgID=3 dn="uid=user03,ou=People,dc=example,dc=org" newRDN="uid=user33" deleteOldRDN="true"
+[08/Nov/2026:10:51:32 +0000] MODIFYDN RES conn=1 op=2 msgID=3 result=0 etime=3
+[08/Nov/2026:10:51:32 +0000] DELETE REQ conn=1 op=3 msgID=4 dn="uid=user33,ou=People,dc=example,dc=org"
+[08/Nov/2026:10:51:32 +0000] DELETE RES conn=1 op=3 msgID=4 result=0 etime=1
+[08/Nov/2026:10:51:32 +0000] DISCONNECT conn=1 reason="Client Disconnect"
+LOG
+check "real shapes: lines"   10 "$(stat_of "$SCRATCH/real.log" "Lines processed")"
+check "real shapes: unknown"  0 "$(stat_of "$SCRATCH/real.log" "Unknown lines")"
+check "real shapes: connections" "1 / 1" "$(stat_of "$SCRATCH/real.log" "Connections opened / closed")"
+if json_has '"MODRDN": 1' "$SCRATCH/real.log" &&
+   json_has '"CMP": 1' "$SCRATCH/real.log" &&
+   json_has '"DEL": 1' "$SCRATCH/real.log"; then
+    echo "opendj: MODIFYDN/COMPARE/DELETE counted OK"
+else
+    echo "opendj: MODIFYDN/COMPARE/DELETE counted FAIL"; fail=1
+fi
+if json_has '"ldaps": 1' "$SCRATCH/real.log"; then
+    echo "opendj: LDAPS bind transport OK"
+else
+    echo "opendj: LDAPS bind transport FAIL"; fail=1
+fi
+
+# A successful StartTLS turns the connection into a TLS one: the bind that
+# follows is reported as "ldap + StartTLS" (see the first fixture).
+if json_has '"ldap + StartTLS": 1' "$SCRATCH/access.log"; then
+    echo "opendj: StartTLS bind transport OK"
+else
+    echo "opendj: StartTLS bind transport FAIL"; fail=1
+fi
+
+# The reverse order of the mixed run: an OpenDJ file first must fix the OpenDJ
+# parser, so a 389-ds file that follows is the one skipped.
+cp "$SCRATCH/access.log" "$SCRATCH/a_opendj.log"
+cat > "$SCRATCH/z_389.log" <<'LOG'
+[17/Oct/2026:02:00:47.302202000 +0200] conn=1 fd=7 slot=0 connection from 192.0.2.10 to 192.0.2.20
+LOG
+env -u TZ "$BIN" -q -o text -s stats "$SCRATCH/a_opendj.log" "$SCRATCH/z_389.log" \
+    >"$SCRATCH/mixed2.txt" 2>"$SCRATCH/mixed2.err"
+check "mixed reversed: only the OpenDJ file is counted" 9 \
+    "$(grep -F '| Lines processed' "$SCRATCH/mixed2.txt" | sed 's/.*| \(.*\)| *$/\1/' | sed 's/ *$//')"
+if grep -q "different log format for this run" "$SCRATCH/mixed2.err"; then
+    echo "opendj: reversed mixed run names the skipped format OK"
+else
+    echo "opendj: reversed mixed run names the skipped format FAIL"; fail=1
+fi
+
 exit $fail

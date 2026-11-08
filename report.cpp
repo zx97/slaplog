@@ -6,7 +6,7 @@
     Copyright (c) 2026 Manuel FLURY
     All rights reserved.
     
-    This file is part of slaplog - an OpenLDAP Log Analysis Tool.
+    This file is part of slaplog - an LDAP Log Analysis Tool.
     
     Licensed under the GNU Affero General Public License v3.0 (AGPL-3.0-or-later).
     See the LICENSE file distributed with this work for full license text.
@@ -622,7 +622,7 @@ void print_text_report(const Aggregator& agg, double processing_time, bool compa
         return COLOR_RED;
     };
 
-    std::cout << COLOR_BOLD << COLOR_BLUE << "OpenLDAP Log Analysis Report" << COLOR_RESET;
+    std::cout << COLOR_BOLD << COLOR_BLUE << "LDAP Log Analysis Report" << COLOR_RESET;
     if (!custom_title.empty()) {
         std::cout << " - " << custom_title;
     }
@@ -1493,7 +1493,7 @@ void print_html_report(const Aggregator& agg, double duration, bool compact, con
     std::cout << "</head>\n<body" << (tabs ? " class=\"sl-tabbed\"" : "") << ">\n";
 
     // Header
-    std::cout << "<h1>OpenLDAP Log Analysis Report";
+    std::cout << "<h1>LDAP Log Analysis Report";
     if (!custom_title.empty()) {
         std::cout << " - " << custom_title;
     }
@@ -2229,9 +2229,9 @@ void print_html_report(const Aggregator& agg, double duration, bool compact, con
     // Footer
     if (g_show_version)
         std::cout << "<div class=\"footer\">slaplog v" << SLAPLOG_VERSION
-                  << " &mdash; OpenLDAP Log Analysis Report</div>\n";
+                  << " &mdash; LDAP Log Analysis Report</div>\n";
     else
-        std::cout << "<div class=\"footer\">OpenLDAP Log Analysis Report</div>\n";
+        std::cout << "<div class=\"footer\">LDAP Log Analysis Report</div>\n";
     // Long tables are collapsed client-side: the first rows are shown, the tail
     // is revealed by a button.  Doing it generically here means every section
     // benefits without the emitters having to know about it.
@@ -2635,7 +2635,7 @@ void print_json_report(const Aggregator& agg, double duration, bool /*compact*/,
     // reports (text, HTML) only.  Appending it here also crashed:
     // `json += " - " + title` resolves to the array push_back() overload with
     // this nlohmann version and throws type_error.308.
-    report["title"] = "OpenLDAP Log Analysis Report";
+    report["title"] = "LDAP Log Analysis Report";
 
     // Top-level scalar metrics
     report["processing_time"] = duration;

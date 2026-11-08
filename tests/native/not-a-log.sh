@@ -1,5 +1,5 @@
 #!/bin/sh
-# tests/native/not-a-log.sh — a file that is not an OpenLDAP log is refused.
+# tests/native/not-a-log.sh — a file that is not an LDAP log is refused.
 #
 # Passing an LDIF export (or any other text file) by mistake used to fill the
 # report with unknown lines and empty statistics.  The head of every input is
@@ -56,9 +56,9 @@ for f in export.ldif export.ldif.gz export.ldif.bz2 export.ldif.xz; do
     env -u TZ "$BIN" -q "$SCRATCH/$f" >"$SCRATCH/out" 2>"$SCRATCH/err" || rc=$?
     check "$f: exit status" 1 "$rc"
     check "$f: names the problem" yes \
-        "$(contains "$SCRATCH/err" 'not an OpenLDAP log file')"
+        "$(contains "$SCRATCH/err" 'not a supported LDAP log file')"
     check "$f: no report emitted" no \
-        "$(contains "$SCRATCH/out" 'OpenLDAP Log Analysis Report')"
+        "$(contains "$SCRATCH/out" 'LDAP Log Analysis Report')"
 done
 
 # ------------------------------------------------------------------
@@ -69,7 +69,7 @@ rc=0
 env -u TZ "$BIN" -q "$SCRATCH/firmware.bin" >"$SCRATCH/out" 2>"$SCRATCH/err" || rc=$?
 check "binary: exit status" 1 "$rc"
 check "binary: names the problem" yes \
-    "$(contains "$SCRATCH/err" 'not an OpenLDAP log file')"
+    "$(contains "$SCRATCH/err" 'not a supported LDAP log file')"
 
 # ------------------------------------------------------------------
 # 3. A mixed run keeps the log and skips the export.
@@ -79,7 +79,7 @@ env -u TZ "$BIN" -q -o text "$SCRATCH/access.log" "$SCRATCH/export.ldif" \
     >"$SCRATCH/out" 2>"$SCRATCH/err" || rc=$?
 check "mixed: exit status" 0 "$rc"
 check "mixed: report produced" yes \
-    "$(contains "$SCRATCH/out" 'OpenLDAP Log Analysis Report')"
+    "$(contains "$SCRATCH/out" 'LDAP Log Analysis Report')"
 check "mixed: export named on stderr" yes \
     "$(contains "$SCRATCH/err" 'export.ldif')"
 
@@ -95,7 +95,7 @@ rc=0
 env -u TZ "$BIN" -q -o text "$SCRATCH/banner.log" >"$SCRATCH/out" 2>"$SCRATCH/err" || rc=$?
 check "banner: exit status" 0 "$rc"
 check "banner: no complaint" no \
-    "$(contains "$SCRATCH/err" 'not an OpenLDAP log file')"
+    "$(contains "$SCRATCH/err" 'not a supported LDAP log file')"
 
 if [ "$fail" -eq 0 ]; then
     echo "not-a-log: all OK"

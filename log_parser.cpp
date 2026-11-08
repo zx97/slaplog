@@ -6,7 +6,7 @@
     Copyright (c) 2026 Manuel FLURY
     All rights reserved.
     
-    This file is part of slaplog - an OpenLDAP Log Analysis Tool.
+    This file is part of slaplog - an LDAP Log Analysis Tool.
     
     Licensed under the GNU Affero General Public License v3.0 (AGPL-3.0-or-later).
     See the LICENSE file distributed with this work for full license text.
@@ -2384,9 +2384,18 @@ static bool ds_parse_conn_op(std::string_view& s, Event& ev) {
     }
     if (!ds_space(s)) return true;
     if (ds_take(s, "op=")) {
-        int oid = 0;
-        if (!ds_uint(s, oid)) return false;
-        ev.op = oid;
+        // "op=-1" marks an event that belongs to no operation (for example
+        // "fd=65 Disconnect - Operation canceled ...").  Keep ev.op unset so
+        // the event is not attributed to a phantom operation.
+        if (!s.empty() && s[0] == '-') {
+            s.remove_prefix(1);
+            int ignored = 0;
+            if (!ds_uint(s, ignored)) return false;
+        } else {
+            int oid = 0;
+            if (!ds_uint(s, oid)) return false;
+            ev.op = oid;
+        }
         // optional (<internal-id>)(<nested-count>)
         for (int k = 0; k < 2 && !s.empty() && s[0] == '('; ++k) {
             int v = 0;
@@ -2576,7 +2585,10 @@ static Event ds_parse_payload(std::string_view s, Event& ev) {
     }
 
     if (ds_take(s, "AUTOBIND")) {
-        ev.kind = "BIND_ANON";
+        // LDAPI autobind: 389-ds follows it with a regular "BIND ... method=sasl
+        // mech=EXTERNAL", so counting this line as a bind would double every
+        // LDAPI session.  Mark it recognised and let the BIND line count.
+        ev.kind = "DS_AUTOBIND";
         ds_space(s);
         if (ds_take(s, "dn=")) ds_quoted(s, ev.binddn);
         return ev;
@@ -2694,7 +2706,8 @@ Event parse_ds389_json_line(std::string_view text) {
         const std::string mech = str("mech");
         if (!mech.empty()) ev.mech = mech;
     } else if (op == "AUTOBIND") {
-        ev.kind = "BIND_ANON";
+        // Same reasoning as the text parser: the following BIND line counts.
+        ev.kind = "DS_AUTOBIND";
         ev.binddn = str("bind_dn");
     } else if (op == "UNBIND") {
         ev.kind = "UNBIND";
@@ -2904,7 +2917,7 @@ void update_aggregator(Aggregator& agg, const Event& ev,
         (ev.kind == "TITLE" || ev.kind == "STAT" || ev.kind == "ENTRY" ||
          ev.kind == "REFERRAL" || ev.kind == "VLV" || ev.kind == "SORT" ||
          ev.kind == "HAPROXY" || ev.kind == "UNPROCESSED" ||
-         ev.kind == "SERVER_LOG_CONT")) {
+         ev.kind == "DS_AUTOBIND" || ev.kind == "SERVER_LOG_CONT")) {
         agg.stats.lines++;
         return;
     }
@@ -2980,6 +2993,8 @@ void update_aggregator(Aggregator& agg, const Event& ev,
             auto& conn = ensure_conn(agg, server, cid);
             conn.fd = ev.fd;
             conn.src = ev.src;
+            // OpenDJ names the connection handler protocol on CONNECT.
+            if (ev.text.rfind("LDAPS", 0) == 0) conn.tls_established = true;
             agg.src_by_conn[ConnKey{server, cid}] = ev.src;
             // Update session correlation accept_ip
             std::tuple<std::string,int,int> sc_key{server, agg.restart_count, cid};
@@ -3148,6 +3163,10 @@ void update_aggregator(Aggregator& agg, const Event& ev,
     }
 
     auto& conn = ensure_conn(agg, server, cid);
+    if (ev.tls_started) {   // OpenDJ StartTLS succeeded on this connection
+        conn.tls_established = true;
+        conn.starttls = true;
+    }
     auto& op = ensure_op(agg, server, cid, opid);
     std::string who = app_for_conn(agg, server, cid);
 

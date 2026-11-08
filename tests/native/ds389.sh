@@ -201,4 +201,39 @@ else
     echo "ds389: mixed run names the skipped format FAIL"; fail=1
 fi
 
+# --- LDAPI autobind, op=-1 and internal-op shapes ---------------------------
+# Taken from a real 389-Directory/3.1.2 access log:
+#   * AUTOBIND is followed by a regular BIND method=sasl mech=EXTERNAL, so it
+#     must be recognised without counting a second bind;
+#   * "op=-1" belongs to no operation and must not be treated as a parse error;
+#   * internal operations appear as "conn=N (Internal) op=M(i)(n)" and
+#     "conn=Internal(N) op=M(i)(n)".
+cat > "$SCRATCH/ldapi.log" <<'EOF'
+[08/Nov/2026:10:33:56.404213041 +0000] conn=1 fd=64 slot=64 connection from local to /run/slapd-localhost.socket
+[08/Nov/2026:10:33:56.404438093 +0000] conn=1 AUTOBIND dn="cn=Directory Manager"
+[08/Nov/2026:10:33:56.404443163 +0000] conn=1 op=0 BIND dn="cn=Directory Manager" method=sasl version=3 mech=EXTERNAL
+[08/Nov/2026:10:33:56.404460886 +0000] conn=1 op=0 RESULT err=0 tag=97 nentries=0 etime=0.000165731 dn="cn=Directory Manager"
+[08/Nov/2026:10:33:56.750793386 +0000] conn=1 op=-1 fd=64 Disconnect - Operation canceled - Connection aborted - A1
+[08/Nov/2026:10:34:44.857423062 +0000] conn=13 (Internal) op=0(1)(1) SRCH base="cn=Directory Manager" scope=0 filter="(objectclass=*)" attrs=ALL
+[08/Nov/2026:10:34:44.857423063 +0000] conn=13 (Internal) op=0(1)(1) RESULT err=32 tag=48 nentries=0 etime=0.000035416
+[08/Nov/2026:10:34:44.857428463 +0000] conn=Internal(0) op=0(2)(2) RESULT err=32 tag=48 nentries=0 etime=0.000047058
+EOF
+check "ldapi: lines"   8 "$(stat_of "$SCRATCH/ldapi.log" "Lines processed")"
+check "ldapi: unknown" 0 "$(stat_of "$SCRATCH/ldapi.log" "Unknown lines")"
+check "ldapi: connections" "1 / 1" "$(stat_of "$SCRATCH/ldapi.log" "Connections opened / closed")"
+if env -u TZ "$BIN" -q -o json "$SCRATCH/ldapi.log" 2>/dev/null \
+        | grep -q '"SASL": 1'; then
+    echo "ds389: AUTOBIND does not double the bind count OK"
+else
+    echo "ds389: AUTOBIND does not double the bind count FAIL"; fail=1
+fi
+
+# The JSON stream carries the same AUTOBIND event.
+cat > "$SCRATCH/ldapi.json" <<'EOF'
+{"local_time":"2026-11-08T10:41:11.343490330 +0000","operation":"AUTOBIND","key":"1-1","conn_id":1,"bind_dn":"cn=Directory Manager"}
+{"local_time":"2026-11-08T10:41:11.343000000 +0000","operation":"CONNECTION","key":"1-1","conn_id":1,"client_ip":"192.0.2.10"}
+{"local_time":"2026-11-08T10:41:11.500000000 +0000","operation":"BIND","key":"1-1","conn_id":1,"op_id":0,"bind_dn":"cn=Directory Manager","method":"sasl","mech":"EXTERNAL"}
+EOF
+check "ldapi json: unknown" 0 "$(stat_of "$SCRATCH/ldapi.json" "Unknown lines")"
+
 exit $fail

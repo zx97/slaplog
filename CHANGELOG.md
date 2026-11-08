@@ -11,10 +11,10 @@ The project is distributed under the **AGPL-3.0** license — see [LICENSE](LICE
 ### Added
 
 - **OpenDJ / ForgeRock DS / PingDS / Oracle Unified Directory** access logs
-  (OpenDS family, default text format): `[dd/MMM/yyyy:HH:mm:ss ±HHMM]` with
-  `CONNECT`, `DISCONNECT` and `BIND/SEARCH/ADD/DELETE/MODIFY/MODDN/COMPARE/
-  ABANDON/UNBIND/EXTENDED REQ|RES`.  Scopes are decoded from their names and
-  `etime` (milliseconds) is converted to seconds.  Detected per file;
+  (OpenDS family, default text format): `[dd/MMM/yyyy:HH:mm:ss[.SSS] ±HHMM]`
+  with `CONNECT`, `DISCONNECT` and `BIND/SEARCH/ADD/DELETE/MODIFY/MODIFYDN/
+  COMPARE/ABANDON/UNBIND/EXTENDED REQ|RES`.  Scopes are decoded from their
+  names and `etime` (milliseconds) is converted to seconds.  Detected per file;
   `--log-format opendj` forces the parser.  The `combined` log format and the
   common-audit JSON/CSV logs are not supported yet.
 - **Dialect registry**: each input format is now a table entry
@@ -22,11 +22,34 @@ The project is distributed under the **AGPL-3.0** license — see [LICENSE](LICE
   and its report name.  A file is bound to one dialect once, so the per-line
   loop follows a single pointer and a new format lives in its own source file
   (`dialect_opendj.cpp`) without touching the core.
+- **Bind transport for OpenDJ**: the `protocol=` field on `CONNECT` reports
+  `ldaps`, and a successful `StartTLS` extended result makes a later bind show
+  as `ldap + StartTLS`.
 
 ### Changed
 
+- The report is now named **LDAP Log Analysis Report** (was "OpenLDAP Log
+  Analysis Report") and the CLI describes slaplog as *an LDAP log analyzer*,
+  since 389-ds and OpenDJ logs are analysed alongside OpenLDAP.
 - No measurable change on OpenLDAP: byte-identical reports, identical
   single-thread and 21.6 GB corpus times.
+
+### Fixed
+
+- **389-ds `AUTOBIND`** (LDAPI) was reported as an unknown line: it is now
+  recognised and not counted as a bind, because 389-ds logs a regular
+  `BIND … method=sasl mech=EXTERNAL` right after it.
+- **389-ds `op=-1` disconnects** (`fd=… Disconnect - Operation canceled …`)
+  were reported as unknown lines; they now close the connection normally.
+- **OpenDJ rename operations** are logged as `MODIFYDN`, not the documented
+  `MODDN`; both spellings are accepted.  `COMPARE REQ` reads its `attr=` field.
+
+### Verified
+
+- The 389-ds and OpenDJ parsers were checked against logs produced by real
+  `389ds/dirsrv` (3.1.2) and `openidentityplatform/opendj` (5.2.0) instances:
+  zero unknown lines in text and JSON, with AUTOBIND, internal operations,
+  unindexed searches, LDAPS and StartTLS traffic.
 
 ## [5.2.1] - 2026-11-08
 

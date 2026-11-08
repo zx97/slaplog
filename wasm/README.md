@@ -1,7 +1,7 @@
 # slaplog — WebAssembly build
 
-Run **slaplog** entirely inside the browser. Drag an OpenLDAP `slapd` access
-log onto the page and the report is produced locally by a WebAssembly module —
+Run **slaplog** entirely inside the browser. Drag LDAP access logs (OpenLDAP `slapd`, 389-ds, OpenDJ)
+onto the page and the report is produced locally by a WebAssembly module —
 **the file never leaves your machine**.
 
 **Live build:** <https://slaplog.pages.dev/>

@@ -6,7 +6,7 @@
     Copyright (c) 2026 Manuel FLURY
     All rights reserved.
     
-    This file is part of slaplog - an OpenLDAP Log Analysis Tool.
+    This file is part of slaplog - an LDAP Log Analysis Tool.
     
     Licensed under the GNU Affero General Public License v3.0 (AGPL-3.0-or-later).
     See the LICENSE file distributed with this work for full license text.
@@ -296,6 +296,7 @@ struct Event {
     std::string csn;       // Context Sequence Number (replication).
     std::string mech;      // SASL mechanism name.
     bool not_indexed = false;  // 389-ds RESULT notes=U/A: partially/fully unindexed.
+    bool tls_started = false;  // OpenDJ: successful StartTLS extended result.
 
     // --- Session tracking ---
     std::map<std::string, std::string> track; // Key-value pairs from session-tracking control.

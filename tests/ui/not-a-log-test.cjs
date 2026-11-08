@@ -83,9 +83,9 @@ function sendText(module, text) {
   const once = runOnce(module, "-o text", [ldifPath]);
   check("one-shot: exit status is 1", once.rc === 1, `got ${once.rc}`);
   check("one-shot: says it is not a log",
-        /no OpenLDAP log file to analyse/.test(once.text), once.text.slice(0, 200));
+        /no LDAP log file to analyse/.test(once.text), once.text.slice(0, 200));
   check("one-shot: no report emitted",
-        !/OpenLDAP Log Analysis Report/.test(once.text));
+        !/LDAP Log Analysis Report/.test(once.text));
 
   // ----------------------------------------------------------------
   // 2. Session API, plain text: refused at input_end (code 2).

@@ -151,7 +151,8 @@ struct Fields {
     std::optional<int> conn, op, msgid, err, nentries, scope;
     std::optional<double> etime;
     int method = -1;
-    std::string dn, authdn, authzid, base, filter, attrs, text, reason, oid, name, from;
+    std::string dn, authdn, authzid, base, filter, attrs, text, reason, oid, name,
+                from, protocol;
 };
 
 // key=value pairs; quoted values may contain spaces.
@@ -179,6 +180,7 @@ void parse_fields(std::string_view s, Fields& f) {
         else if (key == "base") f.base = val;
         else if (key == "filter") f.filter = val;
         else if (key == "attrs") f.attrs = val;
+        else if (key == "attr") f.attrs = val;     // COMPARE REQ names one attribute
         else if (key == "scope") f.scope = scope_value(val);
         else if (key == "type" && val == "SIMPLE") f.method = 128;
         else if (key == "type" && val == "SASL") f.method = 163;
@@ -187,6 +189,7 @@ void parse_fields(std::string_view s, Fields& f) {
         else if (key == "oid") f.oid = val;
         else if (key == "name") f.name = val;
         else if (key == "from") f.from = val;
+        else if (key == "protocol") f.protocol = val;
     }
 }
 
@@ -218,6 +221,7 @@ Event parse_opendj_line(std::string_view line) {
         ev.kind = "ACCEPT";
         ev.conn = f.conn;
         ev.src = f.from;
+        ev.text = f.protocol;   // LDAP or LDAPS: the bind table reports it
         return ev;
     }
     if (verb == "DISCONNECT") {
@@ -267,12 +271,13 @@ Event parse_opendj_line(std::string_view line) {
         } else if (verb == "MODIFY") {
             ev.kind = "MOD";
             ev.dn = f.dn;
-        } else if (verb == "MODDN") {
+        } else if (verb == "MODDN" || verb == "MODIFYDN") {
             ev.kind = "MODRDN";
             ev.dn = f.dn;
         } else if (verb == "COMPARE") {
             ev.kind = "CMP";
             ev.dn = f.dn;
+            ev.attrs = f.attrs;
         } else if (verb == "EXTENDED") {
             ev.kind = "EXT";
             ev.oid = f.oid.empty() ? f.name : f.oid;
@@ -294,6 +299,10 @@ Event parse_opendj_line(std::string_view line) {
     ev.etime = f.etime;
     ev.text = f.text;
     if (verb == "BIND" && !f.authdn.empty()) ev.binddn = f.authdn;
+    // A successful StartTLS extended result turns the connection into a TLS
+    // one, so a bind that follows is reported as "ldap + StartTLS".
+    if (verb == "EXTENDED" && f.name == "StartTLS" && f.err.value_or(-1) == 0)
+        ev.tls_started = true;
     return ev;
 }
 
@@ -310,8 +319,9 @@ bool classify_opendj(const std::vector<std::string>& head) {
         const std::string_view verb = token(s);
         if (verb == "CONNECT" || verb == "DISCONNECT" || verb == "TLS") return true;
         if (verb == "BIND" || verb == "SEARCH" || verb == "ADD" || verb == "DELETE" ||
-            verb == "MODIFY" || verb == "MODDN" || verb == "COMPARE" ||
-            verb == "ABANDON" || verb == "UNBIND" || verb == "EXTENDED") {
+            verb == "MODIFY" || verb == "MODDN" || verb == "MODIFYDN" ||
+            verb == "COMPARE" || verb == "ABANDON" || verb == "UNBIND" ||
+            verb == "EXTENDED") {
             space(s);
             const std::string_view phase = token(s);
             return phase == "REQ" || phase == "RES";

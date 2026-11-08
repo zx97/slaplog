@@ -1,4 +1,4 @@
-# slaplog — OpenLDAP Access Log Analyzer
+# slaplog — LDAP Access Log Analyzer
 
 **SPDX-License-Identifier:** AGPL-3.0-or-later  
 **License:** GNU Affero General Public License v3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)  
@@ -8,7 +8,7 @@
 
 See the [CHANGELOG](../CHANGELOG.md) for the release history.
 
-This file is part of slaplog - an OpenLDAP Log Analysis Tool.
+This file is part of slaplog - an LDAP Log Analysis Tool.
 
 Licensed under the GNU Affero General Public License v3.0 (AGPL-3.0-or-later).
 See the LICENSE file distributed with this work for full license text.
@@ -41,9 +41,10 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 ## Overview
 
-`slaplog` is a command-line tool that parses OpenLDAP `slapd` access logs and
-produces structured reports in text (with ANSI color), HTML, JSON, or replay
-format (for jMeter/LoadRunner).
+`slaplog` is a command-line tool that parses LDAP server access logs —
+OpenLDAP `slapd`, 389 Directory Server, and the OpenDJ / ForgeRock DS / PingDS /
+Oracle Unified Directory family — and produces structured reports in text
+(with ANSI color), HTML, JSON, or replay format (for jMeter/LoadRunner).
 
 It is designed to handle large log volumes (multi-GB, thousands of files) by
 processing files in parallel with a bounded worker pool (`-j`, default CPU
@@ -55,7 +56,9 @@ Key features:
 
 - **Multi-format support**: Parses all OpenLDAP log formats (debug, syslog-utc,
   syslog-localtime, rfc3339-utc, ol26, rfc3339, syslog) with automatic per-line
-  detection, supporting mixed formats in a single file.
+  detection, supporting mixed formats in a single file.  389-ds and OpenDJ
+  access logs are detected once per file and read by a dedicated parser, so
+  the OpenLDAP path is unchanged.
 - **Replay output format**: Pipe-delimited single-line operations for
   jMeter/LoadRunner replay with configurable separators.
 - **Configurable date output**: Reports can output timestamps in rfc3339, iso8601,
@@ -131,6 +134,10 @@ each file, never per line, so an OpenLDAP run pays nothing for this.
 - Internal operations (`conn=Internal(0) …`, `conn=42 (Internal) …`) are
   analysed like other operations; `Disconnect` closes the connection; the
   `connection from … to …` line carries the client address.
+- `AUTOBIND` (LDAPI) is recognised without being counted as a bind: 389-ds
+  follows it with a regular `BIND … method=sasl mech=EXTERNAL`, which is the
+  line that counts.  A disconnect carrying `op=-1` belongs to no operation and
+  closes the connection normally.
 - `--log-format 389ds`, `389ds-json`, `389ds-json-pretty`, `389ds-errors` or
   `389ds-errors-json` **forces** that parser for every file, bypassing the head
   detection (useful for a file whose first records are unusual).  Without it,
@@ -171,11 +178,25 @@ report engine.  The default text format is supported:
   (the numeric offset is authoritative).
 - `CONNECT` / `DISCONNECT` become connection open/close; `<VERB> REQ` records
   the operation and `<VERB> RES` its result (`result=`, `nentries=`,
-  `message=`).
+  `message=`).  The `protocol=` field on `CONNECT` feeds the bind transport
+  table (`ldap` or `ldaps`), and a successful `StartTLS` extended result marks
+  the connection so a later bind shows as `ldap + StartTLS`.
+- Rename operations are logged as `MODIFYDN REQ` (some older documentation
+  writes `MODDN`); both spellings are accepted.  `COMPARE REQ` names its
+  attribute with `attr=`.
+- The fractional part of the timestamp (`HH:mm:ss.SSS`) is optional and both
+  forms occur in real logs; `etime` and the timestamp below come from a
+  verified OpenDJ 5.2 access log.
 - `etime` is in **milliseconds** in this log; reports show seconds.
 - Scopes are names (`baseObject`, `singleLevel`, `wholeSubtree`,
   `subordinateSubtree`), mapped to the LDAP integers.
 - `--log-format opendj` forces the parser for every file.
+- **One format per run**, as for 389-ds: whichever access log comes first fixes
+  the parser, and a file of another format is skipped with a message (combine
+  the runs with `--save-state`/`--resume`).
+- The OpenDJ `errors` log is not an access log: it is refused with a message,
+  not folded into the report.  (The 389-ds errors log, by contrast, is
+  summarised by the existing counters.)
 - Not supported yet: the `combined` log format and the common-audit JSON/CSV
   access logs.
 

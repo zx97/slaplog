@@ -6,7 +6,7 @@
     Copyright (c) 2026 Manuel FLURY
     All rights reserved.
     
-    This file is part of slaplog - an OpenLDAP Log Analysis Tool.
+    This file is part of slaplog - an LDAP Log Analysis Tool.
     
     Licensed under the GNU Affero General Public License v3.0 (AGPL-3.0-or-later).
     See the LICENSE file distributed with this work for full license text.

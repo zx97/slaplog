@@ -1,15 +1,15 @@
 
-# slaplog — OpenLDAP Log Analysis Tool
+# slaplog — LDAP Log Analysis Tool
 
 **SPDX-License-Identifier:** AGPL-3.0-or-later  
 **License:** GNU Affero General Public License v3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)  
-**Version:** 5.0.0  
+**Version:** 5.3.0  
 **Author:** Manuel FLURY  
 **Copyright:** © 2026 Manuel FLURY. All rights reserved.
 
 See the [CHANGELOG](CHANGELOG.md) for the release history.  
   
-    This file is part of slaplog - an OpenLDAP Log Analysis Tool.  
+    This file is part of slaplog - an LDAP Log Analysis Tool.  
  
     Licensed under the GNU Affero General Public License v3.0 (AGPL-3.0-or-later).  
     See the LICENSE file distributed with this work for full license text.  
@@ -22,7 +22,9 @@ See the [CHANGELOG](CHANGELOG.md) for the release history.
     CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 
-Parse, analyze, and produce structured reports from OpenLDAP slapd access logs.
+Parse, analyze, and produce structured reports from LDAP server access logs:
+OpenLDAP `slapd`, 389 Directory Server, and the OpenDJ / ForgeRock DS / PingDS /
+Oracle Unified Directory family.
 
 ## Quick start
 
@@ -79,7 +81,10 @@ log are in [`doc/sample/`](doc/sample/); the same pages are also served from
   (Statistics table, html meta bar, JSON)
 - **Server events**: start/stop/shutdown detection
 - **Restart-aware**: handles slapd connection-ID counter resets
-- **Multi-format support**: parses debug, syslog-utc, syslog-localtime, rfc3339-utc formats with auto-detection
+- **Multi-format support**: parses all OpenLDAP timestamp formats (debug,
+  syslog-utc, syslog-localtime, rfc3339-utc, ol26, rfc3339, syslog) with
+  auto-detection; 389-ds and OpenDJ access logs are detected per file and read
+  by a dedicated monomorphic parser
 - **389 Directory Server**: text, JSON and json-pretty access logs are detected per file and analysed with the same reports
 - **OpenDJ / ForgeRock DS / PingDS / Oracle Unified Directory**: access logs in the default OpenDS text format are detected per file
 
@@ -137,7 +142,8 @@ See [doc/slaplog.md](doc/slaplog.md) for the full documentation.
 
 ## Supported Log Formats
 
-slaplog supports all OpenLDAP log formats with automatic per-line detection:
+slaplog supports all OpenLDAP log formats with automatic per-line detection,
+plus the 389 Directory Server and OpenDJ-family access logs (detected per file):
 
 | Format | Example | Description |
 |--------|---------|-------------|
@@ -154,8 +160,6 @@ slaplog supports all OpenLDAP log formats with automatic per-line detection:
 | `389ds-json` | `{"local_time":…,"operation":"SEARCH",…}` | 389-ds JSON access log (auto-detected per file) |
 | `389ds-json-pretty` | multi-line JSON objects | 389-ds json-pretty access log (auto-detected per file) |
 | `389ds-errors` | `[07/Nov/2026:20:15:30.1 +0100] - ERR - ldbm_back_search - …` | 389-ds text errors log (auto-detected per file) |
-| `389ds-errors-json` | `{"local_time":…,"severity":"ERR",…}` | 389-ds JSON errors log (auto-detected per file) |
-| `389ds-errors` | `[07/Nov/2026:20:15:30.1 +0100] - ERR - ldbm_back_search - …` | 389-ds text errors log (also auto-detected) |
 | `389ds-errors-json` | `{"local_time":…,"severity":"ERR",…}` | 389-ds JSON errors log (auto-detected per file) |
 | `opendj` | `[20/Apr/2012:13:31:05 +0200] SEARCH REQ conn=5 op=2 …` | OpenDJ / ForgeRock DS / PingDS / OUD access log (auto-detected per file) |
 

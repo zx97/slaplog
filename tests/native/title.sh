@@ -32,12 +32,12 @@ check() {
 # text report: the heading keeps the whole title
 env -u TZ "$BIN" -q -o text --title "$TITLE" "$SCRATCH/a.log" > "$SCRATCH/t.txt" 2>/dev/null
 check "text heading carries the full title" \
-    "$(count "OpenLDAP Log Analysis Report - $TITLE" "$SCRATCH/t.txt")"
+    "$(count "LDAP Log Analysis Report - $TITLE" "$SCRATCH/t.txt")"
 
 # JSON: --title is ignored by design (and must not fail, it used to throw).
 env -u TZ "$BIN" -q -o json --title "$TITLE" "$SCRATCH/a.log" > "$SCRATCH/t.json" 2>/dev/null
 check "json output ignores --title" \
-    "$(count '"title": "OpenLDAP Log Analysis Report"' "$SCRATCH/t.json")"
+    "$(count '"title": "LDAP Log Analysis Report"' "$SCRATCH/t.json")"
 
 # HTML: the <title> element carries the whole title
 env -u TZ "$BIN" -q -o html --title "$TITLE" "$SCRATCH/a.log" > "$SCRATCH/t.html" 2>/dev/null
@@ -47,6 +47,6 @@ check "html <title> carries the full title" \
 # no --title: the default heading is unchanged
 env -u TZ "$BIN" -q -o json "$SCRATCH/a.log" > "$SCRATCH/n.json" 2>/dev/null
 check "without --title the title is the default" \
-    "$(count '"title": "OpenLDAP Log Analysis Report"' "$SCRATCH/n.json")"
+    "$(count '"title": "LDAP Log Analysis Report"' "$SCRATCH/n.json")"
 
 exit $n
