@@ -1,0 +1,6 @@
+# The image only needs the prebuilt binary selected by TARGETARCH; the source
+# tree and the build artefacts stay out of the context.
+*
+!dist/
+!dist/slaplog-linux-amd64
+!dist/slaplog-linux-arm64

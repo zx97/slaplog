@@ -6,6 +6,27 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 The project is distributed under the **AGPL-3.0** license — see [LICENSE](LICENSE).
 
+## [5.4.0] - 2026-11-08
+
+### Added
+
+- **Release packages**: every tagged release now ships Linux tarballs, `.deb`
+  and `.rpm` packages for x86-64 and arm64, a `SHA256SUMS` file, and a
+  multi-arch container image.  The binaries are built on AlmaLinux 9
+  (glibc 2.34) with an explicit instruction-set baseline, so they run on
+  Debian 12+, Ubuntu 22.04+ and RHEL 9+.  `packaging/README.md` documents the
+  local build and the CI; `packaging/build-local.sh` produces the same
+  artefacts on a workstation.
+- **GitHub Actions `release` workflow** (tag push, or manual dispatch that
+  builds without publishing) and GitLab `package` / `container-image` jobs.
+  GitLab uploads the packages to its Generic Package Registry; GitHub attaches
+  them to the release and pushes the image to `ghcr.io/zx97/slaplog`.
+
+### Changed
+
+- Version 5.4.0.  No analyzer change: the reports and timings of 5.3.1 are
+  unchanged.
+
 ## [5.3.1] - 2026-11-08
 
 ### Added

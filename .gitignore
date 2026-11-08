@@ -39,6 +39,12 @@ build_number.txt
 *.tmp
 session*.md
 
+# === Release packaging ===
+!/Dockerfile
+!/.dockerignore
+!/packaging/
+!/packaging/**
+
 # === Build tooling ===
 # tools/gen_embedded.py generates embedded.hpp from doc/slaplog.md + LICENSE.
 !/tools/
@@ -64,3 +70,8 @@ session*.md
 # documentation.  *.md is whitelisted above, so it needs its own rule; keep this
 # block last, otherwise an earlier "!..." would pull the file back in.
 /HANDOFF.md
+
+# Release packaging artefacts (packaging/build-local.sh, CI)
+/dist/
+/pkgroot/
+/stage/

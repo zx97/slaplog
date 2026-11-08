@@ -3,7 +3,7 @@
 
 **SPDX-License-Identifier:** AGPL-3.0-or-later  
 **License:** GNU Affero General Public License v3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)  
-**Version:** 5.3.0  
+**Version:** 5.4.0  
 **Author:** Manuel FLURY  
 **Copyright:** © 2026 Manuel FLURY. All rights reserved.
 
@@ -44,6 +44,29 @@ or the
 — full HTML reports, rendered in the browser. The sources, the generator and the
 log are in [`doc/sample/`](doc/sample/); the same pages are also served from
 <https://slaplog.pages.dev/sample/>.
+
+## Install
+
+Prebuilt artefacts are attached to each release:
+
+| Artefact | Target |
+|---|---|
+| `slaplog_<version>-1_amd64.deb`, `..._arm64.deb` | Debian 12+, Ubuntu 22.04+ |
+| `slaplog-<version>-1.x86_64.rpm`, `...aarch64.rpm` | RHEL 9+, AlmaLinux 9+, Rocky 9+ |
+| `slaplog-<version>-linux-<arch>.tar.gz` | any Linux with glibc 2.34+ |
+| `ghcr.io/zx97/slaplog:<version>` | container image, amd64 + arm64 |
+
+```bash
+sudo apt install ./slaplog_<version>-1_amd64.deb
+sudo dnf install ./slaplog-<version>-1.x86_64.rpm
+podman run --rm -v "$PWD:/logs:ro" ghcr.io/zx97/slaplog:<version> -q /logs/access.log
+```
+
+The packages install `/usr/bin/slaplog` and the documentation under
+`/usr/share/doc/slaplog/`.  The binaries are built on AlmaLinux 9 with an
+explicit instruction-set baseline (never `-march=native`), so they run on
+every current Debian, Ubuntu and RHEL release.  Build from source below for
+another architecture or for a machine-specific binary.
 
 ## Features
 

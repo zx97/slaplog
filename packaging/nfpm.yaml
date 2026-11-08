@@ -1,0 +1,69 @@
+# nfpm configuration for the .deb and .rpm packages.
+#
+# Run nfpm from a staging directory that contains the files below at these
+# relative paths (the CI calls it "pkgroot"):
+#   slaplog          the binary for the target architecture
+#   LICENSE  README.md  CHANGELOG.md  doc/slaplog.md
+#
+# The CI sets:
+#   PKG_VERSION  package version, without the leading "v" (e.g. 5.4.0)
+#   PKG_ARCH     target package architecture: amd64/arm64 for deb,
+#                x86_64/aarch64 for rpm
+#
+# Usage:
+#   (cd pkgroot && PKG_VERSION=5.4.0 PKG_ARCH=amd64 \
+#      nfpm package -f ../packaging/nfpm.yaml -p deb -t ../dist/)
+#   (cd pkgroot && PKG_VERSION=5.4.0 PKG_ARCH=x86_64 \
+#      nfpm package -f ../packaging/nfpm.yaml -p rpm -t ../dist/)
+name: slaplog
+arch: ${PKG_ARCH}
+platform: linux
+version: ${PKG_VERSION}
+release: "1"
+section: utils
+priority: optional
+maintainer: Manuel FLURY
+vendor: Manuel FLURY
+homepage: https://github.com/zx97/slaplog
+license: AGPL-3.0-or-later
+description: |
+  (Open)LDAP log analyzer.
+
+  Parses OpenLDAP slapd access logs (all timestamp formats), 389 Directory
+  Server access and errors logs (text and JSON) and OpenDJ / ForgeRock DS /
+  PingDS / Oracle Unified Directory access and errors logs, then produces
+  text, colour text, HTML, JSON or replay reports.  Designed for multi-GB,
+  multi-file log sets.
+contents:
+  - src: slaplog
+    dst: /usr/bin/slaplog
+    file_info:
+      mode: 0755
+  - src: LICENSE
+    dst: /usr/share/doc/slaplog/LICENSE
+  - src: README.md
+    dst: /usr/share/doc/slaplog/README.md
+  - src: CHANGELOG.md
+    dst: /usr/share/doc/slaplog/CHANGELOG.md
+  - src: doc/slaplog.md
+    dst: /usr/share/doc/slaplog/slaplog.md
+rpm:
+  group: Applications/System
+  summary: (Open)LDAP log analyzer
+overrides:
+  deb:
+    depends:
+      - libc6 (>= 2.34)
+      - libstdc++6 (>= 11)
+      - libpcre2-8-0 (>= 10.34)
+      - zlib1g
+      - libbz2-1.0
+      - liblzma5
+  rpm:
+    depends:
+      - glibc >= 2.34
+      - libstdc++ >= 11
+      - pcre2
+      - zlib
+      - bzip2-libs
+      - xz-libs
