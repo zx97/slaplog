@@ -148,4 +148,41 @@ else
     echo "opendj: reversed mixed run names the skipped format FAIL"; fail=1
 fi
 
+# --- errors log: counters per severity and category ------------------------
+# Format: "[ts] category=… severity=… msgID=… msg=…"; a line without a
+# timestamp is a continuation (Java stack trace), counted but not parsed.
+cat > "$SCRATCH/errors.log" <<'LOG'
+[08/Nov/2026:10:48:00 +0000] category=JVM severity=NOTICE msgID=21 msg=Installation Directory:  /opt/opendj
+[08/Nov/2026:10:48:00 +0000] category=PROTOCOL severity=ERROR msgID=42 msg=The LDAP connection handler failed
+org.opends.server.protocols.ldap.LDAPConnectionHandler
+        at org.opends.server.core.DirectoryServer.<init>(DirectoryServer.java:123)
+[08/Nov/2026:10:48:10 +0000] category=CORE severity=NOTICE msgID=135 msg=The Directory Server has started successfully
+LOG
+check "errors: lines"   5 "$(stat_of "$SCRATCH/errors.log" "Lines processed")"
+check "errors: unknown" 0 "$(stat_of "$SCRATCH/errors.log" "Unknown lines")"
+check "errors: entries" 3 "$(stat_of "$SCRATCH/errors.log" "Server log entries")"
+check "errors: severities" "NOTICE 2, ERROR 1" \
+    "$(stat_of "$SCRATCH/errors.log" "Severities")"
+check "errors: forced format matches auto" 5 \
+    "$(stat_of "$SCRATCH/errors.log" "Lines processed" --log-format opendj-errors)"
+# The counters survive a state file (schema 7, shared with 389-ds).
+env -u TZ "$BIN" -q -o json --save-state "$SCRATCH/e.state" "$SCRATCH/errors.log" >/dev/null 2>&1
+check "errors: state round-trip" 3 \
+    "$(env -u TZ "$BIN" -q -o json --resume "$SCRATCH/e.state" 2>/dev/null \
+       | grep -o '"serverlog_entries": [0-9]*' | grep -o '[0-9]*')"
+
+# --- common-audit JSON is refused, not mistaken for 389-ds JSON ------------
+cat > "$SCRATCH/audit.json" <<'LOG'
+{"eventName":"DJ-LDAP","client":{"ip":"192.0.2.10","port":46608},"request":{"protocol":"LDAPS","operation":"CONNECT","connId":16},"response":{"status":"SUCCESSFUL","statusCode":"0","elapsedTime":0,"elapsedTimeUnits":"MILLISECONDS"},"timestamp":"2026-11-08T11:50:01.774Z","_id":"x-1"}
+LOG
+env -u TZ "$BIN" -q -o text -s stats "$SCRATCH/access.log" "$SCRATCH/audit.json" \
+    >"$SCRATCH/audit.txt" 2>"$SCRATCH/audit.err"
+check "audit: the access file is still analysed" 9 \
+    "$(grep -F '| Lines processed' "$SCRATCH/audit.txt" | sed 's/.*| \(.*\)| *$/\1/' | sed 's/ *$//')"
+if grep -q "OpenDJ common-audit stream (not an access log)" "$SCRATCH/audit.err"; then
+    echo "opendj: common-audit stream refused with a clear reason OK"
+else
+    echo "opendj: common-audit stream refused with a clear reason FAIL"; fail=1
+fi
+
 exit $fail

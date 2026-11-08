@@ -12,6 +12,11 @@ const LogDialect kDialects[] = {
     // records are told apart by their keys.
     {"389-ds text access", FileKind::DS389Text, ParseMode::DS389Text, false,
      classify_ds389_text, parse_ds389_line},
+    // OpenDJ common-audit JSON (Json File-Based Access Logger).  Its records
+    // contain "operation" too, so this row must be tried before the 389-ds
+    // JSON one; the file is then refused as a non-access stream.
+    {"OpenDJ common-audit stream", FileKind::OpenDJAudit, ParseMode::OpenLDAP,
+     false, classify_opendj_audit, nullptr},
     {"389-ds JSON access", FileKind::DS389Json, ParseMode::DS389Json, false,
      classify_ds389_json, parse_ds389_json_line},
     {"389-ds json-pretty access", FileKind::DS389JsonPretty,
@@ -29,6 +34,8 @@ const LogDialect kDialects[] = {
     // OpenDJ / ForgeRock DS / PingDS / Oracle Unified Directory (OpenDS family).
     {"OpenDJ access", FileKind::OpenDJ, ParseMode::OpenDJ, false,
      classify_opendj, parse_opendj_line},
+    {"OpenDJ errors", FileKind::OpenDJErrors, ParseMode::OpenDJErrors, false,
+     classify_opendj_errors, parse_opendj_errors_line},
 
     // OpenLDAP last: its auto-detection also accepts the timestamp shapes of
     // the formats above, so it must only see what they rejected.

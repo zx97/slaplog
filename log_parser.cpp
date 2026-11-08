@@ -4455,6 +4455,10 @@ FileVerdict process_file(const std::string& filename, Aggregator& agg,
             if (kind_out) *kind_out = kind;
             return FileVerdict::UnsupportedStream;
         }
+        if (kind == FileKind::OpenDJAudit) {
+            if (kind_out) *kind_out = kind;
+            return FileVerdict::UnsupportedAudit;
+        }
         if (required.has_value() && kind != *required) {
             if (kind_out) *kind_out = kind;
             return FileVerdict::SkippedKind;

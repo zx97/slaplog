@@ -306,8 +306,9 @@ static void usage(const char* prog) {
     std::cerr << "                             syslog-localtime, rfc3339-utc,\n";
     std::cerr << "                             ol26, rfc3339, syslog; 389ds,\n";
     std::cerr << "                             389ds-json, 389ds-json-pretty,\n";
-    std::cerr << "                             389ds-errors, 389ds-errors-json and\n";
-    std::cerr << "                             opendj force that parser for every file\n";
+    std::cerr << "                             389ds-errors, 389ds-errors-json,\n";
+    std::cerr << "                             opendj and opendj-errors force that\n";
+    std::cerr << "                             parser for every file\n";
     std::cerr << "  --output-date-format FMT   Output date format: rfc3339 (default), iso8601,\n";
     std::cerr << "                             syslog, epoch, preserve\n";
     std::cerr << "  --replay-separator SEP     Delimiter for replay output (default: \"|\")\n";
@@ -524,6 +525,7 @@ int main(int argc, char* argv[]) {
         case LogFormat::DS389_ERRORS:      set_forced_parse_mode(ParseMode::DS389ErrorsText); break;
         case LogFormat::DS389_ERRORS_JSON: set_forced_parse_mode(ParseMode::DS389ErrorsJson); break;
         case LogFormat::OPEN_DJ:           set_forced_parse_mode(ParseMode::OpenDJ); break;
+        case LogFormat::OPEN_DJ_ERRORS:    set_forced_parse_mode(ParseMode::OpenDJErrors); break;
         default: set_log_format(lf); break;
     }
 
@@ -723,7 +725,7 @@ int main(int argc, char* argv[]) {
             (k == FileKind::OpenLDAP || k == FileKind::DS389Text ||
              k == FileKind::DS389Json || k == FileKind::DS389JsonPretty ||
              k == FileKind::DS389ErrorsText || k == FileKind::DS389ErrorsJson ||
-             k == FileKind::OpenDJ)) {
+             k == FileKind::OpenDJ || k == FileKind::OpenDJErrors)) {
             run_kind = k;
             break;
         }
@@ -989,7 +991,11 @@ int main(int argc, char* argv[]) {
                     break;
                 case FileVerdict::UnsupportedStream:
                     std::cerr << "389-ds stream that is not an access log "
-                                 "(errors/audit/security) — skipped: ";
+                                 "(audit/security/rotation) — skipped: ";
+                    break;
+                case FileVerdict::UnsupportedAudit:
+                    std::cerr << "OpenDJ common-audit stream (not an access log) "
+                                 "— skipped: ";
                     break;
                 case FileVerdict::SkippedKind:
                     std::cerr << "different log format for this run ("

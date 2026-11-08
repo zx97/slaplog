@@ -6,6 +6,32 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 The project is distributed under the **AGPL-3.0** license — see [LICENSE](LICENSE).
 
+## [5.3.1] - 2026-11-08
+
+### Added
+
+- **OpenDJ / ForgeRock DS / PingDS / Oracle Unified Directory errors log**:
+  `[dd/MMM/yyyy:HH:mm:ss ±HHMM] category=… severity=… msgID=… msg=…` is
+  recognised per file and summarised in the Statistics section (entries,
+  severities, categories).  Multi-line continuations (Java stack traces) are
+  counted but not parsed.  `--log-format opendj-errors` forces the parser.
+- The errors counters are kept by `--save-state`/`--resume`, like the 389-ds
+  ones.
+
+### Fixed
+
+- **OpenDJ common-audit JSON was mistaken for the 389-ds JSON access log.**
+  The records of the `Json File-Based Access Logger` carry `"operation"` inside
+  their nested `request` object, so the 389-ds classifier claimed them and the
+  whole file came out as unknown lines.  The stream is now recognised and
+  refused with `OpenDJ common-audit stream (not an access log) — skipped`,
+  while the other files of the run are still analysed.
+
+### Changed
+
+- No measurable change on OpenLDAP: byte-identical reports and unchanged
+  timings on the 21.6 GB corpus.
+
 ## [5.3.0] - 2026-11-08
 
 ### Added

@@ -40,8 +40,11 @@ bool classify_ds389_errors_text(const std::vector<std::string>& head);
 bool classify_ds389_errors_json(const std::vector<std::string>& head);
 bool classify_ds389_other(const std::vector<std::string>& head);
 bool classify_opendj(const std::vector<std::string>& head);
+bool classify_opendj_errors(const std::vector<std::string>& head);
+bool classify_opendj_audit(const std::vector<std::string>& head);
 
 Event parse_opendj_line(std::string_view line);
+Event parse_opendj_errors_line(std::string_view line);
 
 // 389-ds parsers (log_parser.cpp).
 Event parse_ds389_line(std::string_view line);

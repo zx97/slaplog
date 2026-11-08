@@ -700,7 +700,7 @@ For more information on this, and how to apply and follow the GNU AGPL, see
 
 **SPDX-License-Identifier:** AGPL-3.0-or-later  
 **License:** GNU Affero General Public License v3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)  
-**Version:** 5.3.0  
+**Version:** 5.3.1  
 **Author:** Manuel FLURY  
 **Copyright:** © 2026 Manuel FLURY. All rights reserved.
 
@@ -806,6 +806,7 @@ slaplog supports all OpenLDAP log formats with automatic per-line detection:
 | `389ds-errors` | `[07/Nov/2026:20:15:30.1 +0100] - ERR - ldbm_back_search - …` | 389-ds text errors log (auto-detected per file) |
 | `389ds-errors-json` | `{"local_time":…,"severity":"ERR",…}` | 389-ds JSON errors log (auto-detected per file) |
 | `opendj` | `[20/Apr/2012:13:31:05 +0200] SEARCH REQ conn=5 op=2 …` | OpenDJ / ForgeRock DS / PingDS / OUD access log (auto-detected per file) |
+| `opendj-errors` | `[20/Apr/2012:13:31:05 +0200] category=JVM severity=NOTICE msgID=21 msg=…` | OpenDJ errors log, counted per severity and category (auto-detected per file) |
 
 Use `--log-format` to specify a fixed format for faster parsing when you know all lines share the same format.
 
@@ -892,9 +893,14 @@ report engine.  The default text format is supported:
 - **One format per run**, as for 389-ds: whichever access log comes first fixes
   the parser, and a file of another format is skipped with a message (combine
   the runs with `--save-state`/`--resume`).
-- The OpenDJ `errors` log is not an access log: it is refused with a message,
-  not folded into the report.  (The 389-ds errors log, by contrast, is
-  summarised by the existing counters.)
+- The OpenDJ `errors` log is analysed too: `category=… severity=… msgID=…
+  msg=…` records are counted per severity and per category, and multi-line
+  continuations (Java stack traces) are counted without being parsed.
+  `--log-format opendj-errors` forces the parser.
+- The **common-audit** JSON stream (`Json File-Based Access Logger`) is
+  recognised and **refused** with a clear message: its nested `request`
+  record contains the word `operation`, so without this guard it would be
+  mistaken for the 389-ds JSON access log.
 - Not supported yet: the `combined` log format and the common-audit JSON/CSV
   access logs.
 

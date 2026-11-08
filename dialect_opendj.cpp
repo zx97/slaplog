@@ -152,16 +152,24 @@ struct Fields {
     std::optional<double> etime;
     int method = -1;
     std::string dn, authdn, authzid, base, filter, attrs, text, reason, oid, name,
-                from, protocol;
+                from, protocol, category, severity;
 };
 
-// key=value pairs; quoted values may contain spaces.
+// key=value pairs; quoted values may contain spaces.  A leading space is
+// optional so a record whose payload starts directly with its first key (the
+// OpenDJ errors log does) is read the same way.
 void parse_fields(std::string_view s, Fields& f) {
-    while (space(s) && !s.empty()) {
+    for (;;) {
+        space(s);
+        if (s.empty()) break;
         const size_t eq = s.find('=');
         if (eq == std::string_view::npos) break;
         const std::string_view key = s.substr(0, eq);
         s.remove_prefix(eq + 1);
+        if (key == "msg") {          // free text to end of line
+            f.text.assign(s.data(), s.size());
+            break;
+        }
         std::string val;
         if (!s.empty() && s[0] == '"') {
             if (!quoted(s, val)) val.assign(token(s));
@@ -185,6 +193,8 @@ void parse_fields(std::string_view s, Fields& f) {
         else if (key == "type" && val == "SIMPLE") f.method = 128;
         else if (key == "type" && val == "SASL") f.method = 163;
         else if (key == "message") f.text = val;
+        else if (key == "severity") f.severity = val;
+        else if (key == "category") f.category = val;
         else if (key == "reason") f.reason = val;
         else if (key == "oid") f.oid = val;
         else if (key == "name") f.name = val;
@@ -306,6 +316,39 @@ Event parse_opendj_line(std::string_view line) {
     return ev;
 }
 
+// OpenDJ / PingDS errors log: "[dd/MMM/yyyy:HH:mm:ss ±HHMM] category=…
+// severity=… msgID=… msg=…".  A line without a timestamp continues the
+// previous message (a Java stack trace): counted, not parsed.
+Event parse_opendj_errors_line(std::string_view line) {
+    Event ev;
+    ev.raw.assign(line.data(), line.size());
+    ev.format = LogFormat::OPEN_DJ_ERRORS;
+    if (line.empty() || line[0] != '[') {
+        ev.kind = "SERVER_LOG_CONT";
+        return ev;
+    }
+    const size_t close = line.find("] ");
+    if (close == std::string_view::npos) {
+        ev.kind = "UNKNOWN_LINE";
+        return ev;
+    }
+    std::string rfc;
+    if (parse_opendj_time(line.substr(1, close - 1), rfc)) ev.ts = rfc;
+
+    std::string_view s = line.substr(close + 2);
+    Fields f;
+    parse_fields(s, f);
+    if (f.severity.empty()) {      // not a diagnostic record
+        ev.kind = "UNKNOWN_LINE";
+        return ev;
+    }
+    ev.kind = "SERVER_LOG";
+    ev.reason = f.severity;        // counted per severity
+    ev.attrs = f.category;         // counted per category (the subsystem)
+    ev.text = f.text;
+    return ev;
+}
+
 bool classify_opendj(const std::vector<std::string>& head) {
     for (const std::string& raw : head) {
         std::string_view line(raw);
@@ -327,6 +370,40 @@ bool classify_opendj(const std::vector<std::string>& head) {
             return phase == "REQ" || phase == "RES";
         }
         return false;
+    }
+    return false;
+}
+
+bool classify_opendj_errors(const std::vector<std::string>& head) {
+    for (const std::string& raw : head) {
+        std::string_view line(raw);
+        while (!line.empty() && (line.back() == '\r' || line.back() == '\n'))
+            line.remove_suffix(1);
+        if (line.empty()) continue;
+        if (line[0] != '[') continue;          // stack-trace continuation
+        const size_t close = line.find("] ");
+        if (close == std::string_view::npos) continue;
+        const std::string_view s = line.substr(close + 2);
+        if (s.rfind("category=", 0) != 0) continue;
+        if (s.find(" severity=") == std::string_view::npos) continue;
+        return true;
+    }
+    return false;
+}
+
+// OpenDJ common-audit records (Json File-Based Access Logger): nested
+// request/response objects, "eventName":"DJ-LDAP", timestamp in RFC 3339.
+// This is not an access log; recognising it lets the run refuse the file with
+// a clear reason instead of taking it for the 389-ds JSON stream, whose
+// records also contain the word "operation".
+bool classify_opendj_audit(const std::vector<std::string>& head) {
+    for (const std::string& raw : head) {
+        std::string_view line(raw);
+        while (!line.empty() && (line.back() == '\r' || line.back() == '\n'))
+            line.remove_suffix(1);
+        if (line.empty()) continue;
+        if (line[0] != '{') return false;
+        return line.find("\"eventName\"") != std::string_view::npos;
     }
     return false;
 }

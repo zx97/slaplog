@@ -62,7 +62,8 @@ enum class LogFormat {
     DS389_JSON_PRETTY, // same, multi-line JSON objects
     DS389_ERRORS,  // 389 Directory Server text errors log
     DS389_ERRORS_JSON, // 389 Directory Server JSON errors log
-    OPEN_DJ        // OpenDJ / PingDS / OUD / OpenDS text access log
+    OPEN_DJ,       // OpenDJ / PingDS / OUD / OpenDS text access log
+    OPEN_DJ_ERRORS // OpenDJ / PingDS / OUD / OpenDS text errors log
 };
 
 inline std::string log_format_to_string(LogFormat fmt) {
@@ -81,6 +82,7 @@ inline std::string log_format_to_string(LogFormat fmt) {
         case LogFormat::DS389_ERRORS: return "389ds-errors";
         case LogFormat::DS389_ERRORS_JSON: return "389ds-errors-json";
         case LogFormat::OPEN_DJ: return "opendj";
+        case LogFormat::OPEN_DJ_ERRORS: return "opendj-errors";
     }
     return "unknown";
 }
@@ -107,6 +109,7 @@ inline LogFormat parse_log_format(const std::string& s) {
     if (lower == "389ds-errors") return LogFormat::DS389_ERRORS;
     if (lower == "389ds-errors-json") return LogFormat::DS389_ERRORS_JSON;
     if (lower == "opendj") return LogFormat::OPEN_DJ;
+    if (lower == "opendj-errors") return LogFormat::OPEN_DJ_ERRORS;
     return LogFormat::AUTO;
 }
 
@@ -923,6 +926,7 @@ enum class FileVerdict {
     NotLog,       // readable content, but not an OpenLDAP log
     Unreadable,   // cannot be opened or decompressed
     UnsupportedStream,  // a 389-ds stream that is not an access log
+    UnsupportedAudit,   // an OpenDJ common-audit stream, not an access log
     SkippedKind   // a valid log of a format another file already fixed for this run
 };
 
@@ -936,7 +940,8 @@ enum class ParseMode {
     DS389JsonPretty,  // same, multi-line JSON objects
     DS389ErrorsText,  // 389-ds text errors log
     DS389ErrorsJson,  // 389-ds JSON errors log
-    OpenDJ            // OpenDJ / PingDS / OUD text access log
+    OpenDJ,           // OpenDJ / PingDS / OUD text access log
+    OpenDJErrors      // OpenDJ / PingDS / OUD text errors log
 };
 
 // The stream a file was recognised as.  Only the access logs are analysed;
@@ -951,6 +956,8 @@ enum class FileKind {
     DS389ErrorsText,
     DS389ErrorsJson,
     OpenDJ,
+    OpenDJErrors,
+    OpenDJAudit,
     DS389Other
 };
 
@@ -963,6 +970,8 @@ inline const char* file_kind_name(FileKind k) {
         case FileKind::DS389ErrorsText: return "389-ds text errors";
         case FileKind::DS389ErrorsJson: return "389-ds JSON errors";
         case FileKind::OpenDJ: return "OpenDJ access";
+        case FileKind::OpenDJErrors: return "OpenDJ errors";
+        case FileKind::OpenDJAudit: return "OpenDJ common-audit stream";
         case FileKind::DS389Other: return "389-ds non-access stream";
         case FileKind::NotLog:
         default: return "not a log";

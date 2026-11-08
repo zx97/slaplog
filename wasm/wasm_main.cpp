@@ -234,6 +234,7 @@ bool start_session(Options opts) {
         case LogFormat::DS389_ERRORS:      set_forced_parse_mode(ParseMode::DS389ErrorsText); break;
         case LogFormat::DS389_ERRORS_JSON: set_forced_parse_mode(ParseMode::DS389ErrorsJson); break;
         case LogFormat::OPEN_DJ:           set_forced_parse_mode(ParseMode::OpenDJ); break;
+        case LogFormat::OPEN_DJ_ERRORS:    set_forced_parse_mode(ParseMode::OpenDJErrors); break;
         default: set_log_format(lf); break;
     }
     if (opts.output_format == "tab-html") opts.output_format = "tabhtml";
@@ -502,6 +503,13 @@ extern "C" EMSCRIPTEN_KEEPALIVE int slaplog_add_file(const char* path) {
         case FileVerdict::Unreadable:
             std::cerr << "slaplog(wasm): cannot read: " << path << "\n";
             return 4;
+        case FileVerdict::UnsupportedAudit:
+            std::cerr << "slaplog(wasm): OpenDJ common-audit stream is not an "
+                         "access log — skipped: " << path << "\n";
+            return 5;
+        case FileVerdict::UnsupportedStream:
+        case FileVerdict::SkippedKind:
+            break;   // handled by the session (format mismatch / non-access)
         case FileVerdict::Analysed:
             break;
     }
