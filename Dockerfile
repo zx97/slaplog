@@ -10,11 +10,11 @@
 # Build locally:
 #   packaging/build-local.sh --container
 # or:
-#   podman build --build-arg TARGETARCH=amd64 --build-arg VERSION=5.4.0 -t slaplog .
+#   podman build --build-arg TARGETARCH=amd64 --build-arg VERSION=5.3.2 -t slaplog .
 #
 # Multi-arch (CI):
 #   docker buildx build --platform linux/amd64,linux/arm64 \
-#     --build-arg VERSION=5.4.0 -t ghcr.io/zx97/slaplog:5.4.0 .
+#     --build-arg VERSION=5.3.2 -t ghcr.io/zx97/slaplog:5.3.2 .
 FROM debian:12-slim
 
 ARG TARGETARCH=amd64

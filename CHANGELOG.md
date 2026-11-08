@@ -6,7 +6,7 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 The project is distributed under the **AGPL-3.0** license — see [LICENSE](LICENSE).
 
-## [5.4.0] - 2026-11-08
+## [5.3.2] - 2026-11-08
 
 ### Added
 
@@ -24,7 +24,7 @@ The project is distributed under the **AGPL-3.0** license — see [LICENSE](LICE
 
 ### Changed
 
-- Version 5.4.0.  No analyzer change: the reports and timings of 5.3.1 are
+- Version 5.3.2.  No analyzer change: the reports and timings of 5.3.1 are
   unchanged.
 
 ## [5.3.1] - 2026-11-08
