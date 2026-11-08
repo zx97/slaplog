@@ -2770,12 +2770,80 @@ Event parse_ds389_json_line(std::string_view text) {
     return ev;
 }
 
+// 389-ds text errors log: "[ts] - SEV - [subsystem - ]message".  A line
+// without a timestamp is the continuation of the previous message (stack
+// traces); it is counted but not parsed.
+Event parse_ds389_errors_line(std::string_view line) {
+    Event ev;
+    ev.raw.assign(line.data(), line.size());
+    ev.format = LogFormat::DS389;
+    if (line.empty() || line[0] == '\t') { ev.kind = "TITLE"; return ev; }
+    if (line[0] != '[') { ev.kind = "SERVER_LOG_CONT"; return ev; }
+
+    std::string timestamp, host, proc, rest;
+    if (!try_parse_header(line, LogFormat::DS389, timestamp, host, proc, rest,
+                          nullptr)) {
+        ev.kind = "UNKNOWN_LINE";
+        return ev;
+    }
+    const std::string rfc = convert_to_rfc3339_utc(timestamp, LogFormat::DS389);
+    ev.ts = rfc.empty() ? timestamp : rfc;
+
+    std::string_view s(rest);
+    if (!ds_take(s, "- ")) { ev.kind = "UNKNOWN_LINE"; return ev; }
+    const size_t sev_end = s.find(" - ");
+    if (sev_end == std::string_view::npos) { ev.kind = "UNKNOWN_LINE"; return ev; }
+    ev.reason.assign(s.data(), sev_end);                 // severity
+    s.remove_prefix(sev_end + 3);
+    // The subsystem is a single token by convention; the first " - " after it
+    // delimits the message (which may itself contain " - ").
+    const size_t sub_end = s.find(" - ");
+    if (sub_end != std::string_view::npos) {
+        ev.attrs.assign(s.data(), sub_end);              // subsystem
+        s.remove_prefix(sub_end + 3);
+    }
+    ev.text.assign(s.data(), s.size());
+    ev.kind = "SERVER_LOG";
+    return ev;
+}
+
+// 389-ds JSON errors log: local_time / severity / subsystem / msg.
+Event parse_ds389_errors_json_line(std::string_view text) {
+    Event ev;
+    ev.raw.assign(text.data(), text.size());
+    ev.format = LogFormat::DS389_JSON;
+    nlohmann::json j;
+    try {
+        j = nlohmann::json::parse(text.begin(), text.end());
+    } catch (...) {
+        ev.kind = "UNKNOWN_LINE";
+        return ev;
+    }
+    if (!j.is_object()) { ev.kind = "UNKNOWN_LINE"; return ev; }
+    if (j.contains("header")) { ev.kind = "TITLE"; return ev; }
+    if (j.contains("local_time") && j["local_time"].is_string()) {
+        const std::string lt = j["local_time"].get<std::string>();
+        std::string rfc = convert_to_rfc3339_utc(lt, LogFormat::RFC3339);
+        ev.ts = rfc.empty() ? lt : rfc;
+    }
+    if (j.contains("severity") && j["severity"].is_string())
+        ev.reason = j["severity"].get<std::string>();
+    if (j.contains("subsystem") && j["subsystem"].is_string())
+        ev.attrs = j["subsystem"].get<std::string>();
+    if (j.contains("msg") && j["msg"].is_string())
+        ev.text = j["msg"].get<std::string>();
+    ev.kind = "SERVER_LOG";
+    return ev;
+}
+
 // One switch per line, selected once per file by the reader.
 static inline Event decode_line(std::string_view line, ParseMode mode) {
     switch (mode) {
         case ParseMode::DS389Text: return parse_ds389_line(line);
         case ParseMode::DS389Json:
         case ParseMode::DS389JsonPretty: return parse_ds389_json_line(line);
+        case ParseMode::DS389ErrorsText: return parse_ds389_errors_line(line);
+        case ParseMode::DS389ErrorsJson: return parse_ds389_errors_json_line(line);
         case ParseMode::OpenLDAP:
         default: return parse_line(line);
     }
@@ -2819,6 +2887,20 @@ void update_aggregator(Aggregator& agg, const Event& ev,
     // 389-ds log title, STAT/ENTRY/REFERRAL lines, HAPROXY headers and
     // "UNPROCESSED OPERATION" notices.  They count as processed — not as
     // unknown, which the final fallback would do otherwise.
+    // 389-ds errors log entry: counted per severity and per subsystem.  Kept
+    // before the generic counters so the line is not counted twice, and out of
+    // the OpenLDAP path by the kind test itself.
+    if (ev.kind == "SERVER_LOG" || ev.kind == "SERVER_LOG_CONT") {
+        agg.stats.lines++;
+        if (ev.kind == "SERVER_LOG") {
+            agg.serverlog_entries++;
+            if (!ev.reason.empty()) agg.serverlog_severity[ev.reason]++;
+            if (!ev.attrs.empty()) agg.serverlog_subsystem[ev.attrs]++;
+            if (!ev.ts.empty()) update_time_bounds(agg, ev.ts, ev.host);
+        }
+        return;
+    }
+
     // The format test keeps this out of the OpenLDAP hot path: only the
     // 389-ds parsers produce these kinds, and the string comparisons below
     // cost more than they look when run on every line.
@@ -2828,7 +2910,8 @@ void update_aggregator(Aggregator& agg, const Event& ev,
     if (ds389 &&
         (ev.kind == "TITLE" || ev.kind == "STAT" || ev.kind == "ENTRY" ||
          ev.kind == "REFERRAL" || ev.kind == "VLV" || ev.kind == "SORT" ||
-         ev.kind == "HAPROXY" || ev.kind == "UNPROCESSED")) {
+         ev.kind == "HAPROXY" || ev.kind == "UNPROCESSED" ||
+         ev.kind == "SERVER_LOG_CONT")) {
         agg.stats.lines++;
         return;
     }
@@ -3807,6 +3890,11 @@ void merge_aggregators(Aggregator& dest, const Aggregator& src,
         }
     }
 
+    // --- 389-ds errors log counters ---
+    dest.serverlog_entries += src.serverlog_entries;
+    for (const auto& [k, v] : src.serverlog_severity) dest.serverlog_severity[k] += v;
+    for (const auto& [k, v] : src.serverlog_subsystem) dest.serverlog_subsystem[k] += v;
+
     // --- Cumulative timing totals ---
     dest.etime_total += src.etime_total;
     dest.qtime_total += src.qtime_total;
@@ -4266,10 +4354,13 @@ FileKind classify_head(const HeadSample& sample) {
                 if (line.size() >= 4 && line[1] >= '0' && line[1] <= '9' &&
                     line[2] >= '0' && line[2] <= '9' && line[3] == '/') {
                     const size_t close = line.find("] ");
-                    if (close != std::string_view::npos &&
-                        line.compare(close + 2, 5, "conn=") != 0)
-                        return FileKind::DS389Other;          // errors log
-                    return FileKind::DS389Text;
+                    if (close != std::string_view::npos) {
+                        if (line.compare(close + 2, 5, "conn=") == 0)
+                            return FileKind::DS389Text;
+                        if (line.compare(close + 2, 2, "- ") == 0)
+                            return FileKind::DS389ErrorsText;
+                    }
+                    return FileKind::DS389Other;
                 }
                 break;                                        // "[YYYY-...": OL26
             }
@@ -4282,9 +4373,10 @@ FileKind classify_head(const HeadSample& sample) {
         const auto has = [&](const char* k) {
             return line.find(k) != std::string_view::npos;
         };
-        if (has("\"severity\"") || has("\"gm_time\"") || has("\"utc_time\"") ||
-            has("\"event\""))
-            return FileKind::DS389Other;                      // errors / audit / security
+        if (has("\"severity\""))
+            return FileKind::DS389ErrorsJson;
+        if (has("\"gm_time\"") || has("\"utc_time\"") || has("\"event\""))
+            return FileKind::DS389Other;                      // audit / security
         if (has("\"operation\""))
             return pretty ? FileKind::DS389JsonPretty : FileKind::DS389Json;
     }
@@ -4328,6 +4420,8 @@ FileVerdict process_file(const std::string& filename, Aggregator& agg,
         kind = (mode == ParseMode::DS389Text)       ? FileKind::DS389Text
                : (mode == ParseMode::DS389Json)     ? FileKind::DS389Json
                : (mode == ParseMode::DS389JsonPretty) ? FileKind::DS389JsonPretty
+               : (mode == ParseMode::DS389ErrorsText) ? FileKind::DS389ErrorsText
+               : (mode == ParseMode::DS389ErrorsJson) ? FileKind::DS389ErrorsJson
                                                       : FileKind::OpenLDAP;
     } else {
         kind = classify_head(head);
@@ -4341,6 +4435,8 @@ FileVerdict process_file(const std::string& filename, Aggregator& agg,
             case FileKind::DS389Text:       mode = ParseMode::DS389Text; break;
             case FileKind::DS389Json:       mode = ParseMode::DS389Json; break;
             case FileKind::DS389JsonPretty: mode = ParseMode::DS389JsonPretty; break;
+            case FileKind::DS389ErrorsText: mode = ParseMode::DS389ErrorsText; break;
+            case FileKind::DS389ErrorsJson: mode = ParseMode::DS389ErrorsJson; break;
             default: break;
         }
     }

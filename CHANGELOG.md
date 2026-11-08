@@ -6,6 +6,31 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 The project is distributed under the **AGPL-3.0** license — see [LICENSE](LICENSE).
 
+## [5.2.0] - 2026-11-08
+
+### Added
+
+- **389-ds errors log** (text and JSON): one entry per timestamped record, with
+  the severity and the emitting subsystem counted — top five in the Statistics
+  section, full maps in JSON.  Multi-line continuations are counted but not
+  parsed.  The counters survive `--save-state` / `--resume` (state schema 7).
+- **SASL binds** (`method=sasl`) are reported as SASL in Bind Usage instead of
+  "other".
+- **`RESULT notes=U` / `notes=A`** (text and JSON) now feed the *Not indexed*
+  analysis; 389-ds records the unindexed-filter flag there.
+- **`--log-format`** accepts `389ds`, `389ds-json`, `389ds-json-pretty`,
+  `389ds-errors` and `389ds-errors-json` to force that parser for every file.
+- **CI**: GitHub Actions and GitLab build the project and run `make check` on
+  every push (the anonymity check stays).
+
+### Changed
+
+- **Faster**: compressed logs are decompressed by the `bzip2` / `gzip` process,
+  whose CPU work overlaps with parsing, instead of in-process; and the
+  rfc3339 header is parsed by hand (regex fallback when the shape differs).
+  On a 21.6 GB / 134M-line corpus: **39.6 s → 35.1 s (-11 %)**, i.e. **2.3×
+  since 5.0.1** (79.8 s).  Reports are byte-identical.
+
 ## [5.1.0] - 2026-11-08
 
 ### Added
@@ -310,6 +335,7 @@ The project is distributed under the **AGPL-3.0** license — see [LICENSE](LICE
 
 - Initial release.
 
+[5.2.0]: https://github.com/zx97/slaplog/releases/tag/v5.2.0
 [5.1.0]: https://github.com/zx97/slaplog/releases/tag/v5.1.0
 [5.0.3]: https://github.com/zx97/slaplog/releases/tag/v5.0.3
 [5.0.2]: https://github.com/zx97/slaplog/releases/tag/v5.0.2

@@ -30,7 +30,7 @@
 namespace {
 
 constexpr char MAGIC[8] = {'S', 'L', 'A', 'P', 'S', 'T', 'A', 'T'};
-constexpr uint32_t SCHEMA = 6;   // 4: cost per op type; 5: log format; 6: etime by hour
+constexpr uint32_t SCHEMA = 7;   // 4: cost/op type; 5: format; 6: etime/hour; 7: 389 errors
 
 // ------------------------------------------------------------------ writer --
 struct Writer {
@@ -630,6 +630,11 @@ void write_payload(Writer& w, const Aggregator& a) {
         w_map_size(w, accts.size());
         for (const auto& [acct, et] : accts) { w_str(w, acct); w_f64(w, et); }
     }
+
+    // -- 389-ds errors log counters (schema 7)
+    w_i64(w, a.serverlog_entries);
+    w_map_i64(w, a.serverlog_severity);
+    w_map_i64(w, a.serverlog_subsystem);
 }
 
 bool read_payload(Reader& r, Aggregator& a, std::string& err) {
@@ -954,6 +959,12 @@ bool read_payload(Reader& r, Aggregator& a, std::string& err) {
                 n.etime_by_hour[hour][acct] = r_f64(r);
             }
         }
+    }
+
+    if (schema >= 7) {
+        n.serverlog_entries = r_i64(r);
+        r_map_i64(r, n.serverlog_severity);
+        r_map_i64(r, n.serverlog_subsystem);
     }
 
     if (!r.ok) {

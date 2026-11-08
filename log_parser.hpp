@@ -59,7 +59,9 @@ enum class LogFormat {
     SYSLOG,
     DS389,         // 389 Directory Server text access: [dd/Mon/yyyy:HH:MM:SS.nnnnnnnnn +HHMM]
     DS389_JSON,    // 389 Directory Server access log, one JSON object per line
-    DS389_JSON_PRETTY  // same, multi-line JSON objects
+    DS389_JSON_PRETTY, // same, multi-line JSON objects
+    DS389_ERRORS,  // 389 Directory Server text errors log
+    DS389_ERRORS_JSON  // 389 Directory Server JSON errors log
 };
 
 inline std::string log_format_to_string(LogFormat fmt) {
@@ -75,6 +77,8 @@ inline std::string log_format_to_string(LogFormat fmt) {
         case LogFormat::DS389: return "389ds";
         case LogFormat::DS389_JSON: return "389ds-json";
         case LogFormat::DS389_JSON_PRETTY: return "389ds-json-pretty";
+        case LogFormat::DS389_ERRORS: return "389ds-errors";
+        case LogFormat::DS389_ERRORS_JSON: return "389ds-errors-json";
     }
     return "unknown";
 }
@@ -98,6 +102,8 @@ inline LogFormat parse_log_format(const std::string& s) {
     if (lower == "389ds") return LogFormat::DS389;
     if (lower == "389ds-json") return LogFormat::DS389_JSON;
     if (lower == "389ds-json-pretty") return LogFormat::DS389_JSON_PRETTY;
+    if (lower == "389ds-errors") return LogFormat::DS389_ERRORS;
+    if (lower == "389ds-errors-json") return LogFormat::DS389_ERRORS_JSON;
     return LogFormat::AUTO;
 }
 
@@ -684,6 +690,13 @@ struct Aggregator {
     } csn_event_count;
 
     // -- Not-indexed search tracking --
+    // 389-ds errors log: one counter per entry, plus the severity and the
+    // emitting subsystem.  Empty/zero for access-log runs, so every report of
+    // an access log is unchanged.
+    long long serverlog_entries = 0;
+    std::map<std::string, long long> serverlog_severity;
+    std::map<std::string, long long> serverlog_subsystem;
+
     long long not_indexed_count = 0;               // Count of not-indexed searches.
     std::map<std::string, long long> not_indexed_attr; // Attribute -> count for not-indexed.
 
@@ -914,7 +927,9 @@ enum class ParseMode {
     OpenLDAP,         // slapd access log (all its timestamp formats)
     DS389Text,        // 389-ds text access log: [dd/Mon/yyyy:HH:MM:SS.ns +HHMM]
     DS389Json,        // 389-ds access log, one JSON object per line
-    DS389JsonPretty   // same, multi-line JSON objects
+    DS389JsonPretty,  // same, multi-line JSON objects
+    DS389ErrorsText,  // 389-ds text errors log
+    DS389ErrorsJson   // 389-ds JSON errors log
 };
 
 // The stream a file was recognised as.  Only the access logs are analysed;
@@ -926,6 +941,8 @@ enum class FileKind {
     DS389Text,
     DS389Json,
     DS389JsonPretty,
+    DS389ErrorsText,
+    DS389ErrorsJson,
     DS389Other
 };
 
@@ -935,6 +952,8 @@ inline const char* file_kind_name(FileKind k) {
         case FileKind::DS389Text: return "389-ds text access";
         case FileKind::DS389Json: return "389-ds JSON access";
         case FileKind::DS389JsonPretty: return "389-ds json-pretty access";
+        case FileKind::DS389ErrorsText: return "389-ds text errors";
+        case FileKind::DS389ErrorsJson: return "389-ds JSON errors";
         case FileKind::DS389Other: return "389-ds non-access stream";
         case FileKind::NotLog:
         default: return "not a log";

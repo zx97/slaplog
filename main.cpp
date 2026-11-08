@@ -520,6 +520,8 @@ int main(int argc, char* argv[]) {
         case LogFormat::DS389:             set_forced_parse_mode(ParseMode::DS389Text); break;
         case LogFormat::DS389_JSON:        set_forced_parse_mode(ParseMode::DS389Json); break;
         case LogFormat::DS389_JSON_PRETTY: set_forced_parse_mode(ParseMode::DS389JsonPretty); break;
+        case LogFormat::DS389_ERRORS:      set_forced_parse_mode(ParseMode::DS389ErrorsText); break;
+        case LogFormat::DS389_ERRORS_JSON: set_forced_parse_mode(ParseMode::DS389ErrorsJson); break;
         default: set_log_format(lf); break;
     }
 
@@ -717,7 +719,8 @@ int main(int argc, char* argv[]) {
         FileKind k = FileKind::NotLog;
         if (classify_file(f, k) &&
             (k == FileKind::OpenLDAP || k == FileKind::DS389Text ||
-             k == FileKind::DS389Json || k == FileKind::DS389JsonPretty)) {
+             k == FileKind::DS389Json || k == FileKind::DS389JsonPretty ||
+             k == FileKind::DS389ErrorsText || k == FileKind::DS389ErrorsJson)) {
             run_kind = k;
             break;
         }

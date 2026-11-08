@@ -581,6 +581,22 @@ static std::map<std::string, long long> error_texts_for_code(const Aggregator& a
     return out;
 }
 
+// "ERR 3, WARNING 2, ..." for the 389-ds errors log summary rows.
+static std::string top_count_summary(const std::map<std::string, long long>& m, size_t n) {
+    std::vector<std::pair<long long, std::string>> v;
+    v.reserve(m.size());
+    for (const auto& [k, c] : m) v.emplace_back(c, k);
+    std::sort(v.begin(), v.end(), [](const auto& a, const auto& b) {
+        return a.first != b.first ? a.first > b.first : a.second < b.second;
+    });
+    std::string out;
+    for (size_t i = 0; i < v.size() && i < n; ++i) {
+        if (!out.empty()) out += ", ";
+        out += v[i].second + " " + std::to_string(v[i].first);
+    }
+    return out;
+}
+
 void print_text_report(const Aggregator& agg, double processing_time, bool compact, int color_mode, const std::set<std::string>& sections, const std::string& /*output_date_format*/, const std::string& custom_title) {
     set_color_output(color_mode);
     g_compact = compact;
@@ -647,6 +663,13 @@ void print_text_report(const Aggregator& agg, double processing_time, bool compa
                 range += agg.lasttime;
             }
             st_rows.push_back({"Time range", range});
+        }
+        if (agg.serverlog_entries > 0) {
+            st_rows.push_back({"Server log entries", fmt_int(agg.serverlog_entries)});
+            if (!agg.serverlog_severity.empty())
+                st_rows.push_back({"Severities", top_count_summary(agg.serverlog_severity, 5)});
+            if (!agg.serverlog_subsystem.empty())
+                st_rows.push_back({"Subsystems", top_count_summary(agg.serverlog_subsystem, 5)});
         }
 
         // Traffic.
@@ -1528,6 +1551,13 @@ void print_html_report(const Aggregator& agg, double duration, bool compact, con
             sv += html_escape(s);
         }
         add_stat("Server(s)", sv);
+    }
+    if (agg.serverlog_entries > 0) {
+        add_stat("Server log entries", fmt_int(agg.serverlog_entries));
+        if (!agg.serverlog_severity.empty())
+            add_stat("Severities", html_escape(top_count_summary(agg.serverlog_severity, 5)));
+        if (!agg.serverlog_subsystem.empty())
+            add_stat("Subsystems", html_escape(top_count_summary(agg.serverlog_subsystem, 5)));
     }
     if (!agg.firsttime.empty() || !agg.lasttime.empty()) {
         std::string range;
@@ -2611,6 +2641,16 @@ void print_json_report(const Aggregator& agg, double duration, bool /*compact*/,
     report["processing_time"] = duration;
     report["lines"] = agg.stats.lines;
     report["unknown_lines"] = agg.stats.unknown_lines;
+    if (agg.serverlog_entries > 0) {
+        // 389-ds errors log: counters only (the report is about operations).
+        report["serverlog_entries"] = agg.serverlog_entries;
+        json sev = json::object();
+        for (const auto& [k, c] : agg.serverlog_severity) sev[k] = c;
+        report["serverlog_severities"] = sev;
+        json sub = json::object();
+        for (const auto& [k, c] : agg.serverlog_subsystem) sub[k] = c;
+        report["serverlog_subsystems"] = sub;
+    }
     if (!agg.openldap_version.empty()) report["openldap_version"] = agg.openldap_version;
     // The servers the log lines carry (syslog/rfc3339 hostnames); empty when
     // the "debug" format was used, which names no host.

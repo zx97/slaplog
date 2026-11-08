@@ -152,6 +152,10 @@ slaplog supports all OpenLDAP log formats with automatic per-line detection:
 | `389ds` | `[07/Nov/2026:20:15:30.123456789 +0100]` | 389-ds text access log (auto-detected per file) |
 | `389ds-json` | `{"local_time":…,"operation":"SEARCH",…}` | 389-ds JSON access log (auto-detected per file) |
 | `389ds-json-pretty` | multi-line JSON objects | 389-ds json-pretty access log (auto-detected per file) |
+| `389ds-errors` | `[07/Nov/2026:20:15:30.1 +0100] - ERR - ldbm_back_search - …` | 389-ds text errors log (auto-detected per file) |
+| `389ds-errors-json` | `{"local_time":…,"severity":"ERR",…}` | 389-ds JSON errors log (auto-detected per file) |
+| `389ds-errors` | `[07/Nov/2026:20:15:30.1 +0100] - ERR - ldbm_back_search - …` | 389-ds text errors log (also auto-detected) |
+| `389ds-errors-json` | `{"local_time":…,"severity":"ERR",…}` | 389-ds JSON errors log (also auto-detected) |
 
 Use `--log-format` to specify a fixed format for faster parsing when you know all lines share the same format.
 

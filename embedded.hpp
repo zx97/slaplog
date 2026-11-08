@@ -700,7 +700,7 @@ For more information on this, and how to apply and follow the GNU AGPL, see
 
 **SPDX-License-Identifier:** AGPL-3.0-or-later  
 **License:** GNU Affero General Public License v3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)  
-**Version:** 5.1.0  
+**Version:** 5.2.0  
 **Author:** Manuel FLURY  
 **Copyright:** © 2026 Manuel FLURY. All rights reserved.
 
@@ -799,7 +799,9 @@ slaplog supports all OpenLDAP log formats with automatic per-line detection:
 | `syslog` | `Aug  5 14:23:01` | Generic syslog |
 | `389ds` | `[07/Nov/2026:20:15:30.123456789 +0100]` | 389-ds text access log (also auto-detected) |
 | `389ds-json` | `{"local_time":…,"operation":"SEARCH",…}` | 389-ds JSON access log (also auto-detected) |
-| `389ds-json-pretty` | multi-line JSON objects | 389-ds json-pretty access log (also auto-detected) |
+| `389ds-json-pretty` | multi-line JSON objects | 389-ds json-pretty access log (auto-detected per file) |
+| `389ds-errors` | `[07/Nov/2026:20:15:30.1 +0100] - ERR - ldbm_back_search - …` | 389-ds text errors log (auto-detected per file) |
+| `389ds-errors-json` | `{"local_time":…,"severity":"ERR",…}` | 389-ds JSON errors log (auto-detected per file) |
 
 Use `--log-format` to specify a fixed format for faster parsing when you know all lines share the same format.
 
@@ -814,7 +816,8 @@ each file, never per line, so an OpenLDAP run pays nothing for this.
 | text access (`nsslapd-accesslog-log-format: default`) | `389ds` | prefix `[dd/Mon/yyyy:HH:MM:SS.nnnnnnnnn ±HHMM] ` |
 | JSON access (`json`) | `389ds-json` | one object per line |
 | JSON access (`json-pretty`) | `389ds-json-pretty` | multi-line objects, assembled by the reader |
-| errors, audit, security | recognised, **skipped** | not access logs; named on stderr |
+| errors (`default` / `json`) | `389ds-errors`, `389ds-errors-json` | analysed: one entry per timestamped record, severity and subsystem counted |
+| audit, security | recognised, **skipped** | security records, not server diagnostics; named on stderr |
 
 - The prefix is **local time with a numeric offset**; it is converted to RFC
   3339 UTC, so a multi-host analysis compares instants and never assumes a
@@ -825,9 +828,14 @@ each file, never per line, so an OpenLDAP run pays nothing for this.
 - Internal operations (`conn=Internal(0) …`, `conn=42 (Internal) …`) are
   analysed like other operations; `Disconnect` closes the connection; the
   `connection from … to …` line carries the client address.
-- `--log-format 389ds`, `389ds-json` or `389ds-json-pretty` **forces** that
-  parser for every file, bypassing the head detection (useful for a file whose
-  first records are unusual).  Without it, each file is classified on its own.
+- `--log-format 389ds`, `389ds-json`, `389ds-json-pretty`, `389ds-errors` or
+  `389ds-errors-json` **forces** that parser for every file, bypassing the head
+  detection (useful for a file whose first records are unusual).  Without it,
+  each file is classified on its own.
+- The errors log is summarised in the Statistics section: number of entries,
+  top five severities and top five subsystems (full maps in the JSON report).
+  Multi-line continuations (stack traces) are counted but not parsed.  The
+  counters are kept by `--save-state`/`--resume` (state schema 7).
 - **One format per run.**  The first file fixes the parser; a file of another
   format (text vs JSON, or json-pretty) is skipped with a message, so the
   per-line loop stays monomorphic.  Combine the runs with a state:
@@ -838,8 +846,9 @@ slaplog access-json* -o html=json.html --save-state json.state
 slaplog --resume text.state --resume json.state -o html=all.html
 ```
 
-The other 389-ds streams (errors, audit, security) are diagnostics, not
-operation logs; slaplog names them and leaves them out of the report.
+The audit and security streams are records of their own kind (LDIF / JSON
+security events), not operation logs; slaplog names them and leaves them out
+of the report.
 
 If a line does not match any header format, it is marked as `UNKNOWN_LINE` and
 collected for diagnostic output.

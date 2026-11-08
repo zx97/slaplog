@@ -131,20 +131,58 @@ check "forced 389ds-json matches auto" \
     "$(env -u TZ "$BIN" -q -o text -s stats --log-format 389ds-json "$SCRATCH/access.json" 2>/dev/null \
        | grep -F '| Lines processed' | head -1 | sed 's/.*| \(.*\)| *$/\1/' | sed 's/ *$//')"
 
-# --- non-access streams are recognised and skipped -------------------------
+# --- errors log: counters per severity and subsystem -----------------------
 cat > "$SCRATCH/errors.log" <<'EOF'
 	389-Directory/2.6.0 B2026.001.0000
 	ldap01.example.com:389 (/etc/dirsrv/slapd-ldap01)
 
-[17/Oct/2026:02:00:03.000000000 +0200] - NOTICE - slapd_daemon - slapd started
+[17/Oct/2026:02:01:40.000000000 +0200] - WARNING - ldbm_back_ldbm2index - Attribute 'description' is not indexed; full table scan possible
+[17/Oct/2026:08:12:07.000000000 +0200] - NOTICE - NSMMReplicationPlugin - Beginning total update of replica
+[17/Oct/2026:11:58:02.000000000 +0200] - ERR - ldbm_back_search - Database error: -30995 (DB_RUNRECOVERY)
+continued stack trace line, no timestamp
 EOF
-if env -u TZ "$BIN" -q -o text "$SCRATCH/errors.log" >/dev/null 2>"$SCRATCH/err.txt"; then
-    echo "ds389: errors stream should not be analysed FAIL"; fail=1
+check "errors text: entries" 3 \
+    "$(env -u TZ "$BIN" -q -o text -s stats "$SCRATCH/errors.log" 2>/dev/null \
+       | grep -F '| Server log entries' | sed 's/.*| \(.*\)| *$/\1/' | sed 's/ *$//')"
+check "errors text: severities" "ERR 1, NOTICE 1, WARNING 1" \
+    "$(env -u TZ "$BIN" -q -o text -s stats "$SCRATCH/errors.log" 2>/dev/null \
+       | grep -F '| Severities' | sed 's/.*| \(.*\)| *$/\1/' | sed 's/ *$//')"
+check "errors text: subsystem" 1 \
+    "$(env -u TZ "$BIN" -q -o text -s stats "$SCRATCH/errors.log" 2>/dev/null \
+       | grep -F '| Subsystems' | grep -c 'NSMMReplicationPlugin 1')"
+
+cat > "$SCRATCH/errors.json" <<'EOF'
+{"header":{"version":"389-Directory/2.6.0 B2026.001.0000","instance":"ldap01.example.com:389"}}
+{"local_time":"2026-10-17T02:01:40.000000000 +0200","severity":"ERR","subsystem":"ldbm_back_search","msg":"Database error"}
+{"local_time":"2026-10-17T02:01:41.000000000 +0200","severity":"INFO","subsystem":"slapd_daemon","msg":"listening"}
+EOF
+check "errors json: entries" 2 \
+    "$(env -u TZ "$BIN" -q -o text -s stats "$SCRATCH/errors.json" 2>/dev/null \
+       | grep -F '| Server log entries' | sed 's/.*| \(.*\)| *$/\1/' | sed 's/ *$//')"
+
+# The counters survive a state file (schema 7).
+env -u TZ "$BIN" -q -o text -s stats "$SCRATCH/errors.log" \
+    --save-state "$SCRATCH/e.state" >/dev/null 2>&1
+check "errors: state round-trip" 3 \
+    "$(env -u TZ "$BIN" -q -o text -s stats --resume "$SCRATCH/e.state" 2>/dev/null \
+       | grep -F '| Server log entries' | sed 's/.*| \(.*\)| *$/\1/' | sed 's/ *$//')"
+
+# --- audit and security streams are recognised and skipped -----------------
+cat > "$SCRATCH/audit.log" <<'EOF'
+time: 20261017121512
+dn: uid=jdoe,ou=People,dc=example,dc=org
+changetype: modify
+replace: cn
+cn: John Doe
+-
+EOF
+if env -u TZ "$BIN" -q -o text "$SCRATCH/audit.log" >/dev/null 2>"$SCRATCH/err.txt"; then
+    echo "ds389: audit stream should not be analysed FAIL"; fail=1
 else
     if grep -q "not an access log" "$SCRATCH/err.txt"; then
-        echo "ds389: errors stream refused with a clear reason OK"
+        echo "ds389: audit stream refused with a clear reason OK"
     else
-        echo "ds389: errors stream refused with a clear reason FAIL"; fail=1
+        echo "ds389: audit stream refused with a clear reason FAIL"; fail=1
     fi
 fi
 
