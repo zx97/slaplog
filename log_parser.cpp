@@ -1155,6 +1155,55 @@ std::string format_epoch_seconds(long long t) {
         return s;
     }
 
+    // Hand parser for the rfc3339-utc header, which is tried once per line of
+    // an rfc3339 log and was the most expensive pattern in the profile:
+    //     <YYYY-MM-DDTHH:MM:SS.ffffZ> <host> <proc>: <payload>
+    // It reproduces RE_HDR_RFC3339_UTC exactly; the regex is used as a fallback
+    // whenever the shape does not match byte for byte.
+    static bool hand_parse_rfc3339_utc(std::string_view line,
+                                       std::string& timestamp, std::string& host,
+                                       std::string& proc, std::string& rest) {
+        if (line.size() < 22) return false;
+        auto dig = [&](size_t i) {
+            return line[i] >= '0' && line[i] <= '9';
+        };
+        if (!(dig(0) && dig(1) && dig(2) && dig(3)) || line[4] != '-' ||
+            !(dig(5) && dig(6)) || line[7] != '-' ||
+            !(dig(8) && dig(9)) || line[10] != 'T' ||
+            !(dig(11) && dig(12)) || line[13] != ':' ||
+            !(dig(14) && dig(15)) || line[16] != ':' ||
+            !(dig(17) && dig(18)) || line[19] != '.')
+            return false;
+        size_t p = 20;
+        while (p < line.size() && dig(p)) ++p;
+        if (p == 20 || p >= line.size() || line[p] != 'Z') return false;
+        const size_t ts_end = ++p;
+        auto ws = [&](size_t& i) {
+            const size_t start = i;
+            while (i < line.size() && std::isspace(static_cast<unsigned char>(line[i]))) ++i;
+            return i > start;
+        };
+        if (!ws(p)) return false;
+        const size_t h0 = p;
+        while (p < line.size() && !std::isspace(static_cast<unsigned char>(line[p]))) ++p;
+        if (p == h0) return false;
+        const size_t h1 = p;
+        if (!ws(p)) return false;
+        const size_t t0 = p;
+        while (p < line.size() && !std::isspace(static_cast<unsigned char>(line[p]))) ++p;
+        const size_t t1 = p;
+        size_t colon = std::string_view::npos;
+        for (size_t i = t1; i > t0; --i)
+            if (line[i - 1] == ':') { colon = i - 1; break; }
+        if (colon == std::string_view::npos) return false;
+        if (!ws(p)) return false;
+        timestamp.assign(line.data(), ts_end);
+        host.assign(line.data() + h0, h1 - h0);
+        proc.assign(line.data() + t0, colon - t0);
+        rest.assign(line.data() + p, line.size() - p);
+        return true;
+    }
+
     bool try_parse_header(std::string_view line, LogFormat fmt,
                           std::string& timestamp, std::string& host,
                           std::string& proc, std::string& rest,
@@ -1202,6 +1251,10 @@ std::string format_epoch_seconds(long long t) {
                 break;
             }
             case LogFormat::RFC3339_UTC: {
+                if (hand_parse_rfc3339_utc(line, timestamp, host, proc, rest)) {
+                    if (detected_fmt) *detected_fmt = LogFormat::RFC3339_UTC;
+                    return true;
+                }
                 if (slaplog_rx::regex_match(line, m, slaplog_rx::RE_HDR_RFC3339_UTC)) {
                     timestamp = m[1];
                     host = m[2];
@@ -4518,7 +4571,14 @@ void process_gzip_file(const std::string& filename, Aggregator& agg,
         process_decompress_pipe(filename, "pigz -dc", agg, progress, unknown_out, unknown_mtx, mode);
         return;
     }
-    
+
+    // Same reasoning as bzip2: the gzip process overlaps with parsing.
+    static bool gzip_bin = tool_exists("gzip");
+    if (gzip_bin) {
+        process_decompress_pipe(filename, "gzip -dc", agg, progress, unknown_out, unknown_mtx, mode);
+        return;
+    }
+
     // Fallback to single-threaded zlib
     gzFile file = gzopen(filename.c_str(), "rb");
     if (!file) return;
@@ -4557,7 +4617,16 @@ void process_bzip2_file(const std::string& filename, Aggregator& agg,
         process_decompress_pipe(filename, "lbzip2 -dc", agg, progress, unknown_out, unknown_mtx, mode);
         return;
     }
-    
+
+    // No lbzip2: use the bzip2 binary anyway.  Its process runs while we parse,
+    // so decompression and parsing overlap through the pipe instead of
+    // alternating inside libbz2 (about a fifth of the per-file time).
+    static bool bzip2_bin = tool_exists("bzip2");
+    if (bzip2_bin) {
+        process_decompress_pipe(filename, "bzip2 -dc", agg, progress, unknown_out, unknown_mtx, mode);
+        return;
+    }
+
     // Fallback to single-threaded libbzip2
     FILE* file = fopen(filename.c_str(), "rb");
     if (!file) return;
