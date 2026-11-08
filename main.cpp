@@ -6,7 +6,7 @@
     Copyright (c) 2026 Manuel FLURY
     All rights reserved.
     
-    This file is part of slaplog - an LDAP Log Analysis Tool.
+    This file is part of slaplog - an (Open)LDAP Log Analysis Tool.
     
     Licensed under the GNU Affero General Public License v3.0 (AGPL-3.0-or-later).
     See the LICENSE file distributed with this work for full license text.
@@ -509,7 +509,7 @@ int main(int argc, char* argv[]) {
             usage(argv[0]);
             return 0;
         } else if (arg == "-V" || arg == "--version") {
-            std::cout << "slaplog v" << SLAPLOG_VERSION << " (built " << SLAPLOG_BUILD << ") - an LDAP log analyzer\n";
+            std::cout << "slaplog v" << SLAPLOG_VERSION << " (built " << SLAPLOG_BUILD << ") - an (Open)LDAP log analyzer\n";
             std::cout << "Copyright (c) 2026 Manuel FLURY\n";
             std::cout << "License: GNU Affero General Public License v3.0 or later\n";
             return 0;

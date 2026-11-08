@@ -111,7 +111,7 @@ const ok = (n, c) => results.push((c ? "PASS  " : "FAIL  ") + n);
   ok("O. auto-detect is stated in the page", /always auto-detected/.test(html));
   ok("O2. 'No charts' checkbox exists and is UNCHECKED by default",
      !!$("nograph") && $("nograph").checked === false);
-  ok("P. header carries a tool tagline", /LDAP[\s\S]{0,80}access-log analyzer/.test(html));
+  ok("P. header carries a tool tagline", /\(Open\)LDAP[\s\S]{0,80}access-log analyzer/.test(html));
 
   // --- multi-file selection & ordering ------------------------------
   dropFiles([mkFile("c.log", "x\n"), mkFile("a.log", "y\n"), mkFile("b.log", "z\n")]);

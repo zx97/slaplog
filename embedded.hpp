@@ -696,7 +696,7 @@ For more information on this, and how to apply and follow the GNU AGPL, see
 <https://www.gnu.org/licenses/>.
 )EMBED";
 
-    inline const std::string DOCUMENTATION_TEXT = R"EMBED(# slaplog — LDAP Access Log Analyzer
+    inline const std::string DOCUMENTATION_TEXT = R"EMBED(# slaplog — (Open)LDAP Access Log Analyzer
 
 **SPDX-License-Identifier:** AGPL-3.0-or-later  
 **License:** GNU Affero General Public License v3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)  
@@ -706,7 +706,7 @@ For more information on this, and how to apply and follow the GNU AGPL, see
 
 See the [CHANGELOG](../CHANGELOG.md) for the release history.
 
-This file is part of slaplog - an LDAP Log Analysis Tool.
+This file is part of slaplog - an (Open)LDAP Log Analysis Tool.
 
 Licensed under the GNU Affero General Public License v3.0 (AGPL-3.0-or-later).
 See the LICENSE file distributed with this work for full license text.

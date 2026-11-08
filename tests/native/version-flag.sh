@@ -3,7 +3,7 @@
 # version out of the report footer.
 #
 # The footer is the only place a report advertises the engine ("slaplog vX.Y.Z
-# — LDAP Log Analysis Report").  A report handed to a third party sometimes
+# — (Open)LDAP Log Analysis Report").  A report handed to a third party sometimes
 # should not; the option then leaves the report's own name and nothing else.
 #
 # SPDX-License-Identifier: AGPL-3.0-or-later
@@ -38,14 +38,14 @@ check "--no-version keeps 'slaplog' out of the footer" 0 \
     "$(count 'class="footer">slaplog' "$SCRATCH/off.html")"
 
 check "--no-version keeps the version number out of the footer" 0 \
-    "$(count 'class="footer">LDAP Log Analysis Report v' "$SCRATCH/off.html")"
+    "$(count 'class="footer">(Open)LDAP Log Analysis Report v' "$SCRATCH/off.html")"
 
 check "--no-version keeps the report's own name" 1 \
-    "$(count 'class="footer">LDAP Log Analysis Report</div>' "$SCRATCH/off.html")"
+    "$(count 'class="footer">(Open)LDAP Log Analysis Report</div>' "$SCRATCH/off.html")"
 
 # The option must not leak into the other formats.
 env -u TZ "$BIN" -q -o json --no-version "$SCRATCH/a.log" > "$SCRATCH/off.json" 2>/dev/null
 check "the JSON report is valid and unchanged" 1 \
-    "$(count '"title": "LDAP Log Analysis Report"' "$SCRATCH/off.json")"
+    "$(count '"title": "(Open)LDAP Log Analysis Report"' "$SCRATCH/off.json")"
 
 exit $fail

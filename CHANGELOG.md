@@ -29,6 +29,12 @@ The project is distributed under the **AGPL-3.0** license — see [LICENSE](LICE
 
 ### Changed
 
+- The application now presents itself as **(Open)LDAP**: `--version` says
+  *an (Open)LDAP log analyzer*, and the report, the WebAssembly page, the
+  README and the reference documentation read *"(Open)LDAP Log Analysis
+  Report"* / *"(Open)LDAP Log Analysis Tool"*.  The tool reads OpenLDAP
+  `slapd`, 389-ds and the OpenDJ family, so the name no longer suggests that
+  only OpenLDAP is supported.
 - No measurable change on OpenLDAP: byte-identical reports and unchanged
   timings on the 21.6 GB corpus.
 

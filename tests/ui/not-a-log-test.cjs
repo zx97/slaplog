@@ -85,7 +85,7 @@ function sendText(module, text) {
   check("one-shot: says it is not a log",
         /no LDAP log file to analyse/.test(once.text), once.text.slice(0, 200));
   check("one-shot: no report emitted",
-        !/LDAP Log Analysis Report/.test(once.text));
+        !/(Open)LDAP Log Analysis Report/.test(once.text));
 
   // ----------------------------------------------------------------
   // 2. Session API, plain text: refused at input_end (code 2).

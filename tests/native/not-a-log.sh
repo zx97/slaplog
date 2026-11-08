@@ -58,7 +58,7 @@ for f in export.ldif export.ldif.gz export.ldif.bz2 export.ldif.xz; do
     check "$f: names the problem" yes \
         "$(contains "$SCRATCH/err" 'not a supported LDAP log file')"
     check "$f: no report emitted" no \
-        "$(contains "$SCRATCH/out" 'LDAP Log Analysis Report')"
+        "$(contains "$SCRATCH/out" '(Open)LDAP Log Analysis Report')"
 done
 
 # ------------------------------------------------------------------
@@ -79,7 +79,7 @@ env -u TZ "$BIN" -q -o text "$SCRATCH/access.log" "$SCRATCH/export.ldif" \
     >"$SCRATCH/out" 2>"$SCRATCH/err" || rc=$?
 check "mixed: exit status" 0 "$rc"
 check "mixed: report produced" yes \
-    "$(contains "$SCRATCH/out" 'LDAP Log Analysis Report')"
+    "$(contains "$SCRATCH/out" '(Open)LDAP Log Analysis Report')"
 check "mixed: export named on stderr" yes \
     "$(contains "$SCRATCH/err" 'export.ldif')"
 
