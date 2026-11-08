@@ -109,6 +109,28 @@ check "pretty: records"   3 "$(stat_of "$SCRATCH/pretty.log" "Lines processed")"
 check "pretty: unknown"   0 "$(stat_of "$SCRATCH/pretty.log" "Unknown lines")"
 check "pretty: connections" "1 / 0" "$(stat_of "$SCRATCH/pretty.log" "Connections opened / closed")"
 
+# --- SASL bind, unindexed notes, forced format -----------------------------
+cat > "$SCRATCH/sasl.log" <<'EOF'
+[17/Oct/2026:02:00:47.302350000 +0200] conn=1 op=0 BIND dn="cn=Directory Manager" method=sasl version=3 mech="GSSAPI"
+[17/Oct/2026:02:00:47.302488000 +0200] conn=1 op=0 RESULT err=0 tag=97 nentries=0 etime=0.000194658
+[17/Oct/2026:02:03:39.311753000 +0200] conn=1 op=1 SRCH base="ou=People,dc=example,dc=org" scope=2 filter="(uid=x)" attrs=uid
+[17/Oct/2026:02:03:39.312379000 +0200] conn=1 op=1 RESULT err=0 tag=101 nentries=1 notes=U etime=0.000309649
+EOF
+if env -u TZ "$BIN" -q -o json "$SCRATCH/sasl.log" 2>/dev/null | grep -q '"SASL": 1'; then
+    echo "ds389: method=sasl is classified as SASL OK"
+else
+    echo "ds389: method=sasl is classified as SASL FAIL"; fail=1
+fi
+check "notes=U counts as not indexed" 1 \
+    "$(env -u TZ "$BIN" -q -o text -s index "$SCRATCH/sasl.log" 2>/dev/null \
+       | grep -F 'Not indexed occurrences' | sed 's/.*: *//' | sed 's/ *$//')"
+
+# Forcing the parser must give exactly the auto-detected result.
+check "forced 389ds-json matches auto" \
+    "$(stat_of "$SCRATCH/access.json" "Lines processed")" \
+    "$(env -u TZ "$BIN" -q -o text -s stats --log-format 389ds-json "$SCRATCH/access.json" 2>/dev/null \
+       | grep -F '| Lines processed' | head -1 | sed 's/.*| \(.*\)| *$/\1/' | sed 's/ *$//')"
+
 # --- non-access streams are recognised and skipped -------------------------
 cat > "$SCRATCH/errors.log" <<'EOF'
 	389-Directory/2.6.0 B2026.001.0000

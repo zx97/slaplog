@@ -2,3 +2,12 @@ anonymity:
   image: python:3
   script:
     - python3 tools/check_anonymity.py
+
+build:
+  image: debian:stable-slim
+  before_script:
+    - apt-get update
+    - apt-get install -y --no-install-recommends build-essential libpcre2-dev
+      zlib1g-dev libbz2-dev liblzma-dev python3 gawk time
+  script:
+    - make -j"$(nproc)" check

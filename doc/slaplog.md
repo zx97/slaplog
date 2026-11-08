@@ -99,6 +99,9 @@ slaplog supports all OpenLDAP log formats with automatic per-line detection:
 | `ol26` | `[2026-08-05T14:23:01.123Z]` | Bracket-style timestamp |
 | `rfc3339` | `2026-08-05T14:23:01Z` | Generic RFC3339 (zone designator honoured) |
 | `syslog` | `Aug  5 14:23:01` | Generic syslog |
+| `389ds` | `[07/Nov/2026:20:15:30.123456789 +0100]` | 389-ds text access log (also auto-detected) |
+| `389ds-json` | `{"local_time":…,"operation":"SEARCH",…}` | 389-ds JSON access log (also auto-detected) |
+| `389ds-json-pretty` | multi-line JSON objects | 389-ds json-pretty access log (also auto-detected) |
 
 Use `--log-format` to specify a fixed format for faster parsing when you know all lines share the same format.
 
@@ -124,6 +127,9 @@ each file, never per line, so an OpenLDAP run pays nothing for this.
 - Internal operations (`conn=Internal(0) …`, `conn=42 (Internal) …`) are
   analysed like other operations; `Disconnect` closes the connection; the
   `connection from … to …` line carries the client address.
+- `--log-format 389ds`, `389ds-json` or `389ds-json-pretty` **forces** that
+  parser for every file, bypassing the head detection (useful for a file whose
+  first records are unusual).  Without it, each file is classified on its own.
 - **One format per run.**  The first file fixes the parser; a file of another
   format (text vs JSON, or json-pretty) is skipped with a message, so the
   per-line loop stays monomorphic.  Combine the runs with a state:
@@ -277,7 +283,7 @@ slaplog --unknown-lines unknown.txt /var/log/slapd/access.log
 | `-m, --mtime DAYS` | Analyze only files modified within the last `DAYS` days (like `find -mtime`) |
 | `-j, --jobs N` | Worker thread count (default: CPU cores - 1) |
 | `-s, --section LIST` | Comma-separated list of sections to display (see below) |
-| `--log-format FORMAT` | Input log format: `auto` (default), `debug` (or its alias `default`), `syslog-utc`, `syslog-localtime`, `rfc3339-utc`, `ol26`, `rfc3339`, `syslog` |
+| `--log-format FORMAT` | Input log format: `auto` (default), `debug` (or its alias `default`), `syslog-utc`, `syslog-localtime`, `rfc3339-utc`, `ol26`, `rfc3339`, `syslog`; the `389ds`, `389ds-json` and `389ds-json-pretty` values force the 389-ds parser for every file |
 | `--output-date-format FMT` | Output date format in reports: `rfc3339` (default), `iso8601`, `syslog`, `epoch`, `preserve` |
 | `--replay-separator SEP` | Delimiter for replay output (default: `\|`). Use `tab` for tabulation, `comma` for CSV |
 | `--replay-limit N` | Max operations written to the replay temp file (default: `1000000`, `0` = unlimited). Acts as a safety cap; a warning is printed when ops are dropped. |

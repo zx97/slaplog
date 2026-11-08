@@ -227,7 +227,12 @@ void teardown_session() {
 
 bool start_session(Options opts) {
     teardown_session();   // drop any session left over from a previous run
-    set_log_format(parse_log_format(opts.log_format));
+    switch (const LogFormat lf = parse_log_format(opts.log_format)) {
+        case LogFormat::DS389:             set_forced_parse_mode(ParseMode::DS389Text); break;
+        case LogFormat::DS389_JSON:        set_forced_parse_mode(ParseMode::DS389Json); break;
+        case LogFormat::DS389_JSON_PRETTY: set_forced_parse_mode(ParseMode::DS389JsonPretty); break;
+        default: set_log_format(lf); break;
+    }
     if (opts.output_format == "tab-html") opts.output_format = "tabhtml";
     // The charts need extra data collected while parsing.  Collect it whatever
     // the report format: the page can download a state file

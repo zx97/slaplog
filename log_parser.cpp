@@ -264,6 +264,12 @@ void set_log_format(LogFormat fmt) {
     g_log_format = fmt;
 }
 
+namespace {
+    std::optional<ParseMode> g_forced_mode;
+}
+void set_forced_parse_mode(std::optional<ParseMode> mode) { g_forced_mode = mode; }
+std::optional<ParseMode> forced_parse_mode() { return g_forced_mode; }
+
 LogFormat get_log_format() {
     return g_log_format;
 }
@@ -2371,6 +2377,7 @@ static Event ds_parse_payload(std::string_view s, Event& ev) {
         if (ds_take(s, "method=")) {
             if (ds_take(s, "sasl")) {
                 ev.mech = "sasl";
+                ev.method = 163;   // SASL tag: bind_usage reports "SASL"
             } else {
                 int m = 0;
                 if (ds_uint(s, m)) ev.method = m;
@@ -2442,6 +2449,12 @@ static Event ds_parse_payload(std::string_view s, Event& ev) {
             else if (key == "wqtime") ev.qtime = std::strtod(val.c_str(), nullptr);
             else if (key == "csn") ev.csn = val;
             else if (key == "dn") ev.dn = val;
+            else if (key == "notes") {
+                // "U" = partially unindexed, "A" = fully unindexed filter.
+                if (val.find('U') != std::string::npos ||
+                    val.find('A') != std::string::npos)
+                    ev.not_indexed = true;
+            }
             // wtime/optime/writetime/wbusy/wmax/wqdepth/notes/sid/pr_* : no
             // field of their own in Event (the report uses etime and the tag).
         }
@@ -2564,7 +2577,7 @@ Event parse_ds389_line(std::string_view line) {
 Event parse_ds389_json_line(std::string_view text) {
     Event ev;
     ev.raw.assign(text.data(), text.size());
-    ev.format = LogFormat::DS389;
+    ev.format = LogFormat::DS389_JSON;
 
     nlohmann::json j;
     try {
@@ -2622,7 +2635,7 @@ Event parse_ds389_json_line(std::string_view text) {
         ev.binddn = str("bind_dn");
         ev.dn = ev.binddn;   // track_bind_usage() reads the DN here
         const std::string m = str("method");
-        if (m == "sasl") ev.mech = "sasl";
+        if (m == "sasl") { ev.mech = "sasl"; ev.method = 163; }
         else if (!m.empty()) ev.method = to_int(m);
         const std::string mech = str("mech");
         if (!mech.empty()) ev.mech = mech;
@@ -2655,6 +2668,13 @@ Event parse_ds389_json_line(std::string_view text) {
         ev.qtime = secs("wqtime");
         ev.text = str("msg");
         ev.csn = str("csn");
+        const auto notes_it = j.find("notes");
+        if (notes_it != j.end() && notes_it->is_array()) {
+            for (const auto& n : *notes_it) {
+                const std::string note = n.value("note", "");
+                if (note == "U" || note == "A") { ev.not_indexed = true; break; }
+            }
+        }
         if (ev.tag.has_value() && *ev.tag == 101) ev.kind = "SEARCH_RESULT";
     } else if (op == "ADD" || op == "DELETE" || op == "MODIFY" || op == "MODRDN" ||
                op == "COMPARE") {
@@ -2749,7 +2769,10 @@ void update_aggregator(Aggregator& agg, const Event& ev,
     // The format test keeps this out of the OpenLDAP hot path: only the
     // 389-ds parsers produce these kinds, and the string comparisons below
     // cost more than they look when run on every line.
-    if (ev.format == LogFormat::DS389 &&
+    const bool ds389 = ev.format == LogFormat::DS389 ||
+                       ev.format == LogFormat::DS389_JSON ||
+                       ev.format == LogFormat::DS389_JSON_PRETTY;
+    if (ds389 &&
         (ev.kind == "TITLE" || ev.kind == "STAT" || ev.kind == "ENTRY" ||
          ev.kind == "REFERRAL" || ev.kind == "VLV" || ev.kind == "SORT" ||
          ev.kind == "HAPROXY" || ev.kind == "UNPROCESSED")) {
@@ -3209,6 +3232,7 @@ void update_aggregator(Aggregator& agg, const Event& ev,
     //   9. Removes the OpState from the connection's in-flight ops map.
     if (ev.kind == "SEARCH_RESULT") {
         agg.operation_count["SEARCH RESULT"]++;
+        if (ev.not_indexed) agg.not_indexed_count++;
         if (ev.err.has_value()) {
             op.err = ev.err;
             agg.error_count[*ev.err]++;
@@ -3308,6 +3332,7 @@ void update_aggregator(Aggregator& agg, const Event& ev,
     // error counts, and the top-ops list.
     if (ev.kind == "RESULT") {
         agg.operation_count["RESULT"]++;
+        if (ev.not_indexed) agg.not_indexed_count++;
         if (ev.err.has_value()) {
             op.err = ev.err;
             agg.error_count[*ev.err]++;
@@ -4241,20 +4266,32 @@ FileVerdict process_file(const std::string& filename, Aggregator& agg,
     if (!head.ok) return FileVerdict::Unreadable;
     if (head.empty) return FileVerdict::Empty;
 
-    // Pick the parser once per file, from the head sample (never per line).
-    const FileKind kind = classify_head(head);
-    if (kind_out) *kind_out = kind;
-    if (kind == FileKind::NotLog) return FileVerdict::NotLog;
-    if (kind == FileKind::DS389Other) return FileVerdict::UnsupportedStream;
-    if (required.has_value() && kind != *required) return FileVerdict::SkippedKind;
-
+    // Pick the parser once per file (never per line): either the format forced
+    // by --log-format, or the one the head sample names.
+    FileKind kind = FileKind::NotLog;
     ParseMode mode = ParseMode::OpenLDAP;
-    switch (kind) {
-        case FileKind::DS389Text:       mode = ParseMode::DS389Text; break;
-        case FileKind::DS389Json:       mode = ParseMode::DS389Json; break;
-        case FileKind::DS389JsonPretty: mode = ParseMode::DS389JsonPretty; break;
-        default: break;
+    if (const auto forced = forced_parse_mode()) {
+        mode = *forced;
+        kind = (mode == ParseMode::DS389Text)       ? FileKind::DS389Text
+               : (mode == ParseMode::DS389Json)     ? FileKind::DS389Json
+               : (mode == ParseMode::DS389JsonPretty) ? FileKind::DS389JsonPretty
+                                                      : FileKind::OpenLDAP;
+    } else {
+        kind = classify_head(head);
+        if (kind == FileKind::NotLog) { if (kind_out) *kind_out = kind; return FileVerdict::NotLog; }
+        if (kind == FileKind::DS389Other) { if (kind_out) *kind_out = kind; return FileVerdict::UnsupportedStream; }
+        if (required.has_value() && kind != *required) {
+            if (kind_out) *kind_out = kind;
+            return FileVerdict::SkippedKind;
+        }
+        switch (kind) {
+            case FileKind::DS389Text:       mode = ParseMode::DS389Text; break;
+            case FileKind::DS389Json:       mode = ParseMode::DS389Json; break;
+            case FileKind::DS389JsonPretty: mode = ParseMode::DS389JsonPretty; break;
+            default: break;
+        }
     }
+    if (kind_out) *kind_out = kind;
 
     switch (comp) {
         case Compression::Gzip:

@@ -57,7 +57,9 @@ enum class LogFormat {
     OL26,
     RFC3339,
     SYSLOG,
-    DS389          // 389 Directory Server text access/error: [dd/Mon/yyyy:HH:MM:SS.nnnnnnnnn +HHMM]
+    DS389,         // 389 Directory Server text access: [dd/Mon/yyyy:HH:MM:SS.nnnnnnnnn +HHMM]
+    DS389_JSON,    // 389 Directory Server access log, one JSON object per line
+    DS389_JSON_PRETTY  // same, multi-line JSON objects
 };
 
 inline std::string log_format_to_string(LogFormat fmt) {
@@ -71,6 +73,8 @@ inline std::string log_format_to_string(LogFormat fmt) {
         case LogFormat::RFC3339: return "rfc3339";
         case LogFormat::SYSLOG: return "syslog";
         case LogFormat::DS389: return "389ds";
+        case LogFormat::DS389_JSON: return "389ds-json";
+        case LogFormat::DS389_JSON_PRETTY: return "389ds-json-pretty";
     }
     return "unknown";
 }
@@ -92,6 +96,8 @@ inline LogFormat parse_log_format(const std::string& s) {
     if (lower == "rfc3339") return LogFormat::RFC3339;
     if (lower == "syslog") return LogFormat::SYSLOG;
     if (lower == "389ds") return LogFormat::DS389;
+    if (lower == "389ds-json") return LogFormat::DS389_JSON;
+    if (lower == "389ds-json-pretty") return LogFormat::DS389_JSON_PRETTY;
     return LogFormat::AUTO;
 }
 
@@ -218,6 +224,7 @@ bool try_parse_header(std::string_view line, LogFormat fmt,
 void set_log_format(LogFormat fmt);
 LogFormat get_log_format();
 
+
 // Replay temp file: completed ops are written to a temp file instead of
 // being kept in memory.  This bounds memory usage regardless of log size.
 // init must be called before processing; cleanup after the report.
@@ -279,6 +286,7 @@ struct Event {
     std::string oid;       // OID for extended operations or controls.
     std::string csn;       // Context Sequence Number (replication).
     std::string mech;      // SASL mechanism name.
+    bool not_indexed = false;  // 389-ds RESULT notes=U/A: partially/fully unindexed.
 
     // --- Session tracking ---
     std::map<std::string, std::string> track; // Key-value pairs from session-tracking control.
@@ -980,6 +988,11 @@ FileVerdict process_file(const std::string& filename, Aggregator& agg,
                          std::mutex* unknown_mtx = nullptr,
                          FileKind* kind_out = nullptr,
                          std::optional<FileKind> required = std::nullopt);
+
+// Force the parser for every file (the 389-ds --log-format values).  Unset by
+// default, in which case each file's head decides.
+void set_forced_parse_mode(std::optional<ParseMode> mode);
+std::optional<ParseMode> forced_parse_mode();
 
 // Classify a file without parsing it (head sample only).  Returns false when
 // the file cannot be opened or is empty.

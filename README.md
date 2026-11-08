@@ -149,6 +149,9 @@ slaplog supports all OpenLDAP log formats with automatic per-line detection:
 | `ol26` | `[2026-08-05T14:23:01.123Z]` | Bracket-style timestamp |
 | `rfc3339` | `2026-08-05T14:23:01Z` | Generic RFC3339 (zone designator honoured) |
 | `syslog` | `Aug  5 14:23:01` | Generic syslog |
+| `389ds` | `[07/Nov/2026:20:15:30.123456789 +0100]` | 389-ds text access log (auto-detected per file) |
+| `389ds-json` | `{"local_time":…,"operation":"SEARCH",…}` | 389-ds JSON access log (auto-detected per file) |
+| `389ds-json-pretty` | multi-line JSON objects | 389-ds json-pretty access log (auto-detected per file) |
 
 Use `--log-format` to specify a fixed format for faster parsing when you know all lines share the same format.
 
