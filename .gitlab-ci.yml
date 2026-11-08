@@ -27,7 +27,7 @@ package:
   before_script:
     - dnf install -y -q epel-release
     - dnf install -y -q gcc-c++ make git tar gzip bzip2 xz diffutils
-      pcre2-devel zlib-devel bzip2-devel xz-devel json-devel time python3 curl
+      pcre2-devel zlib-devel bzip2-devel xz-devel json-devel time python3
   script:
     - make -j"$(nproc)" SIMD_FLAGS="-march=x86-64-v2"
     - make check
