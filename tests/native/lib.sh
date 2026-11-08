@@ -18,10 +18,15 @@ BIN="$ROOT/slaplog"
 # fall back to mktemp(1) so the tests also run on a machine without it.
 new_scratch() {
     if [ -d /dev/shm ] && [ -w /dev/shm ]; then
-        mktemp -d /dev/shm/slaplog-test.XXXXXX
-    else
-        mktemp -d "${TMPDIR:-/tmp}/slaplog-test.XXXXXX"
+        # Containers leave /dev/shm at 64 MB by default, and the throughput
+        # test writes ~80 MB there; use it only when it really has the room.
+        avail=$(df -Pk /dev/shm 2>/dev/null | awk 'NR == 2 { print $4 }')
+        if [ -n "$avail" ] && [ "$avail" -ge 262144 ]; then
+            mktemp -d /dev/shm/slaplog-test.XXXXXX
+            return
+        fi
     fi
+    mktemp -d "${TMPDIR:-/tmp}/slaplog-test.XXXXXX"
 }
 
 # Best-of-N wall-clock seconds for one run, with TZ unset (the real default of a
