@@ -6,6 +6,28 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 The project is distributed under the **AGPL-3.0** license — see [LICENSE](LICENSE).
 
+## [5.3.0] - 2026-11-08
+
+### Added
+
+- **OpenDJ / ForgeRock DS / PingDS / Oracle Unified Directory** access logs
+  (OpenDS family, default text format): `[dd/MMM/yyyy:HH:mm:ss ±HHMM]` with
+  `CONNECT`, `DISCONNECT` and `BIND/SEARCH/ADD/DELETE/MODIFY/MODDN/COMPARE/
+  ABANDON/UNBIND/EXTENDED REQ|RES`.  Scopes are decoded from their names and
+  `etime` (milliseconds) is converted to seconds.  Detected per file;
+  `--log-format opendj` forces the parser.  The `combined` log format and the
+  common-audit JSON/CSV logs are not supported yet.
+- **Dialect registry**: each input format is now a table entry
+  (`dialect.hpp` / `dialect.cpp`) carrying its head classifier, its line parser
+  and its report name.  A file is bound to one dialect once, so the per-line
+  loop follows a single pointer and a new format lives in its own source file
+  (`dialect_opendj.cpp`) without touching the core.
+
+### Changed
+
+- No measurable change on OpenLDAP: byte-identical reports, identical
+  single-thread and 21.6 GB corpus times.
+
 ## [5.2.1] - 2026-11-08
 
 ### Fixed
@@ -348,6 +370,7 @@ The project is distributed under the **AGPL-3.0** license — see [LICENSE](LICE
 
 - Initial release.
 
+[5.3.0]: https://github.com/zx97/slaplog/releases/tag/v5.3.0
 [5.2.1]: https://github.com/zx97/slaplog/releases/tag/v5.2.1
 [5.2.0]: https://github.com/zx97/slaplog/releases/tag/v5.2.0
 [5.1.0]: https://github.com/zx97/slaplog/releases/tag/v5.1.0

@@ -40,6 +40,7 @@
 //   - zlib / bzlib / lzma : transparent decompression.
 
 #include "log_parser.hpp"
+#include "dialect.hpp"
 #include "regex_patterns.hpp"
 #include "simd_line_split.hpp"
 #include "utils.hpp"
@@ -2837,16 +2838,8 @@ Event parse_ds389_errors_json_line(std::string_view text) {
 }
 
 // One switch per line, selected once per file by the reader.
-static inline Event decode_line(std::string_view line, ParseMode mode) {
-    switch (mode) {
-        case ParseMode::DS389Text: return parse_ds389_line(line);
-        case ParseMode::DS389Json:
-        case ParseMode::DS389JsonPretty: return parse_ds389_json_line(line);
-        case ParseMode::DS389ErrorsText: return parse_ds389_errors_line(line);
-        case ParseMode::DS389ErrorsJson: return parse_ds389_errors_json_line(line);
-        case ParseMode::OpenLDAP:
-        default: return parse_line(line);
-    }
+static inline Event decode_line(std::string_view line, const LogDialect* d) {
+    return (d && d->parse_line) ? d->parse_line(line) : parse_line(line);
 }
 
 void update_aggregator(Aggregator& agg, const Event& ev,
@@ -4320,25 +4313,22 @@ HeadSample sample_head(const std::string& filename, Compression comp) {
 }
 
 // True when at least one sampled line carries a header the parser recognises.
-bool sample_is_log(const HeadSample& sample) {
+bool sample_is_log(const std::vector<std::string>& lines) {
     LogSniffer sniffer;
-    for (const std::string& line : sample.lines) {
+    for (const std::string& line : lines) {
         if (sniffer.feed(line) == LogSniffer::Verdict::Log) return true;
         if (sniffer.decided()) return false;   // NotLog: the cap was reached
     }
     return false;
 }
 
-// Classify the head sample.  Tab-prefixed title lines and blanks are skipped;
-// the first data line decides.  The predicates mirror the 389-ds writers
-// (see the shared reference): text lines start with "[dd/Mon/yyyy:",
-// JSON access lines carry "operation", the other JSON streams carry
-// "severity" / "gm_time" / "utc_time" / "event", and an audit LDIF record
-// starts with "time: ".
-FileKind classify_head(const HeadSample& sample) {
+// 389-ds: the timestamp is "[dd/Mon/yyyy:...]" and the payload after "] " tells
+// the stream apart (access starts with conn=, errors with "- "); JSON records
+// are recognised by their keys.  Tab-prefixed titles and blanks are skipped.
+FileKind ds389_kind_of(const std::vector<std::string>& lines) {
     bool saw_json = false;
     bool pretty = false;
-    for (const std::string& raw : sample.lines) {
+    for (const std::string& raw : lines) {
         std::string_view line(raw);
         while (!line.empty() && (line.back() == '\r' || line.back() == '\n'))
             line.remove_suffix(1);
@@ -4349,8 +4339,6 @@ FileKind classify_head(const HeadSample& sample) {
             if (line.compare(0, 8, "LOGINFO:") == 0) return FileKind::DS389Other;
             if (line.compare(0, 6, "time: ") == 0) return FileKind::DS389Other;
             if (line[0] == '[') {
-                // 389-ds text access and error logs share the timestamp; only
-                // the access log carries a conn= payload (errors start with "- ").
                 if (line.size() >= 4 && line[1] >= '0' && line[1] <= '9' &&
                     line[2] >= '0' && line[2] <= '9' && line[3] == '/') {
                     const size_t close = line.find("] ");
@@ -4360,7 +4348,9 @@ FileKind classify_head(const HeadSample& sample) {
                         if (line.compare(close + 2, 2, "- ") == 0)
                             return FileKind::DS389ErrorsText;
                     }
-                    return FileKind::DS389Other;
+                    // Not a 389-ds access/errors line; another dialect (OpenDJ)
+                    // may still claim it.
+                    return FileKind::NotLog;
                 }
                 break;                                        // "[YYYY-...": OL26
             }
@@ -4369,7 +4359,6 @@ FileKind classify_head(const HeadSample& sample) {
             if (line.size() == 1) pretty = true;              // json-pretty
         }
 
-        // JSON: scan every line of the record for a discriminating key.
         const auto has = [&](const char* k) {
             return line.find(k) != std::string_view::npos;
         };
@@ -4381,11 +4370,32 @@ FileKind classify_head(const HeadSample& sample) {
             return pretty ? FileKind::DS389JsonPretty : FileKind::DS389Json;
     }
     if (saw_json) return FileKind::DS389Other;                // JSON, no operation seen
-    return sample_is_log(sample) ? FileKind::OpenLDAP : FileKind::NotLog;
+    return FileKind::NotLog;
 }
 
 
 } // anonymous namespace
+bool classify_openldap(const std::vector<std::string>& head) {
+    return sample_is_log(head);
+}
+bool classify_ds389_text(const std::vector<std::string>& head) {
+    return ds389_kind_of(head) == FileKind::DS389Text;
+}
+bool classify_ds389_json(const std::vector<std::string>& head) {
+    return ds389_kind_of(head) == FileKind::DS389Json;
+}
+bool classify_ds389_json_pretty(const std::vector<std::string>& head) {
+    return ds389_kind_of(head) == FileKind::DS389JsonPretty;
+}
+bool classify_ds389_errors_text(const std::vector<std::string>& head) {
+    return ds389_kind_of(head) == FileKind::DS389ErrorsText;
+}
+bool classify_ds389_errors_json(const std::vector<std::string>& head) {
+    return ds389_kind_of(head) == FileKind::DS389ErrorsJson;
+}
+bool classify_ds389_other(const std::vector<std::string>& head) {
+    return ds389_kind_of(head) == FileKind::DS389Other;
+}
 
 // ------------------------------------------------------------------
 // process_file — Probe the head, then auto-detect compression and dispatch
@@ -4411,49 +4421,40 @@ FileVerdict process_file(const std::string& filename, Aggregator& agg,
     if (!head.ok) return FileVerdict::Unreadable;
     if (head.empty) return FileVerdict::Empty;
 
-    // Pick the parser once per file (never per line): either the format forced
+    // Pick the dialect once per file (never per line): either the format forced
     // by --log-format, or the one the head sample names.
-    FileKind kind = FileKind::NotLog;
-    ParseMode mode = ParseMode::OpenLDAP;
+    const LogDialect* dialect = nullptr;   // nullptr = OpenLDAP core parser
+    FileKind kind = FileKind::OpenLDAP;
     if (const auto forced = forced_parse_mode()) {
-        mode = *forced;
-        kind = (mode == ParseMode::DS389Text)       ? FileKind::DS389Text
-               : (mode == ParseMode::DS389Json)     ? FileKind::DS389Json
-               : (mode == ParseMode::DS389JsonPretty) ? FileKind::DS389JsonPretty
-               : (mode == ParseMode::DS389ErrorsText) ? FileKind::DS389ErrorsText
-               : (mode == ParseMode::DS389ErrorsJson) ? FileKind::DS389ErrorsJson
-                                                      : FileKind::OpenLDAP;
+        dialect = dialect_by_mode(*forced);
+        kind = dialect ? dialect->kind : FileKind::OpenLDAP;
     } else {
-        kind = classify_head(head);
-        if (kind == FileKind::NotLog) { if (kind_out) *kind_out = kind; return FileVerdict::NotLog; }
-        if (kind == FileKind::DS389Other) { if (kind_out) *kind_out = kind; return FileVerdict::UnsupportedStream; }
+        dialect = classify_dialect(head.lines);
+        if (!dialect) { if (kind_out) *kind_out = FileKind::NotLog; return FileVerdict::NotLog; }
+        kind = dialect->kind;
+        if (kind == FileKind::DS389Other) {
+            if (kind_out) *kind_out = kind;
+            return FileVerdict::UnsupportedStream;
+        }
         if (required.has_value() && kind != *required) {
             if (kind_out) *kind_out = kind;
             return FileVerdict::SkippedKind;
-        }
-        switch (kind) {
-            case FileKind::DS389Text:       mode = ParseMode::DS389Text; break;
-            case FileKind::DS389Json:       mode = ParseMode::DS389Json; break;
-            case FileKind::DS389JsonPretty: mode = ParseMode::DS389JsonPretty; break;
-            case FileKind::DS389ErrorsText: mode = ParseMode::DS389ErrorsText; break;
-            case FileKind::DS389ErrorsJson: mode = ParseMode::DS389ErrorsJson; break;
-            default: break;
         }
     }
     if (kind_out) *kind_out = kind;
 
     switch (comp) {
         case Compression::Gzip:
-            process_gzip_file(filename, agg, progress, unknown_out, unknown_mtx, mode);
+            process_gzip_file(filename, agg, progress, unknown_out, unknown_mtx, dialect);
             break;
         case Compression::Bzip2:
-            process_bzip2_file(filename, agg, progress, unknown_out, unknown_mtx, mode);
+            process_bzip2_file(filename, agg, progress, unknown_out, unknown_mtx, dialect);
             break;
         case Compression::Xz:
-            process_xz_file(filename, agg, progress, unknown_out, unknown_mtx, mode);
+            process_xz_file(filename, agg, progress, unknown_out, unknown_mtx, dialect);
             break;
         case Compression::None:
-            process_plain_file(filename, agg, progress, unknown_out, unknown_mtx, mode);
+            process_plain_file(filename, agg, progress, unknown_out, unknown_mtx, dialect);
             break;
     }
     return FileVerdict::Analysed;
@@ -4470,8 +4471,8 @@ FileVerdict process_file(const std::string& filename, Aggregator& agg,
 void consume_lines(std::string& buf, size_t& consumed, Aggregator& agg,
                    std::atomic<size_t>& progress,
                    std::ostream* unknown_out, std::mutex* unknown_mtx,
-                   ParseMode mode) {
-    if (mode == ParseMode::DS389JsonPretty) {
+                   const LogDialect* dialect) {
+    if (dialect && dialect->json_pretty) {
         // One JSON object per record, spread over several lines: assemble
         // until the braces balance (strings and escapes respected), then
         // hand the whole record to the JSON parser.
@@ -4512,7 +4513,7 @@ void consume_lines(std::string& buf, size_t& consumed, Aggregator& agg,
     while ((pos = buf.find('\n', consumed)) != std::string::npos) {
         std::string_view l(buf.data() + consumed, pos - consumed);
         if (!l.empty() && l.back() == '\r') l.remove_suffix(1);
-        Event ev = decode_line(l, mode);
+        Event ev = decode_line(l, dialect);
         update_aggregator(agg, ev, unknown_out, unknown_mtx);
         progress += l.size() + 1;
         consumed = pos + 1;
@@ -4534,7 +4535,8 @@ bool classify_file(const std::string& filename, FileKind& kind) {
     }
     const HeadSample head = sample_head(filename, compression_of(peek));
     if (!head.ok || head.empty) return false;
-    kind = classify_head(head);
+    const LogDialect* d = classify_dialect(head.lines);
+    kind = d ? d->kind : FileKind::NotLog;
     return true;
 }
 
@@ -4548,7 +4550,7 @@ bool classify_file(const std::string& filename, FileKind& kind) {
 void process_plain_file(const std::string& filename, Aggregator& agg,
                         std::atomic<size_t>& progress,
                         std::ostream* unknown_out, std::mutex* unknown_mtx,
-                        ParseMode mode) {
+                        const LogDialect* dialect) {
     slaplog_simd::MmapReader reader;
     if (!reader.open(filename.c_str())) {
         // Fallback to std::ifstream if mmap fails
@@ -4556,7 +4558,7 @@ void process_plain_file(const std::string& filename, Aggregator& agg,
         if (!file) return;
         std::string line;
         while (std::getline(file, line)) {
-            Event ev = decode_line(line, mode);
+            Event ev = decode_line(line, dialect);
             update_aggregator(agg, ev, unknown_out, unknown_mtx);
             progress += line.size() + 1;
         }
@@ -4565,13 +4567,13 @@ void process_plain_file(const std::string& filename, Aggregator& agg,
     
     if (reader.empty()) return;
 
-    if (mode == ParseMode::DS389JsonPretty) {
+    if (dialect && dialect->json_pretty) {
         // json-pretty spreads one record over several lines: assemble them from
         // a buffer copy (the mmap is read-only, consume_lines compacts its
         // buffer).  These files are small next to the text logs.
         std::string buf(reader.data(), reader.size());
         size_t consumed = 0;
-        consume_lines(buf, consumed, agg, progress, unknown_out, unknown_mtx, mode);
+        consume_lines(buf, consumed, agg, progress, unknown_out, unknown_mtx, dialect);
         return;
     }
 
@@ -4583,7 +4585,7 @@ void process_plain_file(const std::string& filename, Aggregator& agg,
         // decode_line() takes the view directly and copies into Event::raw only
         // once; materialising a std::string here used to add a second
         // allocation and copy for every single line.
-        Event ev = decode_line(line, mode);
+        Event ev = decode_line(line, dialect);
         update_aggregator(agg, ev, unknown_out, unknown_mtx);
         progress += line.size() + 1;
     }
@@ -4617,7 +4619,7 @@ namespace {
     void process_decompress_pipe(const std::string& filename, const char* cmd_template,
                                  Aggregator& agg, std::atomic<size_t>& progress,
                                  std::ostream* unknown_out, std::mutex* unknown_mtx,
-                                 ParseMode mode) {
+                                 const LogDialect* dialect) {
         std::string cmd = std::string(cmd_template) + " \"" + filename + "\"";
         FILE* pipe = ::popen(cmd.c_str(), "r");
         if (!pipe) return;
@@ -4631,7 +4633,7 @@ namespace {
             if (n == 0) break;
 
             line.append(buffer, n);
-            consume_lines(line, consumed, agg, progress, unknown_out, unknown_mtx, mode);
+            consume_lines(line, consumed, agg, progress, unknown_out, unknown_mtx, dialect);
         }
         
         if (!line.empty()) {
@@ -4653,7 +4655,7 @@ namespace {
 void process_gzip_file(const std::string& filename, Aggregator& agg,
                        std::atomic<size_t>& progress,
                        std::ostream* unknown_out, std::mutex* unknown_mtx,
-                       ParseMode mode) {
+                       const LogDialect* dialect) {
     // Try parallel decompression with pigz first
     static bool pigz_checked = false;
     static bool pigz_available = false;
@@ -4664,14 +4666,14 @@ void process_gzip_file(const std::string& filename, Aggregator& agg,
     }
     
     if (pigz_available) {
-        process_decompress_pipe(filename, "pigz -dc", agg, progress, unknown_out, unknown_mtx, mode);
+        process_decompress_pipe(filename, "pigz -dc", agg, progress, unknown_out, unknown_mtx, dialect);
         return;
     }
 
     // Same reasoning as bzip2: the gzip process overlaps with parsing.
     static bool gzip_bin = tool_exists("gzip");
     if (gzip_bin) {
-        process_decompress_pipe(filename, "gzip -dc", agg, progress, unknown_out, unknown_mtx, mode);
+        process_decompress_pipe(filename, "gzip -dc", agg, progress, unknown_out, unknown_mtx, dialect);
         return;
     }
 
@@ -4683,7 +4685,7 @@ void process_gzip_file(const std::string& filename, Aggregator& agg,
     while (gzgets(file, buffer, sizeof(buffer))) {
         line = buffer;
         if (!line.empty() && line.back() == '\n') line.pop_back();
-        Event ev = decode_line(line, mode);
+        Event ev = decode_line(line, dialect);
         update_aggregator(agg, ev, unknown_out, unknown_mtx);
         progress += line.size() + 1;
     }
@@ -4699,7 +4701,7 @@ void process_gzip_file(const std::string& filename, Aggregator& agg,
 void process_bzip2_file(const std::string& filename, Aggregator& agg,
                         std::atomic<size_t>& progress,
                         std::ostream* unknown_out, std::mutex* unknown_mtx,
-                        ParseMode mode) {
+                        const LogDialect* dialect) {
     // Try parallel decompression with lbzip2 first
     static bool lbzip2_checked = false;
     static bool lbzip2_available = false;
@@ -4710,7 +4712,7 @@ void process_bzip2_file(const std::string& filename, Aggregator& agg,
     }
     
     if (lbzip2_available) {
-        process_decompress_pipe(filename, "lbzip2 -dc", agg, progress, unknown_out, unknown_mtx, mode);
+        process_decompress_pipe(filename, "lbzip2 -dc", agg, progress, unknown_out, unknown_mtx, dialect);
         return;
     }
 
@@ -4719,7 +4721,7 @@ void process_bzip2_file(const std::string& filename, Aggregator& agg,
     // alternating inside libbz2 (about a fifth of the per-file time).
     static bool bzip2_bin = tool_exists("bzip2");
     if (bzip2_bin) {
-        process_decompress_pipe(filename, "bzip2 -dc", agg, progress, unknown_out, unknown_mtx, mode);
+        process_decompress_pipe(filename, "bzip2 -dc", agg, progress, unknown_out, unknown_mtx, dialect);
         return;
     }
 
@@ -4736,10 +4738,10 @@ void process_bzip2_file(const std::string& filename, Aggregator& agg,
         int bytes = BZ2_bzRead(&bzerror, bzfile, buffer, sizeof(buffer));
         if (bytes <= 0) break;
         line.append(buffer, bytes);
-        consume_lines(line, consumed, agg, progress, unknown_out, unknown_mtx, mode);
+        consume_lines(line, consumed, agg, progress, unknown_out, unknown_mtx, dialect);
     }
     if (!line.empty()) {
-        Event ev = decode_line(line, mode);
+        Event ev = decode_line(line, dialect);
         update_aggregator(agg, ev, unknown_out, unknown_mtx);
         progress += line.size() + 1;
     }
@@ -4756,7 +4758,7 @@ void process_bzip2_file(const std::string& filename, Aggregator& agg,
 void process_xz_file(const std::string& filename, Aggregator& agg,
                      std::atomic<size_t>& progress,
                      std::ostream* unknown_out, std::mutex* unknown_mtx,
-                     ParseMode mode) {
+                     const LogDialect* dialect) {
     // Try parallel decompression with xz -T0 first
     static bool xz_checked = false;
     static bool xz_available = false;
@@ -4767,7 +4769,7 @@ void process_xz_file(const std::string& filename, Aggregator& agg,
     }
     
     if (xz_available) {
-        process_decompress_pipe(filename, "xz -T0 -dc", agg, progress, unknown_out, unknown_mtx, mode);
+        process_decompress_pipe(filename, "xz -T0 -dc", agg, progress, unknown_out, unknown_mtx, dialect);
         return;
     }
     
@@ -4796,14 +4798,14 @@ void process_xz_file(const std::string& filename, Aggregator& agg,
         if (strm.avail_out == 0 || ret == LZMA_STREAM_END) {
             size_t write_size = sizeof(outbuf) - strm.avail_out;
             line.append((char*)outbuf, write_size);
-            consume_lines(line, consumed, agg, progress, unknown_out, unknown_mtx, mode);
+            consume_lines(line, consumed, agg, progress, unknown_out, unknown_mtx, dialect);
             strm.next_out = reinterpret_cast<uint8_t*>(outbuf);
             strm.avail_out = sizeof(outbuf);
         }
         if (ret == LZMA_STREAM_END) break;
     }
     if (!line.empty()) {
-        Event ev = decode_line(line, mode);
+        Event ev = decode_line(line, dialect);
         update_aggregator(agg, ev, unknown_out, unknown_mtx);
         progress += line.size() + 1;
     }

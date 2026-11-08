@@ -61,7 +61,8 @@ enum class LogFormat {
     DS389_JSON,    // 389 Directory Server access log, one JSON object per line
     DS389_JSON_PRETTY, // same, multi-line JSON objects
     DS389_ERRORS,  // 389 Directory Server text errors log
-    DS389_ERRORS_JSON  // 389 Directory Server JSON errors log
+    DS389_ERRORS_JSON, // 389 Directory Server JSON errors log
+    OPEN_DJ        // OpenDJ / PingDS / OUD / OpenDS text access log
 };
 
 inline std::string log_format_to_string(LogFormat fmt) {
@@ -79,6 +80,7 @@ inline std::string log_format_to_string(LogFormat fmt) {
         case LogFormat::DS389_JSON_PRETTY: return "389ds-json-pretty";
         case LogFormat::DS389_ERRORS: return "389ds-errors";
         case LogFormat::DS389_ERRORS_JSON: return "389ds-errors-json";
+        case LogFormat::OPEN_DJ: return "opendj";
     }
     return "unknown";
 }
@@ -104,6 +106,7 @@ inline LogFormat parse_log_format(const std::string& s) {
     if (lower == "389ds-json-pretty") return LogFormat::DS389_JSON_PRETTY;
     if (lower == "389ds-errors") return LogFormat::DS389_ERRORS;
     if (lower == "389ds-errors-json") return LogFormat::DS389_ERRORS_JSON;
+    if (lower == "opendj") return LogFormat::OPEN_DJ;
     return LogFormat::AUTO;
 }
 
@@ -911,6 +914,8 @@ std::vector<std::string> servers_not_in(const Aggregator& agg,
 // line in its first LogSniffer::kSniffLines lines is refused instead of being
 // folded in as a pile of unknown events: passing an LDIF export (or any other
 // text file) by mistake must produce a clear message, not an empty report.
+struct LogDialect;   // dialect.hpp
+
 enum class FileVerdict {
     Analysed,     // at least one log line was found and parsed
     Empty,        // nothing to parse (no line at all)
@@ -929,7 +934,8 @@ enum class ParseMode {
     DS389Json,        // 389-ds access log, one JSON object per line
     DS389JsonPretty,  // same, multi-line JSON objects
     DS389ErrorsText,  // 389-ds text errors log
-    DS389ErrorsJson   // 389-ds JSON errors log
+    DS389ErrorsJson,  // 389-ds JSON errors log
+    OpenDJ            // OpenDJ / PingDS / OUD text access log
 };
 
 // The stream a file was recognised as.  Only the access logs are analysed;
@@ -943,6 +949,7 @@ enum class FileKind {
     DS389JsonPretty,
     DS389ErrorsText,
     DS389ErrorsJson,
+    OpenDJ,
     DS389Other
 };
 
@@ -954,6 +961,7 @@ inline const char* file_kind_name(FileKind k) {
         case FileKind::DS389JsonPretty: return "389-ds json-pretty access";
         case FileKind::DS389ErrorsText: return "389-ds text errors";
         case FileKind::DS389ErrorsJson: return "389-ds JSON errors";
+        case FileKind::OpenDJ: return "OpenDJ access";
         case FileKind::DS389Other: return "389-ds non-access stream";
         case FileKind::NotLog:
         default: return "not a log";
@@ -1021,21 +1029,21 @@ void process_plain_file(const std::string& filename, Aggregator& agg,
                         std::atomic<size_t>& progress,
                         std::ostream* unknown_out = nullptr,
                         std::mutex* unknown_mtx = nullptr,
-                        ParseMode mode = ParseMode::OpenLDAP);
+                        const LogDialect* dialect = nullptr);
 void process_gzip_file(const std::string& filename, Aggregator& agg,
                        std::atomic<size_t>& progress,
                        std::ostream* unknown_out = nullptr,
                        std::mutex* unknown_mtx = nullptr,
-                        ParseMode mode = ParseMode::OpenLDAP);
+                        const LogDialect* dialect = nullptr);
 void process_bzip2_file(const std::string& filename, Aggregator& agg,
                         std::atomic<size_t>& progress,
                         std::ostream* unknown_out = nullptr,
                         std::mutex* unknown_mtx = nullptr,
-                        ParseMode mode = ParseMode::OpenLDAP);
+                        const LogDialect* dialect = nullptr);
 void process_xz_file(const std::string& filename, Aggregator& agg,
                      std::atomic<size_t>& progress,
                      std::ostream* unknown_out = nullptr,
                      std::mutex* unknown_mtx = nullptr,
-                        ParseMode mode = ParseMode::OpenLDAP);
+                        const LogDialect* dialect = nullptr);
 
 #endif // LOG_PARSER_HPP

@@ -700,7 +700,7 @@ For more information on this, and how to apply and follow the GNU AGPL, see
 
 **SPDX-License-Identifier:** AGPL-3.0-or-later  
 **License:** GNU Affero General Public License v3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)  
-**Version:** 5.2.1  
+**Version:** 5.3.0  
 **Author:** Manuel FLURY  
 **Copyright:** © 2026 Manuel FLURY. All rights reserved.
 
@@ -802,6 +802,7 @@ slaplog supports all OpenLDAP log formats with automatic per-line detection:
 | `389ds-json-pretty` | multi-line JSON objects | 389-ds json-pretty access log (auto-detected per file) |
 | `389ds-errors` | `[07/Nov/2026:20:15:30.1 +0100] - ERR - ldbm_back_search - …` | 389-ds text errors log (auto-detected per file) |
 | `389ds-errors-json` | `{"local_time":…,"severity":"ERR",…}` | 389-ds JSON errors log (auto-detected per file) |
+| `opendj` | `[20/Apr/2012:13:31:05 +0200] SEARCH REQ conn=5 op=2 …` | OpenDJ / ForgeRock DS / PingDS / OUD access log (auto-detected per file) |
 
 Use `--log-format` to specify a fixed format for faster parsing when you know all lines share the same format.
 
@@ -849,6 +850,38 @@ slaplog --resume text.state --resume json.state -o html=all.html
 The audit and security streams are records of their own kind (LDIF / JSON
 security events), not operation logs; slaplog names them and leaves them out
 of the report.
+
+### OpenDJ / ForgeRock DS / PingDS / Oracle Unified Directory
+
+Access logs from the OpenDS family are recognised per file and read by the same
+report engine.  The default text format is supported:
+
+```
+[20/Apr/2012:13:31:05 +0200] CONNECT conn=5 from=192.0.2.10:51561 to=192.0.2.20:1389 protocol=LDAP
+[20/Apr/2012:13:31:07 +0200] BIND REQ conn=5 op=1 msgID=2 version=3 type=SIMPLE dn="cn=Directory Manager"
+[20/Apr/2012:13:31:07 +0200] BIND RES conn=5 op=1 msgID=2 result=0 authDN="cn=Directory Manager" etime=1
+[20/Apr/2012:13:31:07 +0200] SEARCH REQ conn=5 op=2 msgID=3 base="dc=example,dc=com" scope=wholeSubtree filter="(uid=x)" attrs="ALL"
+[20/Apr/2012:13:31:07 +0200] SEARCH RES conn=5 op=2 msgID=3 result=0 nentries=1 etime=6
+[20/Apr/2012:13:31:07 +0200] DISCONNECT conn=5 reason="Client Unbind"
+```
+
+- The timestamp is `dd/MMM/yyyy:HH:mm:ss[.SSS] ±HHMM`, decoded to RFC 3339 UTC
+  (the numeric offset is authoritative).
+- `CONNECT` / `DISCONNECT` become connection open/close; `<VERB> REQ` records
+  the operation and `<VERB> RES` its result (`result=`, `nentries=`,
+  `message=`).
+- `etime` is in **milliseconds** in this log; reports show seconds.
+- Scopes are names (`baseObject`, `singleLevel`, `wholeSubtree`,
+  `subordinateSubtree`), mapped to the LDAP integers.
+- `--log-format opendj` forces the parser for every file.
+- Not supported yet: the `combined` log format and the common-audit JSON/CSV
+  access logs.
+
+Input formats are described by a table (`dialect.hpp`, `dialect.cpp`): each
+entry carries its head classifier, its parser and the name shown in messages.
+A file is bound to one dialect once, so a new format lives in its own source
+file (`dialect_opendj.cpp`) and adds nothing to the per-line path of the
+others.
 
 If a line does not match any header format, it is marked as `UNKNOWN_LINE` and
 collected for diagnostic output.
@@ -990,7 +1023,7 @@ slaplog --unknown-lines unknown.txt /var/log/slapd/access.log
 | `-m, --mtime DAYS` | Analyze only files modified within the last `DAYS` days (like `find -mtime`) |
 | `-j, --jobs N` | Worker thread count (default: CPU cores - 1) |
 | `-s, --section LIST` | Comma-separated list of sections to display (see below) |
-| `--log-format FORMAT` | Input log format: `auto` (default), `debug` (or its alias `default`), `syslog-utc`, `syslog-localtime`, `rfc3339-utc`, `ol26`, `rfc3339`, `syslog`; the `389ds`, `389ds-json` and `389ds-json-pretty` values force the 389-ds parser for every file |
+| `--log-format FORMAT` | Input log format: `auto` (default), `debug` (or its alias `default`), `syslog-utc`, `syslog-localtime`, `rfc3339-utc`, `ol26`, `rfc3339`, `syslog`; the `389ds*` values and `opendj` force that parser for every file |
 | `--output-date-format FMT` | Output date format in reports: `rfc3339` (default), `iso8601`, `syslog`, `epoch`, `preserve` |
 | `--replay-separator SEP` | Delimiter for replay output (default: `\|`). Use `tab` for tabulation, `comma` for CSV |
 | `--replay-limit N` | Max operations written to the replay temp file (default: `1000000`, `0` = unlimited). Acts as a safety cap; a warning is printed when ops are dropped. |

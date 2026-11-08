@@ -81,6 +81,7 @@ log are in [`doc/sample/`](doc/sample/); the same pages are also served from
 - **Restart-aware**: handles slapd connection-ID counter resets
 - **Multi-format support**: parses debug, syslog-utc, syslog-localtime, rfc3339-utc formats with auto-detection
 - **389 Directory Server**: text, JSON and json-pretty access logs are detected per file and analysed with the same reports
+- **OpenDJ / ForgeRock DS / PingDS / Oracle Unified Directory**: access logs in the default OpenDS text format are detected per file
 
 ## Usage
 
@@ -155,7 +156,8 @@ slaplog supports all OpenLDAP log formats with automatic per-line detection:
 | `389ds-errors` | `[07/Nov/2026:20:15:30.1 +0100] - ERR - ldbm_back_search - …` | 389-ds text errors log (auto-detected per file) |
 | `389ds-errors-json` | `{"local_time":…,"severity":"ERR",…}` | 389-ds JSON errors log (auto-detected per file) |
 | `389ds-errors` | `[07/Nov/2026:20:15:30.1 +0100] - ERR - ldbm_back_search - …` | 389-ds text errors log (also auto-detected) |
-| `389ds-errors-json` | `{"local_time":…,"severity":"ERR",…}` | 389-ds JSON errors log (also auto-detected) |
+| `389ds-errors-json` | `{"local_time":…,"severity":"ERR",…}` | 389-ds JSON errors log (auto-detected per file) |
+| `opendj` | `[20/Apr/2012:13:31:05 +0200] SEARCH REQ conn=5 op=2 …` | OpenDJ / ForgeRock DS / PingDS / OUD access log (auto-detected per file) |
 
 Use `--log-format` to specify a fixed format for faster parsing when you know all lines share the same format.
 

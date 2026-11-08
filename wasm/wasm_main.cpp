@@ -233,6 +233,7 @@ bool start_session(Options opts) {
         case LogFormat::DS389_JSON_PRETTY: set_forced_parse_mode(ParseMode::DS389JsonPretty); break;
         case LogFormat::DS389_ERRORS:      set_forced_parse_mode(ParseMode::DS389ErrorsText); break;
         case LogFormat::DS389_ERRORS_JSON: set_forced_parse_mode(ParseMode::DS389ErrorsJson); break;
+        case LogFormat::OPEN_DJ:           set_forced_parse_mode(ParseMode::OpenDJ); break;
         default: set_log_format(lf); break;
     }
     if (opts.output_format == "tab-html") opts.output_format = "tabhtml";
